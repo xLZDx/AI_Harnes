@@ -65,6 +65,11 @@
 - Kind: SUCCESS. Facts: the dry run on real history found a third case the backlog missed (generated HTML reports were not documentation); found before the commit by re-running the ERP history.
 - Rule: after a router fix, re-run the same dry run that found the bug and read the exact commits again.
 
+## 2026-11-10 S2-T1 review findings
+- Kind: FAILURE (author). Facts: my first fix used an unanchored pattern (reports?/ at any depth), ignored git's trailing TAB on names with spaces, and attributed a rename hunk only to the new path. Reviewers found all three by reading; the TAB case was reproduced with real git.
+- Root cause: I fixed the observed commit (ERP 0f4cdc37) instead of the class of inputs; a pattern that turns code into "docs" removes reviewers silently.
+- Rule: any rule that can make a change "documentation" must be anchored as narrowly as the evidence, and must keep code on either side of a rename.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.

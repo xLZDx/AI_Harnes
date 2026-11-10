@@ -57,17 +57,21 @@ def project_agents(project_root: Path) -> set[str]:
         return names
     for f in d.glob("*.md"):
         try:
-            m = re.search(r"^name:\s*([\w.-]+)\s*$", f.read_text(encoding="utf-8", errors="replace")[:2000], re.M)
+            text = f.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        names.add(m.group(1) if m else f.name.split(".")[0])
+        m = None
+        fm = re.match(r"---\r?\n(.*?)\r?\n---(\r?\n|$)", text, re.S)  # frontmatter block only
+        if fm:
+            m = re.search(r"""^name:\s*["']?([\w.-]+)["']?\s*$""", fm.group(1), re.M)
+        names.add(m.group(1) if m else f.name[: -len(".md")])
     return names
 
 
 def is_doc(rules: dict, f: str) -> bool:
     if any(re.search(p, f, re.I) for p in rules.get("doc_exclude_patterns", [])):
         return False
-    return any(re.search(p, f, re.I) for p in rules["doc_only_patterns"])
+    return any(re.search(p, f, re.I) for p in rules.get("doc_only_patterns", []))
 
 
 def read_diff(path: Path) -> str:
@@ -90,24 +94,29 @@ def parse_diff(text: str, rules: dict | None = None) -> tuple[list[str], str]:
 
     With `rules`, hunks of documentation files (is_doc) are left out of the body, so keyword
     triggers only see code. Without `rules` the body holds every hunk (backward compatible)."""
-    files, body, in_hunk, cur = [], [], False, None
+    files, body, in_hunk, cur = [], [], False, []
+    doc_hunk = False
     for line in text.split("\n"):
         if line.startswith("diff --git "):
-            in_hunk, cur = False, None
+            in_hunk, cur = False, []
             continue
         if not in_hunk and line.startswith(("--- ", "+++ ")):
-            p = _unquote(line[4:].rstrip("\r"))
+            # git appends a TAB after an unquoted name that contains a space; a real TAB in a name is quoted
+            p = _unquote(line[4:].rstrip("\r").split("\t")[0])
             if p != "/dev/null":
                 p = p[2:] if p[:2] in ("a/", "b/") else p
                 if p not in files:
                     files.append(p)
-                cur = p  # "+++" comes last, so a rename/new file ends on the new path
+                cur.append(p)
+            # a hunk is documentation only if every path of this file entry (old and new) is a doc,
+            # so a code file renamed into docs/ still has its removed lines scanned
+            doc_hunk = rules is not None and bool(cur) and all(is_doc(rules, x) for x in cur)
             continue
         if line.startswith("@@"):
             in_hunk = True
             continue
         if in_hunk and line[:1] in ("+", "-"):
-            if rules is not None and cur is not None and is_doc(rules, cur):
+            if doc_hunk:
                 continue
             body.append(line[1:])
     if text.strip() and not files:

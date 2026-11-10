@@ -1,6 +1,6 @@
 {
  "max_reviewers": 4,
- "doc_only_patterns": ["\\.(md|txt|rst)$", "(^|/)docs/", "(^|/)reports?/[^/]*\\.html?$", "(^|/)\\.harness/report\\.html$"],
+ "doc_only_patterns": ["\\.(md|txt|rst)$", "(^|/)docs/", "^reports/[^/]+\\.html$", "^\\.harness/report\\.html$"],
  "doc_exclude_patterns": ["(^|/)harness/(agents|skills|commands|rules)/", "(^|/)(CLAUDE|AGENTS)\\.md$"],
  "language_reviewers": {
   "\\.py$": "python-reviewer",
