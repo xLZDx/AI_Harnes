@@ -89,6 +89,30 @@ def _unquote(p: str) -> str:
     return p
 
 
+_QPATH = r'"(?:[^"\\]|\\.)*"'
+
+
+def _strip_prefix(p: str) -> str:
+    return p[2:] if p[:2] in ("a/", "b/") else p
+
+
+def _git_header_paths(rest: str) -> list[str]:
+    """Paths from `diff --git <a> <b>`. Needed for entries without ---/+++ lines (pure rename,
+    copy, mode-only, binary). Quoted names are exact; an unquoted pair with equal names is split in
+    the middle (names may contain spaces); otherwise split on the last " b/"."""
+    rest = rest.rstrip("\r")
+    m = re.fullmatch(rf"({_QPATH}|\S+) ({_QPATH}|\S+)", rest)
+    if m and (m.group(1).startswith('"') or m.group(2).startswith('"') or rest.count(" ") == 1):
+        return [_strip_prefix(_unquote(m.group(1))), _strip_prefix(_unquote(m.group(2)))]
+    if len(rest) % 2 == 1:
+        n = len(rest) // 2
+        a, b = rest[:n], rest[n + 1:]
+        if rest[n] == " " and _strip_prefix(a) == _strip_prefix(b):
+            return [_strip_prefix(a)]
+    i = rest.rfind(" b/")
+    return [_strip_prefix(rest[:i]), _strip_prefix(rest[i + 1:])] if i > 0 else []
+
+
 def parse_diff(text: str, rules: dict | None = None) -> tuple[list[str], str]:
     """Files from the ---/+++ headers (handles spaces and quoted names); body = changed lines of hunks.
 
@@ -96,18 +120,26 @@ def parse_diff(text: str, rules: dict | None = None) -> tuple[list[str], str]:
     triggers only see code. Without `rules` the body holds every hunk (backward compatible)."""
     files, body, in_hunk, cur = [], [], False, []
     doc_hunk = False
+
+    def add(p: str) -> None:
+        if p and p != "/dev/null":
+            if p not in files:
+                files.append(p)
+            if p not in cur:
+                cur.append(p)
+
     for line in text.split("\n"):
         if line.startswith("diff --git "):
             in_hunk, cur = False, []
+            for p in _git_header_paths(line[len("diff --git "):]):
+                add(p)
+            continue
+        if not in_hunk and line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            add(_unquote(line.split(" ", 2)[2].rstrip("\r")))  # exact names, no a/ b/ prefix
             continue
         if not in_hunk and line.startswith(("--- ", "+++ ")):
             # git appends a TAB after an unquoted name that contains a space; a real TAB in a name is quoted
-            p = _unquote(line[4:].rstrip("\r").split("\t")[0])
-            if p != "/dev/null":
-                p = p[2:] if p[:2] in ("a/", "b/") else p
-                if p not in files:
-                    files.append(p)
-                cur.append(p)
+            add(_strip_prefix(_unquote(line[4:].rstrip("\r").split("\t")[0])))
             # a hunk is documentation only if every path of this file entry (old and new) is a doc,
             # so a code file renamed into docs/ still has its removed lines scanned
             doc_hunk = rules is not None and bool(cur) and all(is_doc(rules, x) for x in cur)

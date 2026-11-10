@@ -39,6 +39,8 @@
 
 - S2-T1 review (route.py chose code-reviewer, silent-failure-hunter, python-reviewer): 1 MAJOR + 6 MINOR, all fixed in one batch. Accepted by consensus: the report-HTML doc pattern matched at any depth (two reviewers) -> anchored to ^reports/[^/]+\.html$ and ^\.harness/report\.html$. Accepted by code fact: git appends a TAB after names with spaces (reproduced: "+++ b/my notes.md<TAB>") -> header split on TAB; a code file renamed into docs lost its removed lines -> a hunk is doc only if old and new paths are both docs; project_agents reads only the frontmatter (utf-8-sig, optional quotes, stem without .md); is_doc tolerates a rules dict without doc_only_patterns.
 
+- S2 GPT-PM round 1 (request 3759bfa8, reply 5ac481b5): VERDICT MAJOR, 1 finding: a pure rename / copy / mode-only / binary entry has no ---/+++ lines, so parse_diff raised "no file headers parsed" (reproduced with real git). Fix: paths also come from the `diff --git` header (quoted, symmetric split for names with spaces, last " b/" otherwise) and from rename/copy from/to lines; the both-paths-docs rule is unchanged. Dry run --history 300 in ERP, Fitness_App, PDCC and Harness_v2: exit 0 everywhere.
+
 ## 2026-11-10 Project profiles and domain agents
 - Operator scope: every project with domain agents, not only ERP/Fitness/trading; marketing projects (VMC, ivan-ai-company) untouched.
 - Each project got .harness/profile.json (domain_specialists, security_triggers, extra risky paths) and its .claude/agents consolidated; every kept agent is model sonnet, effort medium, description ends with "Use when:". Money/data/concurrency reviewers ask "two concurrent requests, a retry, a crash half-way".

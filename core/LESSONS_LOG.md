@@ -74,6 +74,11 @@
 - Kind: SUCCESS. Facts: functional-test-reviewer added 18 tests from the acceptance criteria (test_route now 53, "OK: 0 failing" at 5a8a0a1); its two failures on the way were test bugs (cap and one-specialist rule; old rename expectation), not product defects.
 - Rule: when a fix commit lands while tests are being written, send the tester the new rules as explicit expected values, not the diff.
 
+## 2026-11-10 S2 GPT-PM round 1
+- Kind: SHORTCOMING. Facts: the diff parser has relied on ---/+++ headers since sprint 1; a pure rename or mode-only commit crashed routing. Three internal reviewers and 53 tests (all hand-built diffs with hunks) missed it; GPT-PM found it by reasoning about git's output formats.
+- Root cause: parser tests never used real `git show` output for header-only entries.
+- Rule: parser tests include real git output for rename, copy, mode-only and binary entries.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.
