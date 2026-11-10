@@ -151,7 +151,7 @@ def pre(data):
     if not under(target, SCRATCH_ROOT):
         deny(DENY_MSG % (SCRATCH_ROOT, SCRATCH_ROOT, f"target {target} is outside the scratch root"))
     rc, head = git(["rev-parse", "HEAD"], cwd=data.get("cwd"))
-    ledger_add({"sid": str(data.get("session_id"))[:8], "path": norm(target), "start_head": head if rc == 0 else "",
+    ledger_add({"sid": str(data.get("session_id")), "path": norm(target), "start_head": head if rc == 0 else "",
                 "cmd": cmd[:200]})
 
 
@@ -165,7 +165,7 @@ with AskUserQuestion instead of removing."""
 def stop(data):
     if data.get("agent_type") or data.get("stop_hook_active"):
         return
-    sid = str(data.get("session_id"))[:8]
+    sid = str(data.get("session_id"))
     due = [r["path"] for r in ledger_rows() if r.get("sid") == sid and merged_present(r)]
     if not due:
         return

@@ -158,7 +158,7 @@ def main():
         allow()
         return
 
-    if agentio.client(data) == "codex":  # no ExitPlanMode in Codex
+    if data.get("tool_name", "ExitPlanMode") != "ExitPlanMode":  # Codex has no ExitPlanMode; never registered there
         allow()
         return
 

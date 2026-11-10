@@ -250,6 +250,8 @@ def check_hooks() -> list[str]:
                 errs.append(f"hook {i}: {cl} has no {h['event']} event")
         if "claude" not in h and "codex" not in h:
             errs.append(f"hook {i}: {h['script']} is installed for no client")
+    names = {a["name"] for a in json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))["agents"]}
+    errs += [f"subagent_evidence_skip: unknown agent {n}" for n in reg.get("subagent_evidence_skip", []) if n not in names]
     return errs
 
 
@@ -261,12 +263,16 @@ def hook_config(client: str, hooks_dir: Path, python: str) -> dict:
         if client not in h:
             continue
         script = str(hooks_dir / h["script"])
+        # -X utf8: hook stdin/stdout are UTF-8 JSON whatever the Windows code page; --harness-client tells
+        # _agentio which client runs the hook, so it never has to guess
+        args = ["-s", "-X", "utf8", script, f"--harness-client={client}"]
         if client == "claude":
-            entry = {"type": "command", "command": python, "args": ["-s", script],
+            entry = {"type": "command", "command": python, "args": args,
                      "timeout": h["timeout"], "statusMessage": h["status"]}
         else:
-            entry = {"type": "command", "command": f'{python} -s "{script}"',
-                     "commandWindows": f'{python} -s "{script}"', "timeout": h["timeout"], "statusMessage": h["status"]}
+            cmd = " ".join(f'"{a}"' if " " in a or a in (python, script) else a for a in [python, *args])
+            entry = {"type": "command", "command": cmd, "commandWindows": cmd,
+                     "timeout": h["timeout"], "statusMessage": h["status"]}
         groups = out.setdefault(h["event"], [])
         matcher = h[client]
         if groups and groups[-1].get("matcher", "") == matcher:
@@ -276,14 +282,10 @@ def hook_config(client: str, hooks_dir: Path, python: str) -> dict:
     return out
 
 
-def writers(manifest: dict) -> list[str]:
-    """Agents that may edit files (their tools include Write or Edit); evidence hooks skip their reports."""
-    names = []
-    for a in manifest["agents"]:
-        fm = frontmatter((SRC / "agents" / f"{a['name']}.md").read_text(encoding="utf-8"))
-        if re.search(r"\b(Write|Edit)\b", fm.get("tools", "")):
-            names.append(a["name"])
-    return sorted(names)
+def evidence_skip() -> list[str]:
+    """Agents whose reports the SubagentStop evidence hooks skip (registry "subagent_evidence_skip")."""
+    reg = json.loads((SRC / "hooks" / "registry.json").read_text(encoding="utf-8"))
+    return sorted(reg.get("subagent_evidence_skip", []))
 
 
 def emit_hooks(manifest: dict, client_dir: Path, client: str, home_dir: Path, python: str) -> None:
@@ -291,7 +293,10 @@ def emit_hooks(manifest: dict, client_dir: Path, client: str, home_dir: Path, py
     hooks_out.mkdir(parents=True, exist_ok=True)
     for f in sorted((SRC / "hooks").glob("*.py")):
         shutil.copy2(f, hooks_out / f.name)
-    (hooks_out / "writers.json").write_text(json.dumps(writers(manifest), indent=1) + "\n", encoding="utf-8", newline="\n")
+    (hooks_out / "codex_policy.json").write_text(json.dumps({"model": CODEX_MODEL, "effort": CODEX_EFFORT}) + "\n",
+                                                 encoding="utf-8", newline="\n")
+    (hooks_out / "evidence_skip.json").write_text(json.dumps(evidence_skip(), indent=1) + "\n", encoding="utf-8",
+                                                  newline="\n")
     cfg = hook_config(client, home_dir / "hooks", python)
     name = "settings.hooks.json" if client == "claude" else "hooks.json"
     body = {"hooks": cfg} if client == "claude" else {"description": "Harness v2 hooks, built by tools/build.py", "hooks": cfg}

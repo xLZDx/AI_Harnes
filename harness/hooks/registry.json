@@ -1,32 +1,224 @@
 {
- "comment": "One hook list for Claude Code and Codex. build.py turns it into out/claude/settings.hooks.json and out/codex/hooks.json. Matchers are per client; a missing client key means the hook is not installed there.",
+ "comment": "One hook list for Claude Code and Codex. build.py turns it into out/claude/settings.hooks.json and out/codex/hooks.json. Matchers are per client; a missing client key means the hook is not installed there. subagent_evidence_skip: agents whose reports the SubagentStop evidence hooks skip (the agents that were outside the old reviewer matcher). Timeouts cover the git calls each hook makes.",
  "hooks": [
-  {"event": "PreToolUse", "script": "shell_policy_gate.py", "timeout": 15, "status": "shell policy", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PreToolUse", "script": "repeat_work_gate.py", "timeout": 20, "status": "repeat work gate", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PreToolUse", "script": "decision_log_gate.py", "timeout": 15, "status": "decision log gate", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PreToolUse", "script": "gpt_review_gate.py", "timeout": 15, "status": "gpt review gate", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PreToolUse", "script": "worktree_policy.py", "timeout": 15, "status": "worktree policy", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PreToolUse", "script": "plan_approval_gate.py", "timeout": 15, "status": "plan approval gate", "claude": "ExitPlanMode"},
-  {"event": "PreToolUse", "script": "question_policy.py", "timeout": 15, "status": "question policy", "claude": "AskUserQuestion"},
-  {"event": "PreToolUse", "script": "go_gate.py", "timeout": 15, "status": "GO gate", "claude": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell", "codex": "Bash|apply_patch"},
-  {"event": "PreToolUse", "script": "agent_model_gate.py", "timeout": 10, "status": "agent model policy", "claude": "Agent", "codex": "spawn_agent"},
-  {"event": "PreCompact", "script": "decision_log_precompact.py", "timeout": 10, "status": "decision log", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "evidence_gate.py", "timeout": 15, "status": "citation check", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "unverified_claim_gate.py", "timeout": 15, "status": "unverified claim check", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "session_supervisor_gate.py", "timeout": 20, "status": "session supervisor", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "keep_going_gate.py", "timeout": 15, "status": "keep-going check", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "session_close_gate.py", "timeout": 30, "status": "project plan close gate", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "decision_explain_gate.py", "timeout": 15, "status": "decision refs check", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "question_policy.py", "timeout": 15, "status": "question policy", "claude": "", "codex": ""},
-  {"event": "Stop", "script": "worktree_policy.py", "timeout": 15, "status": "worktree cleanup check", "claude": "", "codex": ""},
-  {"event": "SubagentStop", "script": "evidence_gate.py", "timeout": 15, "status": "citation check", "claude": "", "codex": ""},
-  {"event": "SubagentStop", "script": "citation_judge.py", "timeout": 120, "status": "citation judge", "claude": "", "codex": ""},
-  {"event": "UserPromptSubmit", "script": "decision_log_reminder.py", "timeout": 10, "status": "decision log reminder", "claude": "", "codex": ""},
-  {"event": "UserPromptSubmit", "script": "repeat_work_start.py", "timeout": 20, "status": "repeat work check", "claude": "", "codex": ""},
-  {"event": "UserPromptSubmit", "script": "question_policy.py", "timeout": 10, "status": "question policy report", "claude": "", "codex": ""},
-  {"event": "UserPromptSubmit", "script": "worktree_policy.py", "timeout": 15, "status": "worktree reminder", "claude": "", "codex": ""},
-  {"event": "PostToolUse", "script": "session_close_gate.py", "timeout": 20, "status": "PR event", "claude": "Bash|PowerShell", "codex": "Bash"},
-  {"event": "PermissionRequest", "script": "question_policy.py", "timeout": 400, "status": "pending question policy", "claude": "AskUserQuestion"},
-  {"event": "Notification", "script": "question_policy.py", "timeout": 10, "status": "notification log", "claude": "permission_prompt|idle_prompt"}
+  {
+   "event": "PreToolUse",
+   "script": "shell_policy_gate.py",
+   "timeout": 15,
+   "status": "shell policy",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "repeat_work_gate.py",
+   "timeout": 45,
+   "status": "repeat work gate",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "decision_log_gate.py",
+   "timeout": 30,
+   "status": "decision log gate",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "gpt_review_gate.py",
+   "timeout": 30,
+   "status": "gpt review gate",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "worktree_policy.py",
+   "timeout": 30,
+   "status": "worktree policy",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "plan_approval_gate.py",
+   "timeout": 15,
+   "status": "plan approval gate",
+   "claude": "ExitPlanMode"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "question_policy.py",
+   "timeout": 15,
+   "status": "question policy",
+   "claude": "AskUserQuestion"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "go_gate.py",
+   "timeout": 30,
+   "status": "GO gate",
+   "claude": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell",
+   "codex": "Bash|apply_patch"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "agent_model_gate.py",
+   "timeout": 10,
+   "status": "agent model policy",
+   "claude": "Agent",
+   "codex": "spawn_agent"
+  },
+  {
+   "event": "PreCompact",
+   "script": "decision_log_precompact.py",
+   "timeout": 15,
+   "status": "decision log",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "evidence_gate.py",
+   "timeout": 15,
+   "status": "citation check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "unverified_claim_gate.py",
+   "timeout": 15,
+   "status": "unverified claim check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "session_supervisor_gate.py",
+   "timeout": 35,
+   "status": "session supervisor",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "keep_going_gate.py",
+   "timeout": 15,
+   "status": "keep-going check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "session_close_gate.py",
+   "timeout": 30,
+   "status": "project plan close gate",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "decision_explain_gate.py",
+   "timeout": 15,
+   "status": "decision refs check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "question_policy.py",
+   "timeout": 15,
+   "status": "question policy",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
+   "script": "worktree_policy.py",
+   "timeout": 30,
+   "status": "worktree cleanup check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "SubagentStop",
+   "script": "evidence_gate.py",
+   "timeout": 15,
+   "status": "citation check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "SubagentStop",
+   "script": "citation_judge.py",
+   "timeout": 120,
+   "status": "citation judge",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "UserPromptSubmit",
+   "script": "decision_log_reminder.py",
+   "timeout": 15,
+   "status": "decision log reminder",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "UserPromptSubmit",
+   "script": "repeat_work_start.py",
+   "timeout": 45,
+   "status": "repeat work check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "UserPromptSubmit",
+   "script": "question_policy.py",
+   "timeout": 10,
+   "status": "question policy report",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "UserPromptSubmit",
+   "script": "worktree_policy.py",
+   "timeout": 30,
+   "status": "worktree reminder",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "PostToolUse",
+   "script": "session_close_gate.py",
+   "timeout": 20,
+   "status": "PR event",
+   "claude": "Bash",
+   "codex": "Bash"
+  },
+  {
+   "event": "PermissionRequest",
+   "script": "question_policy.py",
+   "timeout": 400,
+   "status": "pending question policy",
+   "claude": "AskUserQuestion"
+  },
+  {
+   "event": "Notification",
+   "script": "question_policy.py",
+   "timeout": 10,
+   "status": "notification log",
+   "claude": "permission_prompt|idle_prompt"
+  }
+ ],
+ "subagent_evidence_skip": [
+  "build-error-resolver",
+  "dart-build-resolver",
+  "implementation-engineer",
+  "refactor-cleaner",
+  "technical-writer"
  ]
 }

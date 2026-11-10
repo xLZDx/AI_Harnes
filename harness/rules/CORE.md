@@ -20,9 +20,10 @@ instruction wins; platform permission and safety controls always apply.
 - Target budget: code 40 %, tests 40 %, documents 20 %.
 
 ## Agents
-- All agents run on Sonnet (latest) with effort medium. Opus only when the operator
-  explicitly authorizes that run, effort high. Never use an agent without a role
-  (`general-purpose`) as a reviewer or tester.
+- In Claude Code all agents run on Sonnet (latest) with effort medium. Opus only when the
+  operator explicitly authorizes that run, effort high. In Codex all agents run on the latest
+  Luna model (`gpt-6-luna`) with reasoning effort medium, nothing else; the `agent_model_gate`
+  hook enforces both. Never use an agent without a role (`general-purpose`) as a reviewer or tester.
 - Agents are chosen per task by `.harness-tools/route.py` from the changed files: 0-4 reviewers by
   risk. Choice and reason are written to the ledger. Never launch all agents at once.
 - `security-reviewer` is never automatic: only for a trust-boundary change listed in the

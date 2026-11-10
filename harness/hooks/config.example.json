@@ -9,5 +9,6 @@
  "SESSION_CLOSE_PLAN_TOOL": "<path to project_plan.py>",
  "SESSION_SUPERVISOR_ROOTS": "<parent folder of supervised repositories>",
  "SESSION_SUPERVISOR_SKIP": "<comma-separated repo folder names never supervised>",
- "SESSION_SUPERVISOR_HINTS": "~/.harness-hooks/supervisor_hints.json"
+ "SESSION_SUPERVISOR_HINTS": "~/.harness-hooks/supervisor_hints.json",
+ "HARNESS_JUDGE_CMD": "<absolute path of the claude CLI used by citation_judge>"
 }

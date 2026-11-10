@@ -27,11 +27,26 @@ def load_machine_config() -> None:
         return
     if isinstance(cfg, dict):
         for k, v in cfg.items():
-            if isinstance(k, str) and k.isupper() and isinstance(v, str):
+            # a value still holding a template placeholder ("<...>") is ignored, never used as a literal path
+            if isinstance(k, str) and k.isupper() and isinstance(v, str) and v.strip() and not v.lstrip().startswith("<"):
                 os.environ.setdefault(k, os.path.expandvars(os.path.expanduser(v)))
 
 
 load_machine_config()
+
+
+def _client_from_argv() -> str:
+    """build.py writes `--harness-client=claude|codex` into every hook command; it is removed from sys.argv so the
+    hook's own argument handling never sees it."""
+    import sys
+    for i, a in enumerate(list(sys.argv[1:]), start=1):
+        if a.startswith("--harness-client="):
+            del sys.argv[i]
+            return a.split("=", 1)[1].strip().lower()
+    return ""
+
+
+CLIENT = _client_from_argv()
 
 SHELL_TOOLS = {"Bash", "PowerShell", "exec_command", "shell", "local_shell"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
@@ -51,9 +66,12 @@ def read_stdin() -> dict:
 
 
 def client(data: dict) -> str:
-    """'codex' or 'claude'."""
+    """'codex' or 'claude'. The installed command says which (--harness-client); without it only positive evidence
+    in the payload counts (a Codex transcript path or a turn_id), never the environment."""
+    if CLIENT in ("claude", "codex"):
+        return CLIENT
     tp = str(data.get("transcript_path") or "").replace("\\", "/").lower()
-    if "/.codex/" in tp or data.get("turn_id") or os.environ.get("CODEX_HOME") and "/.claude/" not in tp:
+    if "/.codex/" in tp or data.get("turn_id"):
         return "codex"
     return "claude"
 
@@ -198,8 +216,11 @@ def records(transcript_path) -> list[dict]:
                     continue
                 if not isinstance(obj, dict):
                     continue
-                out.extend(_codex_records(obj) if obj.get("type") == "response_item" else _claude_records(obj))
-    except (OSError, TypeError):
+                try:
+                    out.extend(_codex_records(obj) if obj.get("type") == "response_item" else _claude_records(obj))
+                except (AttributeError, TypeError, ValueError):
+                    continue  # one malformed row must not hide the rest of the transcript
+    except (OSError, TypeError, ValueError):
         return []
     return out
 
@@ -239,14 +260,64 @@ def last_assistant_text(data: dict) -> str:
 
 
 def is_writer(data: dict) -> bool:
-    """True for a subagent that edits files (names in writers.json next to this file, written by build.py).
-    Evidence hooks check reviewer reports only; a missing or broken writers.json means 'not a writer'."""
+    """True for a subagent whose report the SubagentStop evidence hooks skip (names in evidence_skip.json next to
+    this file, written by build.py from registry.json "subagent_evidence_skip"). A missing or broken file means
+    'check it'."""
     name = str(data.get("agent_type") or "")
     try:
-        names = json.loads((Path(__file__).resolve().parent / "writers.json").read_text(encoding="utf-8"))
+        names = json.loads((Path(__file__).resolve().parent / "evidence_skip.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     return isinstance(names, list) and name in names
+
+
+class file_lock:
+    """Cross-process lock for a read-modify-write of a shared state file (Claude and Codex sessions share state).
+    `with file_lock(path) as got:` waits up to `wait` seconds; a lock older than `stale` seconds is taken over.
+    got=False means the lock was not obtained; the caller decides (hooks fail open and log it)."""
+
+    def __init__(self, path: Path, wait: float = 3.0, stale: float = 30.0):
+        self.lock = Path(str(path) + ".lock")
+        self.wait, self.stale, self.got = wait, stale, False
+
+    def __enter__(self) -> bool:
+        import time
+        end = time.monotonic() + self.wait
+        while True:
+            try:
+                fd = os.open(self.lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                self.got = True
+                return True
+            except FileExistsError:
+                try:
+                    if time.time() - self.lock.stat().st_mtime > self.stale:
+                        self.lock.unlink()
+                        continue
+                except OSError:
+                    pass
+            except PermissionError:  # Windows: the lock file is being deleted by its owner
+                pass
+            except OSError:
+                return False
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+
+    def __exit__(self, *exc) -> None:
+        if self.got:
+            for _ in range(20):
+                try:
+                    self.lock.unlink()
+                    return
+                except FileNotFoundError:
+                    return
+                except PermissionError:
+                    import time
+                    time.sleep(0.05)
+                except OSError:
+                    return
 
 
 def state_dir(name: str) -> Path:

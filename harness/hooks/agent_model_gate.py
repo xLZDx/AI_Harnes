@@ -6,9 +6,10 @@ Sonnet id >= 5.5. Opus is never automatic: it needs per-run operator consent and
 mechanism exists, so it fails closed. Haiku/Fable and anything else are denied. Agents marked
 `deprecated: true` are not automatically runnable. Non-Agent tools are never touched.
 
-Claude Code only. In Codex the subagent model is fixed in config.toml ([agents] default_subagent_model) and
-spawn_agent has no Claude model alias or agent frontmatter to check, so this hook is a deliberate no-op for
-Codex payloads (detected with _agentio.client); it stays safe to register there.
+Codex (operator rule 2026-11-11): subagents run only on the latest Luna model at medium effort. The `spawn_agent`
+branch denies an explicit model or effort that differs, and an agent TOML that declares something else. The
+required values come from codex_policy.json (written by build.py from CODEX_MODEL / CODEX_EFFORT). Any other
+tool_name passes.
 """
 from __future__ import annotations
 
@@ -96,10 +97,53 @@ def effective_subagent_model() -> str:
         return ""
 
 
+def codex_policy() -> tuple[str, str]:
+    """(model, effort) every Codex subagent must use; build.py writes codex_policy.json from the same constants
+    that generate the agent TOML files. Missing file = the built-in defaults, never a weaker policy."""
+    try:
+        p = json.loads((Path(__file__).resolve().parent / "codex_policy.json").read_text(encoding="utf-8"))
+        return str(p["model"]), str(p["effort"])
+    except (OSError, ValueError, KeyError):
+        return "gpt-6-luna", "medium"
+
+
+def codex_agent_toml(name: str, cwd: Path) -> Path | None:
+    roots = [cwd, *cwd.parents]
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    for p in [*(r / ".codex" / "agents" / f"{name}.toml" for r in roots), Path(home) / "agents" / f"{name}.toml"]:
+        if name and p.is_file():
+            return p
+    return None
+
+
+def decide_codex(data: dict) -> None:
+    """Codex rule: subagents run on the latest Luna model at medium effort, nothing else."""
+    model, effort = codex_policy()
+    ti = data.get("tool_input") or {}
+    name = str(ti.get("agent_type") or "").strip()
+    given_model = str(ti.get("model") or "").strip().lower()
+    given_effort = str(ti.get("reasoning_effort") or ti.get("model_reasoning_effort") or ti.get("effort") or "").strip().lower()
+    if given_model and given_model != model:
+        deny(f"Harness: Codex subagents run on {model}; explicit model '{given_model}' is blocked for {name or '<unknown>'}.")
+    if given_effort and given_effort != effort:
+        deny(f"Harness: Codex subagents run at reasoning effort {effort}; '{given_effort}' is blocked for {name or '<unknown>'}.")
+    toml_path = codex_agent_toml(name, Path(str(data.get("cwd") or os.getcwd())))
+    if toml_path:
+        try:
+            import tomllib
+            spec = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, ImportError) as e:
+            deny(f"Harness: cannot read the agent definition {toml_path} ({e}); failing closed.")
+        m = str(spec.get("model") or "").lower()
+        e = str(spec.get("model_reasoning_effort") or "").lower()
+        if (m and m != model) or (e and e != effort):
+            deny(f"Harness: Codex agent '{name}' ({toml_path}) declares model={m or '-'} effort={e or '-'}; "
+                 f"required: {model} / {effort}. Regenerate it with tools/build.py --codex-project.")
+
+
 def decide(data: dict) -> None:
-    if agentio is not None and agentio.client(data) == "codex":
-        # Codex: the subagent model comes from config.toml ([agents] default_subagent_model), not from a
-        # per-call model alias or agent frontmatter, so the Claude Sonnet-alias rules do not apply. No-op.
+    if data.get("tool_name") == "spawn_agent":
+        decide_codex(data)
         return
     if data.get("tool_name") != "Agent":
         return

@@ -38,7 +38,19 @@ import _agentio  # noqa: E402
 
 STATE_DIR = _agentio.state_dir("citation_judge")
 LOG_PATH = STATE_DIR / "decisions.jsonl"
-CLAUDE_CMD = os.environ.get("HARNESS_JUDGE_CMD") or shutil.which("claude") or ""
+def _judge_cmd() -> str:
+    """Absolute judge command. HARNESS_JUDGE_CMD must be absolute; the PATH lookup skips the current folder
+    (on Windows shutil.which would otherwise run a claude.cmd planted in the reviewed repository)."""
+    cfg = os.environ.get("HARNESS_JUDGE_CMD", "")
+    if cfg:
+        return cfg if os.path.isabs(cfg) else ""
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d.strip() and os.path.isabs(d) and Path(d).resolve() != Path.cwd().resolve()]
+    found = shutil.which("claude", path=os.pathsep.join(dirs)) or ""
+    return found if os.path.isabs(found) else ""
+
+
+CLAUDE_CMD = _judge_cmd()
 MODEL = os.environ.get("HARNESS_JUDGE_MODEL") or "claude-haiku-4-5-20251001"
 
 MAX_CITES = 6          # bound prompt size and latency
@@ -138,14 +150,17 @@ def ask_judge(claim: str, snippets: list[dict]) -> list[dict] | None:
     if not CLAUDE_CMD:
         return None
     prefix = ["cmd", "/c"] if os.name == "nt" and CLAUDE_CMD.lower().endswith((".cmd", ".bat")) else []
-    proc = subprocess.run(
-        [*prefix, CLAUDE_CMD, "-p", "--model", MODEL,
-         "--disallowed-tools", "Read", "Write", "Edit", "Bash", "Glob", "Grep",
-         "WebFetch", "WebSearch", "Agent"],
-        input=prompt, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", env=env, timeout=CALL_TIMEOUT,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    try:
+        proc = subprocess.run(
+            [*prefix, CLAUDE_CMD, "-p", "--model", MODEL,
+             "--disallowed-tools", "Read", "Write", "Edit", "Bash", "Glob", "Grep",
+             "WebFetch", "WebSearch", "Agent"],
+            input=prompt, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=env, timeout=CALL_TIMEOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None  # logged by the caller as call-failed
     raw = (proc.stdout or "").strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)      # tolerate ```json fences / preamble
     if not m:

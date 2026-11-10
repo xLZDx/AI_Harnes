@@ -1578,6 +1578,21 @@ def _decision_log_append_exempt(tool_name: str, tool_input: dict, cwd) -> bool:
 _PM_MODE_EXEMPT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit", "MultiEdit"})
 
 
+def _patch_repo(path: str, cwd: str) -> str:
+    """git top-level of a patched file (its folder when outside git), lower-cased for comparison."""
+    p = Path(path) if Path(path).is_absolute() else Path(cwd) / path
+    d = p.parent
+    while not d.exists() and d != d.parent:
+        d = d.parent
+    try:
+        r = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                           timeout=5)
+        top = r.stdout.strip() if r.returncode == 0 else str(d)
+    except (OSError, subprocess.SubprocessError):
+        top = str(d)
+    return top.replace("\\", "/").rstrip("/").lower()
+
+
 def main():
     if os.environ.get("CLAUDE_GO_GATE", "").lower() == "off":
         allow()
@@ -1601,6 +1616,12 @@ def main():
         tool_input = {**tool_input, "command": agentio.shell_command(data)}
     elif tool_name == "apply_patch":
         patched = agentio.edited_paths(data)
+        # Coverage (GPT-PM receipt, plan GO) is judged per repository from one path, so a patch that spans
+        # several repositories is denied: one Claude Edit call is one file, one Codex patch must be one repo.
+        if len({_patch_repo(p, cwd) for p in patched}) > 1:
+            deny("GO gate: this apply_patch edits files in more than one repository. Split it into one patch "
+                 "per repository so each one is checked against its own approval: " + ", ".join(patched[:6]))
+            return
         tool_name = "Edit"
         tool_input = {"file_path": patched[0] if patched else ""}
 

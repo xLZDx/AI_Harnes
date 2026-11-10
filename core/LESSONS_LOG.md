@@ -106,6 +106,16 @@
 - Kind: SHORTCOMING. Facts: removing personal paths from the hooks (public repo) silently changed behavior: the supervisor lost its skip list, PM mode read as off, the plan tool path did not exist for Codex. Caught by reading both porting agents' reports before install.
 - Rule: a portability change moves machine values into a local config with the same values, never into defaults that differ.
 
+## 2026-11-11 S3-T2 hook port review
+- Kind: FAILURE (author). Facts: I guessed the client from an environment variable (CODEX_HOME), took the SubagentStop exclusion list from "agents that can write" instead of the old matcher, kept only the first path of a multi-file patch, and left git timeouts longer than the hook timeout. Five reviewers and the tester found 5 MAJOR plus about 15 MINOR in one pass; the tester also hit a stray backspace byte (a shell turned `\b` into 0x08) in its own regex.
+- Root cause: ported by reading the code, not by diffing the live Claude settings against the generated ones, and no check compared timeouts with subprocess budgets.
+- Layer that missed it: author; found by reviewers and tests.
+- Rule: a port starts with a table of the live registry (event, matcher, timeout) and the generated one, diffed by a script; the client is told by the installed command, never guessed.
+- Kind: SUCCESS. Facts: the operator's one-line rule (Codex agents only on the latest Luna, medium) was checked against ~/.codex/models_cache.json before use (gpt-6-luna vs gpt-5.6-luna) and turned into a gate plus a test.
+- Rule: resolve "latest" from the installed model list, not from memory.
+- Kind: SHORTCOMING. Facts: three of the subagents hit their turn limit before reporting (two reviewers, the tester); each had to be resumed or its file run by hand.
+- Rule: give a reviewer of a 10k-line diff a turn budget in the brief and tell it which files to read first.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.

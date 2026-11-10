@@ -211,6 +211,8 @@ def on_stop(data: dict) -> None:
         return
     if not TOOL.is_file():
         log({"event": "stop", "verdict": "no-tool", "tool": str(TOOL)})
+        warn(f"plan tool {TOOL} not found, so the project plan in {plan_dir} is NOT checked; "
+             "set SESSION_CLOSE_PLAN_TOOL in ~/.harness-hooks/config.json")
         return
     tool = load_tool()
     plan = tool.load(plan_dir)
@@ -302,10 +304,14 @@ def main() -> int:
     if data.get("agent_type"):
         return 0
     event = data.get("hook_event_name") or ("PostToolUse" if "tool_name" in data else "Stop")
-    if event == "PostToolUse":
-        on_post_tool_use(data)
-    elif event == "Stop":
-        on_stop(data)
+    # Claude and Codex sessions share one state file: serialize the load-change-save cycle
+    with _agentio.file_lock(STATE) as got:
+        if not got:
+            log({"event": event, "verdict": "lock-timeout"})
+        if event == "PostToolUse":
+            on_post_tool_use(data)
+        elif event == "Stop":
+            on_stop(data)
     return 0
 
 

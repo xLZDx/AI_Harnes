@@ -235,13 +235,13 @@ def pre(data, c):
         return  # operator 2026-11-01: keep the question on screen for pending_minutes; the PermissionRequest handler answers
     text = destructive_scope(qs)
     if DESTRUCTIVE_RE.search(text) and not c["include_destructive"]:
-        log_ledger({"sid": str(data.get("session_id"))[:8], "action": "kept-for-operator-destructive", "q": text[:200]})
+        log_ledger({"sid": str(data.get("session_id")), "action": "kept-for-operator-destructive", "q": text[:200]})
         return
     answers = {}
     for q in qs:
         opts = [o for o in (q.get("options") or []) if isinstance(o, dict)]
         answers[q.get("question", "")] = next(str(o["label"]) for o in opts if REC_RE.search(str(o.get("label", "")).strip()))
-    log_ledger({"sid": str(data.get("session_id"))[:8], "action": "auto-accepted", "idle_min": round(idle, 1),
+    log_ledger({"sid": str(data.get("session_id")), "action": "auto-accepted", "idle_min": round(idle, 1),
                 "answers": answers})
     out_json({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "allow",
@@ -285,7 +285,7 @@ def perm(data, c):
     mode = str(c.get("pending_mode", "probe")).lower()
     if mode not in ("probe", "live") or not isinstance(qs, list) or not qs:
         return  # "off" and any typo disable the handler; live must be spelled out
-    sid = str(data.get("session_id"))[:8]
+    sid = str(data.get("session_id"))
     start = time.time()
     log_ledger({"sid": sid, "action": "pending-seen", "mode": mode, "n_questions": len(qs),
                 "payload_keys": sorted(data.keys()), "tool_use_id": data.get("tool_use_id"),
@@ -328,7 +328,7 @@ def perm(data, c):
 def notification(data, c):
     if str(c.get("pending_mode", "probe")).lower() not in ("probe", "live"):
         return
-    log_ledger({"sid": str(data.get("session_id"))[:8], "action": "notification",
+    log_ledger({"sid": str(data.get("session_id")), "action": "notification",
                 "type": data.get("notification_type"), "message": str(data.get("message"))[:120]})
 
 
@@ -381,7 +381,7 @@ def stop(data, c):
 
 
 def prompt(data, c):
-    sid = str(data.get("session_id"))[:8]
+    sid = str(data.get("session_id"))
     marker = STATE / f"reported_{sid}.txt"
     try:
         last = marker.read_text(encoding="utf-8").strip()
