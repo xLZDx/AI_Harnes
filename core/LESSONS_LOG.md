@@ -61,6 +61,10 @@
 - Layer that missed it: tests and reviewers (synthetic inputs only); the dry run caught it.
 - Rule: before shipping a router change, dry-run it on at least one real project's history and read the per-agent totals.
 
+## 2026-11-10 S2-T1 implementation
+- Kind: SUCCESS. Facts: the dry run on real history found a third case the backlog missed (generated HTML reports were not documentation); found before the commit by re-running the ERP history.
+- Rule: after a router fix, re-run the same dry run that found the bug and read the exact commits again.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.

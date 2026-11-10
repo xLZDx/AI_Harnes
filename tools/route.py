@@ -49,6 +49,21 @@ def known_agents() -> set[str] | None:
     return None
 
 
+def project_agents(project_root: Path) -> set[str]:
+    """Agents the project defines itself in .claude/agents/*.md (frontmatter `name:`, else file stem)."""
+    names: set[str] = set()
+    d = project_root / ".claude" / "agents"
+    if not d.is_dir():
+        return names
+    for f in d.glob("*.md"):
+        try:
+            m = re.search(r"^name:\s*([\w.-]+)\s*$", f.read_text(encoding="utf-8", errors="replace")[:2000], re.M)
+        except OSError:
+            continue
+        names.add(m.group(1) if m else f.name.split(".")[0])
+    return names
+
+
 def is_doc(rules: dict, f: str) -> bool:
     if any(re.search(p, f, re.I) for p in rules.get("doc_exclude_patterns", [])):
         return False
@@ -70,12 +85,15 @@ def _unquote(p: str) -> str:
     return p
 
 
-def parse_diff(text: str) -> tuple[list[str], str]:
-    """Files from the ---/+++ headers (handles spaces and quoted names); body = changed lines of hunks."""
-    files, body, in_hunk = [], [], False
+def parse_diff(text: str, rules: dict | None = None) -> tuple[list[str], str]:
+    """Files from the ---/+++ headers (handles spaces and quoted names); body = changed lines of hunks.
+
+    With `rules`, hunks of documentation files (is_doc) are left out of the body, so keyword
+    triggers only see code. Without `rules` the body holds every hunk (backward compatible)."""
+    files, body, in_hunk, cur = [], [], False, None
     for line in text.split("\n"):
         if line.startswith("diff --git "):
-            in_hunk = False
+            in_hunk, cur = False, None
             continue
         if not in_hunk and line.startswith(("--- ", "+++ ")):
             p = _unquote(line[4:].rstrip("\r"))
@@ -83,11 +101,14 @@ def parse_diff(text: str) -> tuple[list[str], str]:
                 p = p[2:] if p[:2] in ("a/", "b/") else p
                 if p not in files:
                     files.append(p)
+                cur = p  # "+++" comes last, so a rename/new file ends on the new path
             continue
         if line.startswith("@@"):
             in_hunk = True
             continue
         if in_hunk and line[:1] in ("+", "-"):
+            if rules is not None and cur is not None and is_doc(rules, cur):
+                continue
             body.append(line[1:])
     if text.strip() and not files:
         raise DiffError("diff text present but no file headers parsed")
@@ -117,7 +138,7 @@ def classify(rules, files, body) -> tuple[str, str]:
     return "local", f"{len(code)} code file(s) in one area"
 
 
-def route(rules, files, body, declared=None, requested=()) -> dict:
+def route(rules, files, body, declared=None, requested=(), project_known=()) -> dict:
     auto, why = classify(rules, files, body)
     risk = max(auto, declared or auto, key=ORDER.get)
     reason = why if risk == auto else f"declared {declared} (auto: {auto}, {why})"
@@ -150,8 +171,9 @@ def route(rules, files, body, declared=None, requested=()) -> dict:
             picks.pop()  # security outranks the other specialist (one specialist per task)
         picks.append(("security-reviewer", f"project security trigger {sec_hit}"))
     known = known_agents()
+    allowed = {d["agent"] for d in rules.get("domain_specialists", [])} | set(project_known)
     for agent in requested:  # operator requests are never cut by the cap
-        if known is not None and agent not in known and agent not in [d["agent"] for d in rules.get("domain_specialists", [])]:
+        if known is not None and agent not in known and agent not in allowed:
             raise SystemExit(f"route: unknown agent {agent!r}")
         if agent not in [p[0] for p in picks]:
             picks.append((agent, "operator request"))
@@ -172,12 +194,13 @@ def main(argv=None) -> int:
     ap.add_argument("--request", action="append", default=[], help="agent the operator asked for")
     ap.add_argument("--history", type=int, help="dry run over the last N commits")
     a = ap.parse_args(argv)
-    rules = load_rules(ledger.main_root())
+    root = ledger.main_root()
+    rules = load_rules(root)
     try:
         if a.history:
             tally: dict[str, int] = {}
             for sha in ledger.git("log", f"-{a.history}", "--format=%h").split():
-                files, body = parse_diff(ledger.git("show", "--format=", "--no-color", sha))
+                files, body = parse_diff(ledger.git("show", "--format=", "--no-color", sha), rules)
                 r = route(rules, files, body)
                 names = [x["agent"] for x in r["reviewers"]]
                 for n in names:
@@ -194,11 +217,11 @@ def main(argv=None) -> int:
         text = read_diff(Path(a.diff)) if a.diff else task_diff(t)
         if not text.strip():
             raise DiffError("empty diff; nothing to review")
-        files, body = parse_diff(text)
+        files, body = parse_diff(text, rules)
     except (DiffError, ledger.GitError) as e:
         print(f"route: {e}", file=sys.stderr)
         return 2
-    r = route(rules, files, body, declared, a.request)
+    r = route(rules, files, body, declared, a.request, project_agents(root))
     if a.diff:
         r["diff_path"] = str(Path(a.diff).resolve())
     else:  # reviewers need a real file: write the task diff next to the ledger

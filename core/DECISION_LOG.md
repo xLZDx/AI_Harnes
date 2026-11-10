@@ -33,6 +33,10 @@
 - Operator choice: replace the whole ~/.claude now. Replaced CLAUDE.md, agents (45 -> 21), skills (49 dirs -> 24), commands (5 flow commands + kept pm-bridge-mode); removed the skill_router hook from settings.json. Snapshot and one-command rollback: D:\Backup\claude-pre-harness-v2-20261110-211036\restore.ps1.
 - Not changed yet: other hooks, memory, control-plane agent_routing.json (12 routes now point to removed agents; lint only), Codex (~/.codex), project profiles.
 
+## 2026-11-10 Sprint 2: router fixes from the real-project dry runs (operator: "Да, чини")
+- S2-T1: route.py builds the keyword body only from hunks of non-doc files (parse_diff(text, rules)); without rules the old behavior stays. --request also accepts agents defined in <project>/.claude/agents/*.md. Global doc_only_patterns now treat reports/*.html and .harness/report.html as documentation (generated reports, found in ERP 0f4cdc37).
+- Dry runs after the fix: AI_trading bb5f56b5, e1cdbec8, 26741a6b -> trivial, no reviewers; ERP 0f4cdc37 -> trivial; ERP code-reviewer 21 -> 8 of 40 commits. The trading workaround is reverted (listenKey and mainnet are back as keywords); security-reviewer there is 4 of 40.
+
 ## 2026-11-10 Project profiles and domain agents
 - Operator scope: every project with domain agents, not only ERP/Fitness/trading; marketing projects (VMC, ivan-ai-company) untouched.
 - Each project got .harness/profile.json (domain_specialists, security_triggers, extra risky paths) and its .claude/agents consolidated; every kept agent is model sonnet, effort medium, description ends with "Use when:". Money/data/concurrency reviewers ask "two concurrent requests, a retry, a crash half-way".
