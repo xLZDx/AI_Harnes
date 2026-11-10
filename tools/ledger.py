@@ -302,8 +302,15 @@ def doc_only_since(base: str, tip: str) -> bool:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import route
     rules = route.load_rules(main_root())
-    files = [f for f in git("diff", "--name-only", f"{base}..{tip}").splitlines() if f]
-    return bool(files) and all(route.is_doc(rules, f) for f in files)
+    commits = [c for c in git("rev-list", f"{base}..{tip}").splitlines() if c]
+    if not commits:
+        return False
+    # Check every intervening commit, not the net diff: a code change later reverted still needs review.
+    for c in commits:
+        files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", c).splitlines() if f]
+        if any(not route.is_doc(rules, f) for f in files):
+            return False
+    return True
 
 
 def c_check_approval(a, d):

@@ -18,3 +18,5 @@
 - 2026-11-10: a push that only deletes remote refs passes the approval check (nothing is published).
 
 - 2026-11-10: tests/ are plain Python scripts run with python -I tests/<file>.py (pytest is not used by operator rule).
+
+- 2026-11-10: docs-only push exception checks every commit in approved..pushed (git rev-list + diff-tree), not the net diff; the report reads hook-error.log as well as ledger events.

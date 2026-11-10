@@ -155,9 +155,18 @@ def main(argv=None) -> int:
     evs = d.get("events", [])
     last = evs[-1] if evs else {}
     alerts = []
-    errs = [e for e in evs if e["kind"] == "hook-error"]
+    errs = [e.get("message", "") for e in evs if e["kind"] == "hook-error"]
+    # Shell-level failures (e.g. no working Python) never reach the ledger; read the hook log too.
+    log = ledger.ledger_path().parent / "hook-error.log"
+    if log.exists():
+        known = set(errs)
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            msg = line.split(" ", 1)[1].strip() if " " in line else line.strip()
+            if msg and msg not in known:
+                errs.append(msg)
+                known.add(msg)
     if errs:
-        alerts.append(f"Ошибки хуков: {len(errs)}, последняя: {errs[-1].get('message', '')}")
+        alerts.append(f"Ошибки хуков: {len(errs)}, последняя: {errs[-1]}")
     skips = [e for e in evs if e["kind"] == "approval-skipped"]
     if skips:
         alerts.append(f"Проверка GPT-PM перед push была отключена {len(skips)} раз(а), последний {skips[-1]['at']}")

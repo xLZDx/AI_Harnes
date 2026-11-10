@@ -29,3 +29,9 @@
 - Kind: SUCCESS. Facts: tester wrote 101 tests in 6 files (plain scripts, no pytest); final runs: test_ledger 30 and test_install_hooks 17 OK at f499bc6; test_route 27, test_report 10, test_build_gc 6, test_gc 11 OK at 2064576 (f499bc6 changed only ledger.py lock and delete-only push).
 - Why it worked: tests were written from acceptance criteria, not from the code, and caught 4 real defects across two passes.
 - Rule: give the tester the contract changes as a list after every fix batch.
+
+## 2026-11-10 GPT-PM round 1 findings
+- Kind: FAILURE. Facts: GPT-PM (reply 21dd1b83) found 2 MAJOR: pre-push docs-only check used the net diff, so a code change later reverted passed; report ignored shell-level hook errors written only to hook-error.log.
+- Root cause: checked the end state instead of every commit; two error channels but the report read one.
+- Caught by: GPT-PM; missed by the author, 3 internal reviewers and the tester.
+- Rule: approval checks inspect each commit in the range; every error sink must be read by the place that shows errors.
