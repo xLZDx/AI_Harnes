@@ -142,6 +142,26 @@ def test_header_shows_hook_errors_and_approval_skips_as_alerts():
     assert html.index("Ошибки хуков") < html.index('<section id="progress"'), "alerts belong to the header"
 
 
+def test_shell_level_hook_errors_from_log_without_ledger_event_are_shown():
+    r = h.mk_repo("rp_shelllog")
+    h.setup_tasks(r, 1)
+    assert not [e for e in h.load_ledger(r)["events"] if e["kind"] == "hook-error"]
+    h.tool(r, "report.py")
+    assert "Ошибки хуков" not in _html(r)
+    log = r / ".harness" / "hook-error.log"
+    log.write_text("2026-11-10T10:00:00 post-commit: no working Python (set HARNESS_PYTHON)\n", encoding="utf-8")
+    assert h.tool(r, "report.py").rc == 0
+    html = _html(r)
+    assert "Ошибки хуков: 1" in html and "no working Python" in html, "shell-level error missing from header"
+    assert html.index("Ошибки хуков") < html.index('<section id="progress"'), "must be in the header"
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("2026-11-10T10:05:00 post-commit: report.py failed\n")
+        f.write("2026-11-10T10:06:00 post-commit: report.py failed\n")  # same message twice counts once
+    h.tool(r, "report.py")
+    html2 = _html(r)
+    assert "Ошибки хуков: 2" in html2 and "report.py failed" in html2, html2[:1500]
+
+
 def test_report_write_is_atomic_no_temp_leftover():
     r = h.mk_repo("rp_atomic")
     h.setup_tasks(r, 1)

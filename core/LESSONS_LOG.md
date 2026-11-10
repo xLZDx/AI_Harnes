@@ -41,3 +41,8 @@
 - Root cause: tools and prompt text were changed in different passes and never checked against each other.
 - Caught by: GPT-PM full review (operator-granted exception to review documents); missed by 3 internal reviewers and the tester, who saw only code.
 - Rule: when a tool CLI changes, grep the commands and skills for every place that describes it in the same commit.
+
+## 2026-11-10 Regression tests for GPT-PM rounds 2 and 3
+- Kind: SUCCESS. Facts: tester added tests for every GPT-PM finding; at 855f67c test_route 35, test_ledger 32, test_report 11, test_consistency 3 all OK (one run each).
+- Why it worked: each finding came with a concrete failure scenario that became a test.
+- Rule: turn every reviewer failure scenario into one regression test before the next review round.

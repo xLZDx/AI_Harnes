@@ -141,6 +141,104 @@ def test_security_reviewer_via_profile_trigger_or_request():
     assert h.agents(req) == ["code-reviewer", "security-reviewer"], req
 
 
+PD = {"security_triggers": {"paths": ["(^|/)src/personal_data/"], "diff_keywords": ["\\bssn\\b"]}}
+
+
+def test_security_trigger_adds_security_reviewer_on_a_local_change():
+    r = h.mk_repo("rt_sec_local")
+    _profile(r, PD)
+    res = _ok(r, ["src/personal_data/x.py"])
+    assert res["risk"] == "local" and h.agents(res) == ["code-reviewer", "security-reviewer"], res
+    other = _ok(r, ["src/other/x.py"])
+    assert other["risk"] == "local" and h.agents(other) == ["code-reviewer"], other
+
+
+def test_security_trigger_by_diff_keyword_only():
+    r = h.mk_repo("rt_sec_kw")
+    _profile(r, PD)
+    res = _ok(r, ["src/app.py"], "+ssn = load()")
+    assert res["risk"] == "local" and h.agents(res) == ["code-reviewer", "security-reviewer"], res
+    assert h.agents(_ok(r, ["src/app.py"], "+classnames = 1")) == ["code-reviewer"], "word-bounded keyword"
+
+
+def test_security_trigger_on_docs_only_change_gets_code_and_security():
+    r = h.mk_repo("rt_sec_docs")
+    _profile(r, PD)
+    res = _ok(r, ["src/personal_data/README.md"])
+    assert res["risk"] == "trivial" and h.agents(res) == ["code-reviewer", "security-reviewer"], res
+    assert _ok(r, ["docs/other.md"])["reviewers"] == []
+
+
+def test_security_replaces_last_specialist_on_risky_with_four_picks():
+    r = h.mk_repo("rt_sec_risky4")
+    _profile(r, {"security_triggers": {"paths": ["(^|/)svc/personal/"]}})
+    files = ["db/migrations/001.sql", "svc/personal/x.py"]
+    res = _ok(r, files)
+    assert res["risk"] == "risky"
+    assert h.agents(res) == ["code-reviewer", "silent-failure-hunter", "python-reviewer", "security-reviewer"], res
+    plain = h.mk_repo("rt_sec_risky4_none")
+    assert h.agents(_ok(plain, files)) == ["code-reviewer", "silent-failure-hunter", "python-reviewer", "database-reviewer"]
+
+
+def test_nothing_adds_security_reviewer_without_security_triggers():
+    r = h.mk_repo("rt_sec_absent")
+    for files, body in ((["src/personal_data/x.py"], "+ssn = 1"), (["src/personal_data/README.md"], "+x"),
+                        (["db/migrations/001.sql", "svc/personal/x.py"], "+x")):
+        assert "security-reviewer" not in h.agents(_ok(r, files, body)), files
+
+
+def test_task_without_diff_writes_diff_artifact_and_reports_path():
+    import os
+    r = h.mk_repo("rt_artifact")
+    h.setup_tasks(r, 1)
+    h.commit(r, "db/migrations/001.sql", "CREATE TABLE t (id int);\n", "one", "Task: S1-T1")
+    h.ledger(r, "commit-hook")
+    h.commit(r, "svc/run.py", "x = 1\n", "two", "Task: S1-T1")
+    h.ledger(r, "commit-hook")
+    h.commit(r, "unrelated.py", "u = 1\n", "not in task")
+    shas = h.task(r, "S1-T1")["commits"]
+    assert len(shas) == 2
+    res = h.tool(r, "route.py", "--task", "S1-T1")
+    assert res.rc == 0, res.all
+    out = json.loads(res.out)
+    p = Path(out["diff_path"])
+    assert p.is_absolute() and p.is_file() and os.path.samefile(p, r / ".harness" / "diff" / "S1-T1.diff"), out["diff_path"]
+    text = p.read_text(encoding="utf-8")
+    shows = [h.git(r, "show", "--format=", "--no-color", s).out.strip() for s in shas]
+    pos = 0
+    for s in shows:
+        i = text.find(s, pos)
+        assert i >= 0, "task diff must contain each commit's `git show --format= --no-color` output in order"
+        pos = i + len(s)
+    assert text.strip() == "\n".join(shows) or text.strip().replace("\n\n", "\n") == "\n".join(shows).replace("\n\n", "\n")
+    assert "unrelated.py" not in text
+    assert h.task(r, "S1-T1")["routing"]["diff_path"] == out["diff_path"]
+
+
+def test_single_commit_task_diff_equals_git_show_exactly():
+    r = h.mk_repo("rt_artifact1")
+    h.setup_tasks(r, 1)
+    sha = h.commit(r, "src/a.py", "x = 1\n", "one", "Task: S1-T1")
+    h.ledger(r, "commit-hook")
+    h.tool(r, "route.py", "--task", "S1-T1")
+    text = (r / ".harness" / "diff" / "S1-T1.diff").read_text(encoding="utf-8")
+    assert text.strip() == h.git(r, "show", "--format=", "--no-color", sha).out.strip()
+
+
+def test_diff_flag_reports_absolute_path_of_given_file():
+    import os
+    r = h.mk_repo("rt_artifact_diff")
+    res, out = h.route(r, ["src/a.py"])
+    assert res.rc == 0
+    assert Path(out["diff_path"]).is_absolute() and os.path.samefile(out["diff_path"], r / "t.diff"), out["diff_path"]
+    assert not (r / ".harness" / "diff").exists(), "--diff must not write an artifact"
+    sub = r / "sub"
+    sub.mkdir()
+    (sub / "rel.diff").write_text(h.diff_text(["src/a.py"]), encoding="utf-8")
+    rel = h.tool(sub, "route.py", "--diff", "rel.diff")
+    assert rel.rc == 0 and os.path.samefile(json.loads(rel.out)["diff_path"], sub / "rel.diff") and Path(json.loads(rel.out)["diff_path"]).is_absolute()
+
+
 def test_explicit_request_is_never_cut_by_the_cap():
     r = h.mk_repo("rt_req_full")
     res = _ok(r, ["db/migrations/001.sql", "svc/run.py"], "+x = 1", "--request", "security-reviewer")

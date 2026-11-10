@@ -22,3 +22,5 @@
 - 2026-11-10: docs-only push exception checks every commit in approved..pushed (git rev-list + diff-tree), not the net diff; the report reads hook-error.log as well as ledger events.
 
 - 2026-11-10: security_triggers from a project profile add security-reviewer at any risk level (it replaces the other specialist when the cap is full); route.py --task writes .harness/diff/<id>.diff and returns diff_path; GPT-PM runs only at /ship of the sprint's final task.
+
+- 2026-11-10: tests/test_consistency.py checks that commands and skills agree on when GPT-PM runs (text check, not a behavior proof).

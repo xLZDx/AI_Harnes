@@ -343,6 +343,32 @@ def test_check_approval_agent_rule_files_and_mixed_diffs_are_not_docs():
     assert _pushcheck(r, h.head(r)).rc != 0
 
 
+def test_check_approval_checks_every_commit_not_the_net_diff():
+    r = h.mk_repo("led_stdin_revert")
+    a = h.head(r)
+    assert h.ledger(r, "approve", "--evidence", "e").rc == 0
+    b = h.commit(r, "src/payment.py", "pay = 1\n", "B: code change")
+    assert _pushcheck(r, b).rc != 0
+    assert h.git(r, "revert", "--no-edit", b).rc == 0  # C reverts B: net code diff is empty
+    c = h.head(r)
+    assert h.git(r, "diff", "--name-only", f"{a}..{c}").out.strip() == "", "precondition: net diff of A..C is empty"
+    assert _pushcheck(r, c).rc != 0, "C still carries B's code change in its history"
+    d = h.commit(r, "README.md", "docs\n", "D: docs")
+    assert h.git(r, "diff", "--name-only", f"{a}..{d}").out.split() == ["README.md"], "precondition: net diff is docs only"
+    blocked = _pushcheck(r, d)
+    assert blocked.rc == 1 and "push blocked" in blocked.err, blocked.all
+
+
+def test_check_approval_pure_docs_chain_descendant_still_passes():
+    r = h.mk_repo("led_stdin_docschain")
+    assert h.ledger(r, "approve", "--evidence", "e").rc == 0
+    h.commit(r, "README.md", "one\n", "doc 1")
+    d2 = h.commit(r, "docs/guide.md", "two\n", "doc 2")
+    h.commit(r, "NOTES.md", "three\n", "doc 3")
+    assert _pushcheck(r, d2).rc == 0
+    assert _pushcheck(r, h.head(r)).rc == 0
+
+
 def test_check_approval_unrelated_branch_is_blocked():
     r = h.mk_repo("led_stdin_side")
     c1 = h.head(r)
