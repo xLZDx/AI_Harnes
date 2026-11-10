@@ -70,6 +70,10 @@
 - Root cause: I fixed the observed commit (ERP 0f4cdc37) instead of the class of inputs; a pattern that turns code into "docs" removes reviewers silently.
 - Rule: any rule that can make a change "documentation" must be anchored as narrowly as the evidence, and must keep code on either side of a rename.
 
+## 2026-11-10 S2-T1 tests
+- Kind: SUCCESS. Facts: functional-test-reviewer added 18 tests from the acceptance criteria (test_route now 53, "OK: 0 failing" at 5a8a0a1); its two failures on the way were test bugs (cap and one-specialist rule; old rename expectation), not product defects.
+- Rule: when a fix commit lands while tests are being written, send the tester the new rules as explicit expected values, not the diff.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.

@@ -356,5 +356,203 @@ def test_no_diff_and_no_history_is_usage_error():
     assert h.tool(r, "route.py").rc != 0
 
 
+# ---- S2-T1: keyword triggers see only changed lines of non-doc files; project-defined agents ----
+def _hunk(old, new, body, extra=""):
+    return f"diff --git a/{old} b/{new}\n{extra}--- a/{old}\n+++ b/{new}\n@@ -1 +1 @@\n{body}\n"
+
+
+def _raw(repo, text, *args):
+    d = repo / "raw.diff"
+    d.write_text(text, encoding="utf-8", newline="\n")
+    r = h.tool(repo, "route.py", "--diff", str(d), *args)
+    assert r.rc == 0, r.all
+    return json.loads(r.out)
+
+
+def test_docs_only_diff_with_security_keyword_routes_to_nobody():
+    r = h.mk_repo("rt_t1_docsec")
+    _profile(r, PD)
+    res = _raw(r, _hunk("core/notes.md", "core/notes.md", "+the ssn field"))
+    assert res["risk"] == "trivial" and res["reviewers"] == [], res
+    code = _raw(r, _hunk("src/app.py", "src/app.py", "+ssn = 1"))
+    assert h.agents(code) == ["code-reviewer", "security-reviewer"], "same keyword in code still fires"
+
+
+def test_docs_only_diff_with_risky_keyword_is_trivial():
+    r = h.mk_repo("rt_t1_docrisky")
+    res = _raw(r, _hunk("core/notes.md", "core/notes.md", "-old\n+with lock and retry"))
+    assert res["risk"] == "trivial" and res["reviewers"] == [], res
+
+
+def test_mixed_diff_keyword_only_in_md_hunk_does_not_fire():
+    r = h.mk_repo("rt_t1_mixed_md")
+    text = _hunk("docs/g.md", "docs/g.md", "+use a lock") + _hunk("src/app.py", "src/app.py", "+x = 1")
+    res = _raw(r, text)
+    assert res["risk"] == "local" and h.agents(res) == ["code-reviewer"], res
+
+
+def test_mixed_diff_keyword_in_py_hunk_fires():
+    r = h.mk_repo("rt_t1_mixed_py")
+    text = _hunk("docs/g.md", "docs/g.md", "+nothing") + _hunk("src/app.py", "src/app.py", "+with lock:")
+    assert _raw(r, text)["risk"] == "risky"
+    text2 = _hunk("src/app.py", "src/app.py", "+x = 1") + _hunk("docs/g.md", "docs/g.md", "+use a lock")
+    assert _raw(r, text2)["risk"] == "local", "doc hunk after code hunk must still be excluded"
+
+
+def test_specialist_and_security_diff_keywords_ignore_md_hunks():
+    r = h.mk_repo("rt_t1_spec")
+    _profile(r, {"domain_specialists": [{"agent": "zebra-expert", "diff_keywords": ["\\bzebra\\b"]}],
+                 "security_triggers": {"diff_keywords": ["\\bssn\\b"]}})
+    base = _hunk("auth/login.py", "auth/login.py", "+x = 1")
+    md = _hunk("docs/z.md", "docs/z.md", "+zebra and ssn")
+    res = _raw(r, base + md)
+    assert res["risk"] == "risky" and "zebra-expert" not in h.agents(res) and "security-reviewer" not in h.agents(res), res
+    zpy = _raw(r, base + _hunk("src/z.py", "src/z.py", "+zebra = 1"))
+    assert "zebra-expert" in h.agents(zpy), zpy
+    spy = _raw(r, base + _hunk("src/z.py", "src/z.py", "+ssn = 1"))
+    assert "security-reviewer" in h.agents(spy), spy
+
+
+def test_deleted_doc_file_lines_do_not_fire_but_deleted_code_lines_do():
+    r = h.mk_repo("rt_t1_deleted")
+    gone = "deleted file mode 100644\n"
+    doc = f"diff --git a/docs/old.md b/docs/old.md\n{gone}--- a/docs/old.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-we use a lock\n"
+    code = f"diff --git a/src/old.py b/src/old.py\n{gone}--- a/src/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-with lock:\n"
+    res = _raw(r, doc)
+    assert res["risk"] == "trivial" and res["reviewers"] == [], res
+    assert _raw(r, doc + _hunk("src/a.py", "src/a.py", "+x = 1"))["risk"] == "local"
+    assert _raw(r, code)["risk"] == "risky"
+
+
+def test_renamed_file_hunk_is_doc_only_if_both_paths_are_docs():
+    r = h.mk_repo("rt_t1_rename")
+    to_doc = _hunk("src/w.py", "docs/w.md", "+use a lock", "similarity index 50%\nrename from src/w.py\nrename to docs/w.md\n")
+    to_doc += _hunk("src/a.py", "src/a.py", "+x = 1")
+    assert _raw(r, to_doc)["risk"] == "risky", "py renamed into docs: doc only if BOTH paths are docs, hunk lines stay in the body"
+    both_docs = _hunk("docs/old.md", "docs/new.md", "+use a lock", "rename from docs/old.md\nrename to docs/new.md\n")
+    both_docs += _hunk("src/a.py", "src/a.py", "+x = 1")
+    assert _raw(r, both_docs)["risk"] == "local", "md renamed to md: keyword is documentation"
+    to_code = _hunk("docs/old.md", "src/new.py", "+with lock:", "similarity index 50%\nrename from docs/old.md\nrename to src/new.py\n")
+    assert _raw(r, to_code)["risk"] == "risky", "md renamed to py: keyword is code"
+
+
+def test_harness_sources_and_agent_instruction_files_stay_code():
+    r = h.mk_repo("rt_t1_exclude")
+    _profile(r, PD)
+    for f in ("harness/agents/x.md", "harness/skills/s/SKILL.md", "harness/commands/c.md", "harness/rules/r.md",
+              "CLAUDE.md", "AGENTS.md", "sub/AGENTS.md"):
+        res = _raw(r, _hunk(f, f, "+must use a lock"))
+        assert res["risk"] == "risky", (f, res)
+        sec = _raw(r, _hunk(f, f, "+ssn"))
+        assert "security-reviewer" in h.agents(sec), (f, sec)
+    assert _raw(r, _hunk("harness/other/x.md", "harness/other/x.md", "+a lock"))["risk"] == "trivial"
+
+
+def test_generated_reports_are_documentation_but_other_html_is_code():
+    r = h.mk_repo("rt_t1_html")
+    for f in ("reports/sprint1.html", ".harness/report.html"):
+        res = _raw(r, _hunk(f, f, "+<p>with lock</p>"))
+        assert res["risk"] == "trivial" and res["reviewers"] == [], (f, res)
+    both = _raw(r, _hunk("reports/a.html", "reports/a.html", "+lock") + _hunk(".harness/report.html", ".harness/report.html", "+retry"))
+    assert both["risk"] == "trivial", both
+    web = _raw(r, _hunk("web/index.html", "web/index.html", "+<script>lock</script>"))
+    assert web["risk"] == "risky", web
+    assert _raw(r, _hunk("web/index.html", "web/index.html", "+<p>x</p>"))["risk"] == "local"
+
+
+def test_report_html_patterns_are_anchored():
+    r = h.mk_repo("rt_t1_anchor_html")
+    for f in ("app/templates/reports/x.html", "src/report/x.html", "reports/sub/x.html", "src/.harness/report.html"):
+        res = _raw(r, _hunk(f, f, "+<p>lock</p>"))
+        assert res["risk"] == "risky", (f, res)
+    for f in ("reports/x.html", ".harness/report.html"):
+        res = _raw(r, _hunk(f, f, "+<p>lock</p>"))
+        assert res["risk"] == "trivial" and res["reviewers"] == [], (f, res)
+
+
+def test_header_with_trailing_tab_is_parsed_as_plain_name_and_is_doc():
+    r = h.mk_repo("rt_t1_tab")
+    text = "diff --git a/my notes.md b/my notes.md\n--- a/my notes.md\t\n+++ b/my notes.md\t\n@@ -1 +1 @@\n+use a lock\n"
+    res = _raw(r, text)
+    assert res["files"] == ["my notes.md"], res
+    assert res["risk"] == "trivial" and res["reviewers"] == [], res
+    code = "diff --git a/my app.py b/my app.py\n--- a/my app.py\t\n+++ b/my app.py\t\n@@ -1 +1 @@\n+use a lock\n"
+    cres = _raw(r, code)
+    assert cres["files"] == ["my app.py"] and cres["risk"] == "risky", cres
+
+
+def test_is_doc_with_empty_rules_is_false():
+    import importlib
+    sys.path.insert(0, str(h.TOOLS))
+    route_mod = importlib.import_module("route")
+    assert route_mod.is_doc({}, "a.md") is False
+
+
+def test_security_trigger_paths_still_fire_at_every_risk_level():
+    r = h.mk_repo("rt_t1_secpaths")
+    _profile(r, PD)
+    for files, risk in ((["README.md", "src/personal_data/n.md"], "trivial"), (["src/personal_data/x.py"], "local"),
+                        (["src/personal_data/x.py", "lib/y.py"], "multi-module"), (["src/personal_data/x.py", "db/migrations/1.sql"], "risky")):
+        res = _ok(r, files)
+        assert res["risk"] == risk and "security-reviewer" in h.agents(res), (files, res)
+
+
+def test_parse_diff_without_rules_keeps_every_hunk():
+    import importlib
+    sys.path.insert(0, str(h.TOOLS))
+    route_mod = importlib.import_module("route")
+    text = _hunk("docs/g.md", "docs/g.md", "+docword") + _hunk("src/a.py", "src/a.py", "+codeword")
+    files, body = route_mod.parse_diff(text)
+    assert files == ["docs/g.md", "src/a.py"] and "docword" in body and "codeword" in body, (files, body)
+    files2, body2 = route_mod.parse_diff(text, route_mod.load_rules(h.fresh("rt_t1_rules")))
+    assert "docword" not in body2 and "codeword" in body2, body2
+
+
+def _agent_file(repo, fname, text):
+    d = repo / ".claude" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / fname).write_text(text, encoding="utf-8", newline="\n")
+
+
+def test_request_accepts_agent_defined_only_in_project_claude_agents():
+    r = h.mk_repo("rt_t1_projagent")
+    _agent_file(r, "billing-helper.md", "---\nname: acme-billing-expert\ndescription: d\n---\nbody\n")
+    res = _ok(r, ["src/app.py"], "+x = 1", "--request", "acme-billing-expert")
+    assert h.agents(res) == ["code-reviewer", "acme-billing-expert"], res
+    assert res["reviewers"][-1]["reason"] == "operator request", res
+
+
+def test_request_accepts_agent_file_named_x_agent_md_with_frontmatter_name():
+    r = h.mk_repo("rt_t1_dotagent")
+    _agent_file(r, "x.agent.md", "---\nname: dotted-agent-name\n---\nbody\n")
+    res = _ok(r, ["src/app.py"], "+x = 1", "--request", "dotted-agent-name")
+    assert "dotted-agent-name" in h.agents(res), res
+
+
+def test_project_agent_name_comes_from_frontmatter_block_only():
+    r = h.mk_repo("rt_t1_fm")
+    _agent_file(r, "q.md", '---\nname: "quoted-agent"\n---\nbody\n')
+    _agent_file(r, "nofm.md", "no frontmatter here\nname: body-name\n")
+    _agent_file(r, "late.md", "---\ndescription: d\n---\nname: late-body-name\n")
+    _agent_file(r, "x.agent.md", "---\ndescription: no name here\n---\nbody\n")
+    (r / ".claude" / "agents" / "bom.md").write_bytes(b"\xef\xbb\xbf---\nname: bom-agent\n---\nbody\n")
+    for ok in ("quoted-agent", "bom-agent", "x.agent", "nofm", "late"):
+        res = _ok(r, ["src/app.py"], "+x = 1", "--request", ok)
+        assert ok in h.agents(res), (ok, res)
+    for bad in ("body-name", "late-body-name", "q", "bom", "x"):
+        res, _ = h.route(r, ["src/app.py"], "+x = 1", "--request", bad)
+        assert res.rc != 0 and "unknown agent" in res.all, (bad, res.all)
+
+
+def test_request_still_rejects_name_found_nowhere_even_with_project_agents():
+    r = h.mk_repo("rt_t1_stillunknown")
+    _agent_file(r, "a.md", "---\nname: real-one\n---\n")
+    res, _ = h.route(r, ["src/app.py"], "+x = 1", "--request", "ghost-agent")
+    assert res.rc != 0 and "unknown agent" in res.all and "ghost-agent" in res.all, res.all
+    other = h.mk_repo("rt_t1_noagentdir")
+    res2, _ = h.route(other, ["src/app.py"], "+x = 1", "--request", "real-one")
+    assert res2.rc != 0 and "unknown agent" in res2.all, "agent from another project is not known here"
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))
