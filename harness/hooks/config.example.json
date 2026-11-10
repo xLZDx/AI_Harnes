@@ -1,0 +1,13 @@
+{
+ "_comment": "Copy to ~/.harness-hooks/config.json and fill in for this machine. Keys are environment variable names; a real environment variable wins. Values may use ~ and %VAR%/$VAR. Keys starting with _ are ignored.",
+ "HARNESS_HOOK_STATE": "~/.harness-hooks/state",
+ "PM_BRIDGE_STATE_DIR": "<pm-bridge checkout>/state",
+ "CLAUDE_GPT_REVIEW_STATE": "<folder where pm-bridge review.js writes receipts.jsonl>",
+ "CLAUDE_GPT_REVIEW_CLI": "<pm-bridge checkout>/src/cli/review.js",
+ "CLAUDE_GPT_REVIEW_ROOTS": "<parent folder of the repositories under the GPT review gate>",
+ "CLAUDE_WORKTREE_SCRATCH_ROOT": "<folder for scratch worktrees>",
+ "SESSION_CLOSE_PLAN_TOOL": "<path to project_plan.py>",
+ "SESSION_SUPERVISOR_ROOTS": "<parent folder of supervised repositories>",
+ "SESSION_SUPERVISOR_SKIP": "<comma-separated repo folder names never supervised>",
+ "SESSION_SUPERVISOR_HINTS": "~/.harness-hooks/supervisor_hints.json"
+}

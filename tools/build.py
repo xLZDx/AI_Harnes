@@ -231,15 +231,83 @@ def check(manifest: dict) -> list[str]:
     return errs
 
 
+HOOK_EVENTS = {
+    "claude": {"PreToolUse", "PostToolUse", "PreCompact", "Stop", "SubagentStop", "UserPromptSubmit",
+               "PermissionRequest", "Notification", "SessionStart", "SessionEnd"},
+    "codex": {"PreToolUse", "PostToolUse", "PreCompact", "Stop", "SubagentStop", "UserPromptSubmit",
+              "PermissionRequest", "SessionStart", "SessionEnd", "SubagentStart"},
+}
+
+
+def check_hooks() -> list[str]:
+    errs = []
+    reg = json.loads((SRC / "hooks" / "registry.json").read_text(encoding="utf-8"))
+    for i, h in enumerate(reg["hooks"]):
+        if not (SRC / "hooks" / h["script"]).exists():
+            errs.append(f"hook {i}: missing script {h['script']}")
+        for cl in ("claude", "codex"):
+            if cl in h and h["event"] not in HOOK_EVENTS[cl]:
+                errs.append(f"hook {i}: {cl} has no {h['event']} event")
+        if "claude" not in h and "codex" not in h:
+            errs.append(f"hook {i}: {h['script']} is installed for no client")
+    return errs
+
+
+def hook_config(client: str, hooks_dir: Path, python: str) -> dict:
+    """Hooks section for one client, grouped by event and matcher in registry order."""
+    reg = json.loads((SRC / "hooks" / "registry.json").read_text(encoding="utf-8"))
+    out: dict[str, list] = {}
+    for h in reg["hooks"]:
+        if client not in h:
+            continue
+        script = str(hooks_dir / h["script"])
+        if client == "claude":
+            entry = {"type": "command", "command": python, "args": ["-s", script],
+                     "timeout": h["timeout"], "statusMessage": h["status"]}
+        else:
+            entry = {"type": "command", "command": f'{python} -s "{script}"',
+                     "commandWindows": f'{python} -s "{script}"', "timeout": h["timeout"], "statusMessage": h["status"]}
+        groups = out.setdefault(h["event"], [])
+        matcher = h[client]
+        if groups and groups[-1].get("matcher", "") == matcher:
+            groups[-1]["hooks"].append(entry)
+        else:
+            groups.append({**({"matcher": matcher} if matcher else {}), "hooks": [entry]})
+    return out
+
+
+def writers(manifest: dict) -> list[str]:
+    """Agents that may edit files (their tools include Write or Edit); evidence hooks skip their reports."""
+    names = []
+    for a in manifest["agents"]:
+        fm = frontmatter((SRC / "agents" / f"{a['name']}.md").read_text(encoding="utf-8"))
+        if re.search(r"\b(Write|Edit)\b", fm.get("tools", "")):
+            names.append(a["name"])
+    return sorted(names)
+
+
+def emit_hooks(manifest: dict, client_dir: Path, client: str, home_dir: Path, python: str) -> None:
+    hooks_out = client_dir / "hooks"
+    hooks_out.mkdir(parents=True, exist_ok=True)
+    for f in sorted((SRC / "hooks").glob("*.py")):
+        shutil.copy2(f, hooks_out / f.name)
+    (hooks_out / "writers.json").write_text(json.dumps(writers(manifest), indent=1) + "\n", encoding="utf-8", newline="\n")
+    cfg = hook_config(client, home_dir / "hooks", python)
+    name = "settings.hooks.json" if client == "claude" else "hooks.json"
+    body = {"hooks": cfg} if client == "claude" else {"description": "Harness v2 hooks, built by tools/build.py", "hooks": cfg}
+    (client_dir / name).write_text(json.dumps(body, indent=1, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+
+
 def copytree(src: Path, dst: Path) -> None:
     if dst.exists():
         shutil.rmtree(dst, onexc=_rm_readonly)
     shutil.copytree(src, dst)
 
 
-def build() -> int:
+def build(python: str = "") -> int:
+    python = python or sys.executable
     manifest = json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))
-    errs = check(manifest)
+    errs = check(manifest) + check_hooks()
     if errs:
         print("build stopped:\n  " + "\n  ".join(errs))
         return 1
@@ -267,6 +335,9 @@ def build() -> int:
         (x / "agents" / f"{name}.toml").write_text(text, encoding="utf-8", newline="\n")
     copytree(SRC / "skills", x / "skills")
     copytree(SRC / "commands", x / "prompts")
+    home = Path.home()
+    emit_hooks(manifest, c, "claude", home / ".claude", python)
+    emit_hooks(manifest, x, "codex", home / ".codex", python)
     n_a, n_s = len(manifest["agents"]), len(manifest["skills"])
     print(f"built out/claude and out/codex: {n_a} agents, {n_s} skills, {len(list((SRC / 'commands').glob('*.md')))} commands")
     return 0
@@ -336,6 +407,7 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true", help="only validate the source")
     ap.add_argument("--codex-project", type=Path, help="write D/.codex/agents/*.toml from D/.claude/agents/*.md")
     ap.add_argument("--backup", type=Path, help="with --codex-project: folder for replaced and stale TOML files")
+    ap.add_argument("--python", default="", help="interpreter written into the hook configs (default: this one)")
     a = ap.parse_args(argv)
     if sum(map(bool, (a.codex_project, a.install_project, a.check))) > 1:
         ap.error("--codex-project, --install-project and --check cannot be combined")
@@ -348,12 +420,12 @@ def main(argv=None) -> int:
             ap.error("--codex-project needs --backup")
         return codex_project(a.codex_project.resolve(), a.backup.resolve())
     if a.check:
-        errs = check(json.loads((SRC / "manifest.json").read_text(encoding="utf-8")))
+        errs = check(json.loads((SRC / "manifest.json").read_text(encoding="utf-8"))) + check_hooks()
         print("\n".join(errs) or "source ok")
         return 1 if errs else 0
     if a.install_project:
         return install_project(a.install_project.resolve(), a.force)
-    return build()
+    return build(a.python)
 
 
 if __name__ == "__main__":

@@ -100,6 +100,12 @@
 - Kind: FAILURE (author). Facts: both S3-T1 commits put "Task: S3-T1" at the end of the subject line; ledger commit-hook only reads a "Task:" line of its own, so it recorded nothing and verify was refused. The two unpushed commits were squashed into one with a proper trailer.
 - Rule: the Task trailer is its own line (`-m "<summary>" -m "Task: <ID>"`), and after every commit check that commit-hook printed "ledger: <ID> <- <sha>".
 
+## 2026-11-11 Codex parity scope
+- Kind: SHORTCOMING (author). Facts: I first read "Для кодекса тоже всё переделал?" as "the agents" and started an agents-only fix; the operator meant the whole harness. The gap was large: Codex ran 3 of 27 Claude hook entries, with a stale 100-name matcher.
+- Rule: when the operator asks about parity, list every layer (rules, agents, skills, commands, hooks, project files) with counts on both sides before choosing what to fix.
+- Kind: SHORTCOMING. Facts: removing personal paths from the hooks (public repo) silently changed behavior: the supervisor lost its skip list, PM mode read as off, the plan tool path did not exist for Codex. Caught by reading both porting agents' reports before install.
+- Rule: a portability change moves machine values into a local config with the same values, never into defaults that differ.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.
