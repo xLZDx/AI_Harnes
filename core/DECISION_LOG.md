@@ -28,3 +28,7 @@
 ## 2026-11-10 Sprint 1 delivered
 - GPT-PM APPROVE for fa701a5 (round 4, request 433ddd13, reply ee51686b), after rounds 2-3 found 5 MAJOR, all fixed with regression tests.
 - Pushed main (fee447e..fa701a5) to github.com/xLZDx/AI_Harnes; the repository was empty, so the first sprint went straight to main (no PR base existed). Full local history with the private benchmark code stays on the local branch dev-history and is not pushed.
+
+## 2026-11-10 Installed into the operator's ~/.claude
+- Operator choice: replace the whole ~/.claude now. Replaced CLAUDE.md, agents (45 -> 21), skills (49 dirs -> 24), commands (5 flow commands + kept pm-bridge-mode); removed the skill_router hook from settings.json. Snapshot and one-command rollback: D:\Backup\claude-pre-harness-v2-20261110-211036\restore.ps1.
+- Not changed yet: other hooks, memory, control-plane agent_routing.json (12 routes now point to removed agents; lint only), Codex (~/.codex), project profiles.

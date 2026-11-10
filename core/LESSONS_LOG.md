@@ -50,3 +50,7 @@
 ## 2026-11-10 Sprint 1 push
 - Kind: SUCCESS. Facts: 4 GPT-PM rounds (1 resend for format, 2 with findings, 1 APPROVE); internal reviewers and the tester caught 26 defects before GPT, GPT caught 5 more, 3 of them in prompt text only a full-project review could see.
 - Rule: give GPT-PM the prompts and commands at least once per new harness, not only the code.
+
+## 2026-11-10 Install
+- Kind: SUCCESS. Facts: snapshot + restore script were written and hash-checked before any file moved; old files were moved, not deleted.
+- Rule: every global install ships with its rollback script in the snapshot folder.
