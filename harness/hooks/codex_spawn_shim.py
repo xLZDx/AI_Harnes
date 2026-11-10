@@ -2,22 +2,34 @@
 """Run a project's Claude subagent-spawn hook for Codex without changing the project script.
 
 Usage (in <project>/.codex/hooks.json, written by tools/build.py --codex-project):
-    python -s codex_spawn_shim.py <project root> <interpreter> <hook script> [args...]
+    python -s codex_spawn_shim.py [--timeout=SECONDS] <project root> <interpreter> <hook script> [args...]
 
 Codex calls a subagent spawn "spawn_agent" with tool_input.agent_type and tool_input.message; Claude calls it
 "Agent" with tool_input.subagent_type and tool_input.prompt. The shim rewrites a Codex PreToolUse payload into the
 Claude shape, sets CLAUDE_PROJECT_DIR, runs the project hook, and passes its stdout, stderr and exit code through.
-Any other payload (UserPromptSubmit, other tools) is passed through unchanged.
+A Codex `apply_patch` payload becomes a Claude `Edit` payload (tool_input.file_path = first patched file,
+tool_input.files = all of them, tool_input.patch = the patch text). A Codex shell call keeps tool_name "Bash" with
+tool_input.command. Any other payload (UserPromptSubmit, other tools) is passed through unchanged.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 
 
+PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$|^\*\*\* Move to: (.+?)\s*$", re.M)
+
+
 def to_claude(data: dict) -> dict:
+    if data.get("tool_name") == "apply_patch":
+        ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+        patch = str(ti.get("command") or ti.get("input") or ti.get("patch") or "")
+        files = [a or b for a, b in PATCH_PATH_RE.findall(patch)]
+        return {**data, "tool_name": "Edit",
+                "tool_input": {"file_path": files[0] if files else "", "files": files, "patch": patch}}
     if data.get("tool_name") != "spawn_agent":
         return data
     ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
@@ -30,6 +42,13 @@ def to_claude(data: dict) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    timeout = TIMEOUT
+    if argv and argv[0].startswith("--timeout="):
+        try:
+            timeout = max(1, int(float(argv[0].split("=", 1)[1])))
+        except ValueError:
+            pass
+        argv = argv[1:]
     if len(argv) < 3:
         sys.stderr.write("codex_spawn_shim: usage: <project root> <interpreter> <hook script> [args...]; spawn denied\n")
         return 2  # a broken install fails closed, like a missing project hook would under Claude
@@ -43,9 +62,9 @@ def main(argv: list[str]) -> int:
     env = dict(os.environ, CLAUDE_PROJECT_DIR=root, PYTHONUTF8="1")
     try:
         proc = subprocess.run([interpreter, script, *rest], input=payload.encode("utf-8"), capture_output=True,
-                              env=env, cwd=root, timeout=TIMEOUT)
+                              env=env, cwd=root, timeout=timeout)
     except subprocess.TimeoutExpired:
-        sys.stderr.write(f"codex_spawn_shim: project hook {script} timed out after {TIMEOUT}s; spawn denied\n")
+        sys.stderr.write(f"codex_spawn_shim: project hook {script} timed out after {timeout}s; spawn denied\n")
         return 2
     except OSError as e:
         sys.stderr.write(f"codex_spawn_shim: cannot run project hook {script} with {interpreter}: {e}; spawn denied\n")
@@ -56,7 +75,7 @@ def main(argv: list[str]) -> int:
     return proc.returncode
 
 
-TIMEOUT = 20  # below the 30 s build.py writes for project spawn hooks
+TIMEOUT = 30  # default when the command carries no --timeout=
 
 
 def codex_safe(out: bytes) -> bytes:

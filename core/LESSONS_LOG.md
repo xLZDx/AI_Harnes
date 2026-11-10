@@ -119,3 +119,7 @@
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.
+
+## 2026-11-11 S3-T3 review fixes
+- Kind: FAILURE. Facts: a parity test passed only because the word config.toml appeared in a comment of the generated restore script; it checked the wrong thing after the restore design changed. Layer missed: tests (a text-contains check on a whole file). Rule: assert on the lines that matter, and re-read old expectations when a design decision flips.
+- Kind: SUCCESS. Facts: the silent-failure review found 12 items, 10 of them were already fixed by the earlier batch; the rest became a printout of replaced hook entries and temp-file cleanup. Rule: send the reviewer the diff after the fix batch, not before.

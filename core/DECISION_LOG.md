@@ -78,3 +78,8 @@
 - Backlog (defect, found in ERP): route.py --request accepts only manifest agents and profile domain_specialists, so project agents that are deliberately not routed (legal-compliance-reviewer, erp-adjudicator, erp-database-reviewer, pdcc-redteam-reviewer) are rejected as unknown. Fix: also accept agent files present in <project>/.claude/agents/.
 - Old control-plane routing table ~/.claude/agent_routing.json moved to D:\Backup\routing-pre-harness-v2-20261110 (with restore.ps1). Only the retired control-plane tools (agentctl.py, eval/) read it; no hook does. The one router is now route.py with harness/routing.json plus project profiles.
 
+
+## 2026-11-11 S3-T3 review round (silent-failure-hunter)
+- Accepted and fixed: tool matchers (`*`, parentheses, spaces, `^$`) are normalized and every dropped or narrowed group prints a warning; a broken project settings file or bad timeout stops the project step with exit 1 instead of "no project hooks"; a re-run with the same backup folder keeps the first hooks.json backup; the project variable is replaced in the command, the arguments and the shell form; the installer checks every file shape before its first write, removes its temp file on any failure and always prints the restore path; restore.ps1 doubles apostrophes, is written with a BOM, can be re-run, and does not roll back config.toml (Codex may change it after the install: trust state).
+- Accepted as printout only: the hooks.json merge matches by script file name, so the installer lists every replaced old entry for the operator to check.
+- Not done (backlog): a shim path that follows junctions in snapshots (copytree symlinks) and a stale-script cleanup of ~/.codex/hooks.
