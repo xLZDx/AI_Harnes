@@ -46,3 +46,7 @@
 - Kind: SUCCESS. Facts: tester added tests for every GPT-PM finding; at 855f67c test_route 35, test_ledger 32, test_report 11, test_consistency 3 all OK (one run each).
 - Why it worked: each finding came with a concrete failure scenario that became a test.
 - Rule: turn every reviewer failure scenario into one regression test before the next review round.
+
+## 2026-11-10 Sprint 1 push
+- Kind: SUCCESS. Facts: 4 GPT-PM rounds (1 resend for format, 2 with findings, 1 APPROVE); internal reviewers and the tester caught 26 defects before GPT, GPT caught 5 more, 3 of them in prompt text only a full-project review could see.
+- Rule: give GPT-PM the prompts and commands at least once per new harness, not only the code.

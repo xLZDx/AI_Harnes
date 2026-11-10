@@ -24,3 +24,7 @@
 - 2026-11-10: security_triggers from a project profile add security-reviewer at any risk level (it replaces the other specialist when the cap is full); route.py --task writes .harness/diff/<id>.diff and returns diff_path; GPT-PM runs only at /ship of the sprint's final task.
 
 - 2026-11-10: tests/test_consistency.py checks that commands and skills agree on when GPT-PM runs (text check, not a behavior proof).
+
+## 2026-11-10 Sprint 1 delivered
+- GPT-PM APPROVE for fa701a5 (round 4, request 433ddd13, reply ee51686b), after rounds 2-3 found 5 MAJOR, all fixed with regression tests.
+- Pushed main (fee447e..fa701a5) to github.com/xLZDx/AI_Harnes; the repository was empty, so the first sprint went straight to main (no PR base existed). Full local history with the private benchmark code stays on the local branch dev-history and is not pushed.
