@@ -4,7 +4,8 @@ No model calls. Global rules in harness/routing.json; a project adds or override
 .harness/profile.json (same keys; "domain_specialists" holds the project's own agents and
 "security_triggers" turns on automatic security-reviewer for named paths).
 Usage:
-  python .harness-tools/route.py --task S1-T2              # diff built from the task's commits
+  python .harness-tools/route.py --task S1-T2              # diff built from the task's commits and
+                                                          # written to .harness/diff/S1-T2.diff (diff_path)
   python .harness-tools/route.py --diff file.diff [--risk risky] [--request security-reviewer]
   python .harness-tools/route.py --history 50              # dry run over the last 50 commits
 The declared task risk can only raise the automatic risk, never lower it.
@@ -129,11 +130,11 @@ def route(rules, files, body, declared=None, requested=()) -> dict:
             if any(re.search(pat, f, re.I) for f in files):
                 picks.append((agent, f"language: files match {pat}"))
                 break
+    # Project trust-boundary triggers are checked at every risk level, not only on "risky".
+    st = rules.get("security_triggers") or {}
+    sec_hit = first_match(st.get("paths", []), files) or first_match(st.get("diff_keywords", []), [body]) if st else None
     if risk == "risky":
-        cands = list(rules.get("domain_specialists", []))
-        if rules.get("security_triggers"):
-            cands.append({"agent": "security-reviewer", **rules["security_triggers"]})
-        cands += rules["specialists"]
+        cands = list(rules.get("domain_specialists", [])) + rules["specialists"]
         for sp in cands:
             if len(picks) >= rules["max_reviewers"]:
                 break
@@ -142,6 +143,12 @@ def route(rules, files, body, declared=None, requested=()) -> dict:
                 picks.append((sp["agent"], f"trigger {hit}"))
                 break  # one specialist per task
     picks = picks[: rules["max_reviewers"]]
+    if sec_hit and "security-reviewer" not in [p[0] for p in picks]:
+        if not picks:  # a trivial-looking change on a trust boundary still gets the core reviewer
+            picks.append(("code-reviewer", "security trigger on a trust boundary"))
+        if len(picks) >= rules["max_reviewers"]:
+            picks.pop()  # security outranks the other specialist (one specialist per task)
+        picks.append(("security-reviewer", f"project security trigger {sec_hit}"))
     known = known_agents()
     for agent in requested:  # operator requests are never cut by the cap
         if known is not None and agent not in known and agent not in [d["agent"] for d in rules.get("domain_specialists", [])]:
@@ -192,6 +199,13 @@ def main(argv=None) -> int:
         print(f"route: {e}", file=sys.stderr)
         return 2
     r = route(rules, files, body, declared, a.request)
+    if a.diff:
+        r["diff_path"] = str(Path(a.diff).resolve())
+    else:  # reviewers need a real file: write the task diff next to the ledger
+        out = ledger.ledger_path().parent / "diff" / f"{a.task}.diff"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8", newline="\n")
+        r["diff_path"] = str(out.resolve())
     if a.task:
         with ledger.locked() as d:
             _, tt = ledger.find_task(d, a.task)

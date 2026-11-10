@@ -35,3 +35,9 @@
 - Root cause: checked the end state instead of every commit; two error channels but the report read one.
 - Caught by: GPT-PM; missed by the author, 3 internal reviewers and the tester.
 - Rule: approval checks inspect each commit in the range; every error sink must be read by the place that shows errors.
+
+## 2026-11-10 GPT-PM round 3 (full project review) findings
+- Kind: FAILURE. Facts: GPT-PM reply 70669cba, 3 MAJOR: project security_triggers were checked only on risky changes; /ship promised a diff file that route.py never wrote; /ship command and harness-flow skill disagreed on when GPT-PM runs.
+- Root cause: tools and prompt text were changed in different passes and never checked against each other.
+- Caught by: GPT-PM full review (operator-granted exception to review documents); missed by 3 internal reviewers and the tester, who saw only code.
+- Rule: when a tool CLI changes, grep the commands and skills for every place that describes it in the same commit.

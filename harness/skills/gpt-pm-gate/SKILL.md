@@ -1,6 +1,6 @@
 ---
 name: gpt-pm-gate
-description: One GPT-PM code and contract review per sprint through PM Bridge, repeated until APPROVE bound to the exact HEAD, then recorded in the ledger. Use at /ship, after tests are green and reviewer consensus is done, before any push or PR.
+description: One GPT-PM code and contract review per sprint through PM Bridge, repeated until APPROVE bound to the exact HEAD, then recorded in the ledger. Use at /ship of the sprint's final task only (every other task done), after tests are green and reviewer consensus is done, before any push or PR. Intermediate tasks never call it.
 ---
 
 # gpt-pm-gate
