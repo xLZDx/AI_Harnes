@@ -554,5 +554,124 @@ def test_request_still_rejects_name_found_nowhere_even_with_project_agents():
     assert res2.rc != 0 and "unknown agent" in res2.all, "agent from another project is not known here"
 
 
+# ---- regression: entries without ---/+++ lines (pure rename, copy, mode-only, binary), real git output ----
+
+def _real(repo, *show_args):
+    """Route the real `git show` output of HEAD through route.py --diff; return the parsed JSON."""
+    g = h.git(repo, "show", *show_args, "--format=", "--no-color", "HEAD")
+    assert g.rc == 0 and g.out.strip(), g.all
+    d = repo / "real.diff"
+    d.write_text(g.out, encoding="utf-8", newline="\n")
+    r = h.tool(repo, "route.py", "--diff", str(d))
+    assert r.rc == 0 and "no file headers" not in r.all, (r.all, g.out)
+    return json.loads(r.out)
+
+
+def _history(repo, n):
+    r = h.tool(repo, "route.py", "--history", str(n))
+    assert r.rc == 0, r.all
+    lines = r.out.splitlines()
+    assert lines and lines[-1].startswith("totals:"), r.out
+    return lines[:-1]
+
+
+def _rename_repo(name, old, new, content="x = 1\n"):
+    r = h.mk_repo(name)
+    h.commit(r, old, content, "add")
+    (r / new).parent.mkdir(parents=True, exist_ok=True)
+    assert h.git(r, "mv", old, new).rc == 0
+    assert h.git(r, "commit", "-q", "-m", "rename").rc == 0
+    return r
+
+
+def test_pure_rename_code_to_code_routes_and_lists_both_paths_risky():
+    r = _rename_repo("rt_ren_code", "src/payment.py", "src/billing.py")
+    assert "rename from" in h.git(r, "show", "--format=", "HEAD").out, "fixture must be a pure rename"
+    assert "---" not in h.git(r, "show", "--format=", "HEAD").out.replace("----", ""), "no ---/+++ lines"
+    res = _real(r)
+    assert "src/payment.py" in res["files"] and "src/billing.py" in res["files"], res
+    assert res["risk"] == "risky", res
+    lines = _history(r, 3)
+    assert len(lines) == 3, lines
+
+
+def test_pure_rename_code_to_docs_name_with_space_is_not_trivial():
+    r = _rename_repo("rt_ren_code_docs", "src/billing.py", "docs/my billing.md")
+    res = _real(r)
+    assert "src/billing.py" in res["files"] and "docs/my billing.md" in res["files"], res
+    assert res["risk"] != "trivial", res
+    assert len(_history(r, 3)) == 3
+
+
+def test_pure_rename_docs_to_docs_is_trivial_without_reviewers():
+    r = _rename_repo("rt_ren_docs", "docs/a.md", "docs/b.md", "text\n")
+    res = _real(r)
+    assert "docs/a.md" in res["files"] and "docs/b.md" in res["files"], res
+    assert res["risk"] == "trivial" and res["reviewers"] == [], res
+    assert len(_history(r, 3)) == 3
+
+
+def _mode_repo(name, rel):
+    r = h.mk_repo(name)
+    h.commit(r, rel, "x = 1\n", "add")
+    assert h.git(r, "update-index", "--chmod=+x", rel).rc == 0
+    assert h.git(r, "commit", "-q", "-m", "chmod").rc == 0
+    assert "old mode" in h.git(r, "show", "--format=", "HEAD").out, "fixture must be mode-only"
+    return r
+
+
+def test_mode_only_change_on_code_file_is_listed_and_not_trivial():
+    r = _mode_repo("rt_mode_py", "src/run.py")
+    res = _real(r)
+    assert res["files"] == ["src/run.py"] and res["risk"] != "trivial", res
+    assert len(_history(r, 3)) == 3
+
+
+def test_mode_only_change_on_markdown_is_trivial():
+    r = _mode_repo("rt_mode_md", "docs/note.md")
+    res = _real(r)
+    assert res["files"] == ["docs/note.md"] and res["risk"] == "trivial", res
+    assert len(_history(r, 3)) == 3
+
+
+def test_binary_file_change_is_listed():
+    r = h.mk_repo("rt_binary")
+    (r / "src").mkdir()
+    (r / "src" / "blob.bin").write_bytes(b"\x00\x01\x02abc")
+    assert h.git(r, "add", "src/blob.bin").rc == 0
+    assert h.git(r, "commit", "-q", "-m", "bin1").rc == 0
+    (r / "src" / "blob.bin").write_bytes(b"\x00\x09\x08xyz\x00")
+    assert h.git(r, "add", "src/blob.bin").rc == 0
+    assert h.git(r, "commit", "-q", "-m", "bin2").rc == 0
+    assert "Binary files" in h.git(r, "show", "--format=", "HEAD").out, "fixture must be binary"
+    res = _real(r)
+    assert res["files"] == ["src/blob.bin"], res
+    assert len(_history(r, 3)) == 3
+
+
+def test_copy_detection_lists_the_new_path():
+    r = h.mk_repo("rt_copy")
+    body = "".join(f"line number {i}\n" for i in range(30))
+    h.commit(r, "src/orig.py", body, "add orig")
+    (r / "src" / "copy.py").write_text(body, encoding="utf-8", newline="\n")
+    assert h.git(r, "add", "src/copy.py").rc == 0
+    assert h.git(r, "commit", "-q", "-m", "copy").rc == 0
+    assert "copy to src/copy.py" in h.git(r, "show", "-C", "-C", "--format=", "HEAD").out, "fixture must be a copy"
+    res = _real(r, "-C", "-C")
+    assert "src/copy.py" in res["files"], res
+    assert len(_history(r, 3)) == 3
+
+
+def test_history_prints_one_line_per_commit_over_mixed_special_entries():
+    r = _rename_repo("rt_hist_mix", "src/payment.py", "src/billing.py")
+    assert h.git(r, "update-index", "--chmod=+x", "src/billing.py").rc == 0
+    assert h.git(r, "commit", "-q", "-m", "chmod").rc == 0
+    (r / "src" / "blob.bin").write_bytes(b"\x00\x01")
+    assert h.git(r, "add", "src/blob.bin").rc == 0
+    assert h.git(r, "commit", "-q", "-m", "bin").rc == 0
+    n = int(h.git(r, "rev-list", "--count", "HEAD").out.strip())
+    assert len(_history(r, n)) == n
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))

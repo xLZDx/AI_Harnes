@@ -79,6 +79,10 @@
 - Root cause: parser tests never used real `git show` output for header-only entries.
 - Rule: parser tests include real git output for rename, copy, mode-only and binary entries.
 
+## 2026-11-10 S2 round-1 regression tests
+- Kind: SUCCESS. Facts: 8 tests on real `git show` output (pure rename code->code, code->docs with a space, docs->docs, mode-only .py/.md, binary, copy -C -C, --history over them); each fixture asserts its git shape first; test_route "OK: 0 failing" at 78698ee + tests.
+- Rule: a fixture asserts the shape it claims (e.g. no ---/+++ lines) so the test cannot pass on the wrong input.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.
