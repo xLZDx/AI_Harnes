@@ -83,6 +83,10 @@
 - Kind: SUCCESS. Facts: 8 tests on real `git show` output (pure rename code->code, code->docs with a space, docs->docs, mode-only .py/.md, binary, copy -C -C, --history over them); each fixture asserts its git shape first; test_route "OK: 0 failing" at 78698ee + tests.
 - Rule: a fixture asserts the shape it claims (e.g. no ---/+++ lines) so the test cannot pass on the wrong input.
 
+## 2026-11-10 Sprint 2 delivered
+- Kind: SUCCESS. Facts: 2 GPT-PM rounds (1 MAJOR, then APPROVE); defects found before GPT: 3 by real-project dry runs, 7 by internal reviewers; 26 new regression tests.
+- Rule: dry-run the router on real history at sprint start, not only after shipping.
+
 ## 2026-11-10 Parallel profile agents
 - Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
 - Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.

@@ -41,6 +41,9 @@
 
 - S2 GPT-PM round 1 (request 3759bfa8, reply 5ac481b5): VERDICT MAJOR, 1 finding: a pure rename / copy / mode-only / binary entry has no ---/+++ lines, so parse_diff raised "no file headers parsed" (reproduced with real git). Fix: paths also come from the `diff --git` header (quoted, symmetric split for names with spaces, last " b/" otherwise) and from rename/copy from/to lines; the both-paths-docs rule is unchanged. Dry run --history 300 in ERP, Fitness_App, PDCC and Harness_v2: exit 0 everywhere.
 
+- S2 GPT-PM round 2 (request 8318dc1d, reply 4df39cef): APPROVE for ec33db6; recorded with ledger approve; pushed b452542..ec33db6 to main.
+- Note: Harness_v2 itself has no core.hooksPath set, so its own pre-push approval hook does not run here; approval was checked by hand (ledger approve bound to ec33db6 before the push).
+
 ## 2026-11-10 Project profiles and domain agents
 - Operator scope: every project with domain agents, not only ERP/Fitness/trading; marketing projects (VMC, ivan-ai-company) untouched.
 - Each project got .harness/profile.json (domain_specialists, security_triggers, extra risky paths) and its .claude/agents consolidated; every kept agent is model sonnet, effort medium, description ends with "Use when:". Money/data/concurrency reviewers ask "two concurrent requests, a retry, a crash half-way".
