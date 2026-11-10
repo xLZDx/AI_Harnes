@@ -54,3 +54,13 @@
 ## 2026-11-10 Install
 - Kind: SUCCESS. Facts: snapshot + restore script were written and hash-checked before any file moved; old files were moved, not deleted.
 - Rule: every global install ships with its rollback script in the snapshot folder.
+
+## 2026-11-10 Project profiles: the dry run found router defects
+- Kind: SHORTCOMING. Facts: running route.py --history on 7 real projects showed that keyword triggers also match documentation lines (docs-only commits got security-reviewer or "risky"), and that --request rejects deliberately unrouted project agents. 35 tests on synthetic diffs did not catch either.
+- Root cause: tests used code-only diffs; nobody ran the router on real mixed history before shipping.
+- Layer that missed it: tests and reviewers (synthetic inputs only); the dry run caught it.
+- Rule: before shipping a router change, dry-run it on at least one real project's history and read the per-agent totals.
+
+## 2026-11-10 Parallel profile agents
+- Kind: SUCCESS. Facts: 7 Sonnet implementation agents, one per project, one shared brief file; each snapshotted before moving, validated JSON and dry-ran the router; 3 of them caught their own JSON escaping error from a shell heredoc.
+- Rule: shared brief file + one agent per independent repo; write JSON with a file tool, never through a shell heredoc.
