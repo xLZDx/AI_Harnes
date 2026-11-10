@@ -1,0 +1,202 @@
+{
+ "reviewer": {
+  "v01": {
+   "file": "src/billing/refunds.py",
+   "defects": [
+    {
+     "id": "D1",
+     "lines": [
+      33,
+      35
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "if amount > payment.captured:",
+     "keywords": "refunded_total|already.refunded|previous|prior|cumulative|over.?refund|remaining|total refund|multiple (partial )?refunds|sum of refunds"
+    },
+    {
+     "id": "D2",
+     "lines": [
+      35,
+      37
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "key = f\"refund:",
+     "keywords": "idempot|timestamp|datetime|now\\(|duplicate|double|retry|retried"
+    }
+   ],
+   "traps": [
+    {
+     "lines": [
+      8,
+      10
+     ],
+     "keywords": "float|precision|Decimal\\(str|quantiz|rounding|ROUND_HALF"
+    },
+    {
+     "lines": [
+      20,
+      22
+     ],
+     "keywords": "sum\\(|start value|refunded_total"
+    }
+   ]
+  },
+  "v02": {
+   "file": "src/sync/worker.py",
+   "defects": [
+    {
+     "id": "D1",
+     "lines": [
+      16,
+      24
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "while True:",
+     "keywords": "max_attempts|infinite|forever|never (stop|give|terminat)|unbounded|endless|non.?transient|TransientError|every exception|all exceptions|any exception|permanent"
+    },
+    {
+     "id": "D2",
+     "lines": [
+      31,
+      34
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "state.save_cursor(page.next_cursor)",
+     "keywords": "cursor|before (the )?(items|upsert|process)|crash|lost|loss|at.most.once|skip"
+    }
+   ],
+   "traps": [
+    {
+     "lines": [
+      12,
+      13
+     ],
+     "keywords": "backoff|jitter|overflow|2 \\\\*\\\\*|exponent"
+    }
+   ]
+  },
+  "v03": {
+   "file": "src/api/orders.py",
+   "defects": [
+    {
+     "id": "D1",
+     "lines": [
+      12,
+      14
+     ],
+     "min_severity": "BLOCKER",
+     "anchor": "ORDER BY {sort}",
+     "keywords": "inject|ORDER BY|SORTABLE|allow.?list|white.?list|sort (param|column|value)|f-string|interpolat"
+    },
+    {
+     "id": "D2",
+     "lines": [
+      27,
+      28
+     ],
+     "min_severity": "BLOCKER",
+     "anchor": "UPDATE orders SET status = 'cancelled'",
+     "keywords": "tenant|IDOR|authori[sz]|any (user|order)|other (tenant|user|customer)|cross|ownership"
+    }
+   ],
+   "traps": [
+    {
+     "lines": [
+      13,
+      13
+     ],
+     "keywords": "LIKE|wildcard|escap"
+    }
+   ]
+  },
+  "v04": {
+   "file": "src/reports/revenue.py",
+   "defects": [
+    {
+     "id": "D1",
+     "lines": [
+      9,
+      10
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "WHERE p.status = 'settled'",
+     "keywords": "inner join|LEFT JOIN|WHERE|ON clause|drops?|exclud|filters? out|without (a )?(settled )?payment|no payment"
+    },
+    {
+     "id": "D2",
+     "lines": [
+      4,
+      9
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "COALESCE(SUM(oi.quantity",
+     "keywords": "fan.?out|double|multipl|cartesian|duplicat|inflat|over.?count|row explosion|count(ed)? (twice|more than once)"
+    }
+   ],
+   "traps": [
+    {
+     "lines": [
+      15,
+      17
+     ],
+     "keywords": "NOT EXISTS|NULL|NOT IN"
+    }
+   ]
+  },
+  "v05": {
+   "file": "src/notify/digest.py",
+   "defects": [
+    {
+     "id": "D1",
+     "lines": [
+      21,
+      25
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "except Exception:",
+     "keywords": "debug|swallow|falls? through|counted as sent|sent \\\\+= 1|false success|silently|reported as sent|still (advanced|counted|saved)"
+    },
+    {
+     "id": "D2",
+     "lines": [
+      23,
+      23
+     ],
+     "min_severity": "MAJOR",
+     "anchor": "user[\"next_digest_at\"] + timedelta(days=1)",
+     "keywords": "catch.?up|burst|backlog|from now|still (be )?due|repeated|multiple digests|every run|downtime|past|stale|drift|instead of now"
+    }
+   ],
+   "traps": [
+    {
+     "lines": [
+      7,
+      9
+     ],
+     "keywords": "timezone|naive|utc|tz"
+    }
+   ]
+  }
+ },
+ "tester": {
+  "t01": {
+   "module": "split.py",
+   "bugs": {
+    "B1": "leftover cents dropped with weights"
+   }
+  },
+  "t02": {
+   "module": "duration.py",
+   "bugs": {
+    "B1": "empty string returns 0",
+    "B2": "out-of-order units accepted"
+   }
+  },
+  "t03": {
+   "module": "discount.py",
+   "bugs": {
+    "B1": "valid_to treated as exclusive"
+   }
+  }
+ }
+}

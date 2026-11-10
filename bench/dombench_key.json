@@ -1,0 +1,176 @@
+{
+ "d01": {
+  "defects": [
+   {
+    "id": "D1",
+    "file": "posting.py",
+    "lines": [
+     26,
+     33
+    ],
+    "min_severity": "MAJOR",
+    "what": "entry is posted without checking that total debit equals total credit",
+    "keywords": "balanc|debit.{0,40}credit|credit.{0,40}debit|equal|double.?entry|sum"
+   },
+   {
+    "id": "D2",
+    "file": "posting.py",
+    "lines": [
+     37,
+     37
+    ],
+    "min_severity": "MAJOR",
+    "what": "reversal copies debit/credit instead of swapping them, so it doubles the original",
+    "keywords": "swap|revers|invert|opposite|same (sign|side|direction)|doubl|negat"
+   },
+   {
+    "id": "D3",
+    "file": "posting.py",
+    "lines": [
+     26,
+     34
+    ],
+    "min_severity": "MAJOR",
+    "what": "posting into a closed accounting period is not prevented (periods.is_closed never called)",
+    "keywords": "closed|period|is_closed|lock"
+   }
+  ]
+ },
+ "d02": {
+  "defects": [
+   {
+    "id": "D1",
+    "file": "revaluation.py",
+    "lines": [
+     16,
+     16
+    ],
+    "min_severity": "MAJOR",
+    "what": "revaluation uses the document-date rate instead of the period-end (closing) rate, so the difference is always zero",
+    "keywords": "period.?end|closing|doc_date|always zero|no.?op|never|same rate"
+   },
+   {
+    "id": "D2",
+    "file": "revaluation.py",
+    "lines": [
+     18,
+     21
+    ],
+    "min_severity": "MAJOR",
+    "what": "sign is not inverted for payables: a rate increase is a loss on AP but is reported as a gain",
+    "keywords": "payabl|\\bAP\\b|sign|liabilit|loss"
+   },
+   {
+    "id": "D3",
+    "file": "revaluation.py",
+    "lines": [
+     26,
+     26
+    ],
+    "min_severity": "MAJOR",
+    "what": "credit note increases the receivable instead of reducing it",
+    "keywords": "reduc|decreas|subtract|minus|sign|increas|wrong direction"
+   }
+  ]
+ },
+ "d03": {
+  "defects": [
+   {
+    "id": "D1",
+    "file": "progression.py",
+    "lines": [
+     23,
+     23
+    ],
+    "min_severity": "MAJOR",
+    "what": "load grows 25 % per week for every level including beginners (far above the ~10 % rule), and sessions also go up every week to 7 with no rest day",
+    "keywords": "25|10 ?%|progress|too (fast|aggressive|steep)|overload|overtrain|beginner|rest day|7 sessions|recovery"
+   },
+   {
+    "id": "D2",
+    "file": "progression.py",
+    "lines": [
+     20,
+     21
+    ],
+    "min_severity": "BLOCKER",
+    "what": "red-flag symptoms (chest pain, dizziness) are ignored: training continues and even increases instead of stopping and referring to a doctor",
+    "keywords": "chest|dizz|symptom|red.?flag|cardiac|medical|refer|doctor|stop"
+   }
+  ]
+ },
+ "d04": {
+  "defects": [
+   {
+    "id": "D1",
+    "file": "targets.py",
+    "lines": [
+     4,
+     4
+    ],
+    "min_severity": "MAJOR",
+    "what": "Mifflin-St Jeor sex constants are swapped (+5 is male, -161 is female)",
+    "keywords": "swap|revers|male|female|\\+ ?5|161|constant"
+   },
+   {
+    "id": "D2",
+    "file": "targets.py",
+    "lines": [
+     13,
+     13
+    ],
+    "min_severity": "MAJOR",
+    "what": "fixed 1000 kcal deficit with no floor can drop small users below a safe intake (e.g. under 1200 kcal)",
+    "keywords": "1000|floor|minimum|1200|1500|unsafe|too (low|large|aggressive)|deficit|below"
+   },
+   {
+    "id": "D3",
+    "file": "targets.py",
+    "lines": [
+     18,
+     18
+    ],
+    "min_severity": "MINOR",
+    "what": "0.8 g/kg protein (sedentary RDA) is too low for training users, especially in a deficit or for gain (1.6-2.2 g/kg)",
+    "keywords": "0\\\\.8|1\\\\.6|2\\\\.2|protein|RDA|too low|insufficient"
+   }
+  ]
+ },
+ "d05": {
+  "defects": [
+   {
+    "id": "D1",
+    "file": "evaluate.py",
+    "lines": [
+     8,
+     8
+    ],
+    "min_severity": "MAJOR",
+    "what": "24/7 crypto annualised with sqrt(252) trading days instead of sqrt(365)",
+    "keywords": "252|365|24/7|annuali|calendar"
+   },
+   {
+    "id": "D2",
+    "file": "evaluate.py",
+    "lines": [
+     14,
+     14
+    ],
+    "min_severity": "BLOCKER",
+    "what": "shuffled K-fold on time-ordered data with 24-bar forward labels leaks the future (needs purged/embargoed walk-forward)",
+    "keywords": "shuffl|leak|look.?ahead|purg|embargo|walk.?forward|time.?series|future"
+   },
+   {
+    "id": "D3",
+    "file": "evaluate.py",
+    "lines": [
+     22,
+     22
+    ],
+    "min_severity": "MAJOR",
+    "what": "contract_size is ignored, so the position is off by the contract multiplier",
+    "keywords": "contract_size|multiplier|ignored|unused"
+   }
+  ]
+ }
+}

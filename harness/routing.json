@@ -1,0 +1,23 @@
+{
+ "max_reviewers": 4,
+ "doc_only_patterns": ["\\.(md|txt|rst)$", "(^|/)docs/"],
+ "doc_exclude_patterns": ["(^|/)harness/(agents|skills|commands|rules)/", "(^|/)(CLAUDE|AGENTS)\\.md$"],
+ "language_reviewers": {
+  "\\.py$": "python-reviewer",
+  "\\.dart$": "flutter-reviewer"
+ },
+ "risky": {
+  "paths": ["(^|/)migrations?/", "\\.sql$", "(^|/)auth(n|z|entication|orization)?(/|_|\\.)", "(^|/)(payments?|billing|ledger|posting|orders?|positions?|tenants?|secrets?)[^/]*(/|\\.)", "(^|/)rls"],
+  "diff_keywords": ["\\block\\b", "advisory", "\\btransaction\\b", "\\bretry\\b", "idempoten", "concurren", "\\bthread", "asyncio\\.gather", "\\bDecimal\\b", "\\bDELETE FROM\\b", "\\bDROP (TABLE|COLUMN|INDEX)\\b", "\\bALTER TABLE\\b"]
+ },
+ "security_triggers": {},
+ "specialists": [
+  {"agent": "database-reviewer", "paths": ["(^|/)migrations?/", "\\.sql$", "(^|/)schema[^/]*$", "(^|/)models?\\.py$"], "diff_keywords": ["\\bCREATE TABLE\\b", "\\bALTER TABLE\\b", "\\bCREATE (UNIQUE )?INDEX\\b", "\\bFOR UPDATE\\b"]},
+  {"agent": "reliability-reviewer", "paths": ["(^|/)(workers?|queues?|schedulers?|jobs?)[^/]*(/|\\.)"], "diff_keywords": ["\\bretry\\b", "\\bbackoff\\b", "\\btimeout\\b", "\\block\\b", "\\bqueue\\b", "\\bbackground\\b", "\\bheartbeat\\b"]}
+ ],
+ "domain_specialists": [],
+ "_notes": {
+  "security_triggers": "security-reviewer is never automatic globally. A project profile may set {\"paths\": [...], \"diff_keywords\": [...]} here for its own trust boundaries; otherwise only --request security-reviewer adds it.",
+  "domain_specialists": "A project profile lists its own agents here as {\"agent\": name, \"paths\": [...], \"diff_keywords\": [...]}; they are tried before the global specialists, and at most one specialist is chosen per task."
+ }
+}

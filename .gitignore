@@ -1,0 +1,15 @@
+out/
+.harness/
+__pycache__/
+*.pyc
+
+# Private: code copied from the operator's projects and private reports (kept locally only)
+bench/realbench/
+bench/realbench_*
+bench/build_realbench.py
+bench/trbench_hidden/
+bench/trbench_*
+bench/gen_treal.py
+bench/check_hidden.py
+harness/skills/html-report/golden/
+

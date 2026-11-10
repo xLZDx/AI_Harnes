@@ -1,0 +1,25 @@
+#!/bin/sh
+# Harness git hook (installed by harness v2 build.py --install-project).
+TOP="$(git rev-parse --show-toplevel)"
+COMMON="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+if [ -f "$COMMON/.harness-tools/ledger.py" ]; then T="$COMMON/.harness-tools"
+elif grep -qs "single source of sprint and task state" "$TOP/tools/ledger.py"; then T="$TOP/tools"
+else T=""; fi
+# Interpreter: $HARNESS_PYTHON, else the first of `py -3` / `python` that actually starts.
+if [ -n "$HARNESS_PYTHON" ]; then PYKIND=env
+elif command -v py >/dev/null 2>&1 && py -3 -c "import sys" >/dev/null 2>&1; then PYKIND=py
+elif command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then PYKIND=python
+else PYKIND=""; fi
+run_py() {
+  case "$PYKIND" in
+    env) "$HARNESS_PYTHON" -I "$@" ;;
+    py) py -3 -I "$@" ;;
+    python) python -I "$@" ;;
+    *) log_err "no working Python (set HARNESS_PYTHON)"; return 1 ;;
+  esac
+}
+log_err() { mkdir -p "$COMMON/.harness"; echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$COMMON/.harness/hook-error.log"; echo "HARNESS HOOK ERROR: $1" >&2; }
+[ -n "$T" ] || exit 0
+# Remove merged, clean scratch worktrees.
+run_py "$T/worktree_gc.py" || log_err "post-merge: worktree_gc.py reported a problem"
+exit 0
