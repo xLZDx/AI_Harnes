@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -54,6 +55,19 @@ def matcher_applies(matcher: str, tool: str) -> bool:
     return re.fullmatch(m, tool) is not None
 
 
+def hook_argv(h: dict) -> list[str]:
+    """argv of one hook. command + args form: used as given. A single command string without args is split like a
+    Windows command line (shlex, posix=False) and surrounding quotes are stripped from every part."""
+    command = str(h.get("command", ""))
+    if h.get("args"):
+        return [command, *map(str, h["args"])]
+    try:
+        parts = shlex.split(command, posix=False)
+    except ValueError:
+        return [command]
+    return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts] or [command]
+
+
 def probe(settings_path: Path, require: str, timeout: int) -> tuple[bool, str]:
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
@@ -73,7 +87,7 @@ def probe(settings_path: Path, require: str, timeout: int) -> tuple[bool, str]:
         for h in g.get("hooks") or []:
             if not isinstance(h, dict):
                 continue
-            argv = [str(h.get("command", "")), *map(str, h.get("args") or [])]
+            argv = hook_argv(h)
             if not any(Path(a).name == require for a in argv):
                 continue
             found = True

@@ -30,6 +30,18 @@ ROOT = Path(__file__).resolve().parent.parent
 HOOK_FILE_RE = re.compile(r"[\w.-]+\.py\b")
 
 
+_FAIL_AFTER = None  # test seam: raise OSError after the n-th write step (set from HARNESS_INSTALL_FAIL_AFTER in install())
+_STEPS = 0
+
+
+def _tick() -> None:
+    """Count one write step (a copied hook file, then the written temp settings file); fail on the n-th if the seam is set."""
+    global _STEPS
+    _STEPS += 1
+    if _FAIL_AFTER is not None and _STEPS == _FAIL_AFTER:
+        raise OSError(f"simulated failure after write step {_STEPS} (HARNESS_INSTALL_FAIL_AFTER)")
+
+
 def _ps(s: object) -> str:
     return "'" + str(s).replace("'", "''") + "'"
 
@@ -115,6 +127,11 @@ def install(home: Path, snap: Path, source: Path) -> int:
         shutil.rmtree(snap, ignore_errors=True)
         print(f"install stopped, the snapshot could not be written ({e}); nothing was changed")
         return 1
+    global _FAIL_AFTER, _STEPS
+    _STEPS = 0
+    env_n = os.environ.get("HARNESS_INSTALL_FAIL_AFTER", "").strip()
+    if env_n.isdigit():
+        _FAIL_AFTER = int(env_n)
     tmp = home / "settings.json.tmp"
     try:
         (home / "hooks").mkdir(exist_ok=True)
@@ -123,8 +140,10 @@ def install(home: Path, snap: Path, source: Path) -> int:
             if dst.exists():
                 os.chmod(dst, stat.S_IWRITE)
             shutil.copy2(src_hooks / name, dst)
+            _tick()
         merged = {**settings, "hooks": new_cfg["hooks"]}
         tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+        _tick()
         for attempt in range(8):  # Windows may refuse the replace for a moment (antivirus, indexer)
             try:
                 os.replace(tmp, settings_path)

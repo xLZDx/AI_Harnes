@@ -119,3 +119,6 @@
 ## 2026-11-11 One-task-at-a-time check off by default
 - Decision (operator): rules "one task at a time" and "agent review after every task" are disabled; ledger start refuses a second in_progress task only with HARNESS_ONE_TASK=1. Operator also said no GPT-PM review for this change; none was run, tests NOT_RUN (prohibited).
 - Evidence: tools/ledger.py c_start diff (3 lines); the tool was installed into 7 projects that carry .harness (two needed --force; old hooks of db-test-tool-analysis backed up under D:/Backup/hooks-before-harness-20261111).
+
+## 2026-11-11 S5-T5 done
+- install_claude.py and install_codex.py have a failure seam (env HARNESS_INSTALL_FAIL_AFTER=n, read only inside install()); a half-way failure prints the restore path, removes the temp file and leaves the main file unchanged; the real restore.ps1 was run through PowerShell in tests and returned the home to the snapshot bytes. The probe accepts a hook command written as one string. 17 checks in tests/test_install_failure_restore.py.

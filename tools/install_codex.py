@@ -38,10 +38,23 @@ def _rm_readonly(func, path, _exc):
     func(path)
 
 
+_FAIL_AFTER = None  # test seam: raise OSError after the n-th write step (set from HARNESS_INSTALL_FAIL_AFTER in install())
+_STEPS = 0
+
+
+def _tick() -> None:
+    """Count one write step (a copied file, then the written hooks.json.tmp); fail on the n-th if the seam is set."""
+    global _STEPS
+    _STEPS += 1
+    if _FAIL_AFTER is not None and _STEPS == _FAIL_AFTER:
+        raise OSError(f"simulated failure after write step {_STEPS} (HARNESS_INSTALL_FAIL_AFTER)")
+
+
 def _copy_file(src: Path, dst: Path) -> None:
     if dst.exists():
         os.chmod(dst, stat.S_IWRITE)
     shutil.copy2(src, dst)
+    _tick()
 
 
 def _copy_tree(src: Path, dst: Path) -> None:
@@ -162,6 +175,11 @@ def install(home: Path, snap: Path, source: Path) -> int:
         shutil.rmtree(snap, onexc=_rm_readonly, ignore_errors=True)
         print(f"install stopped, the snapshot could not be written ({e}); nothing was changed")
         return 1
+    global _FAIL_AFTER, _STEPS
+    _STEPS = 0
+    env_n = os.environ.get("HARNESS_INSTALL_FAIL_AFTER", "").strip()
+    if env_n.isdigit():
+        _FAIL_AFTER = int(env_n)
     try:
         _copy_file(source / "AGENTS.md", home / "AGENTS.md")
         (home / "agents").mkdir(exist_ok=True)
@@ -184,6 +202,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
         _copy_tree(source / "hooks", home / "hooks")
         tmp = home / "hooks.json.tmp"
         tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+        _tick()
         for attempt in range(8):  # Windows may refuse the replace for a moment (antivirus, indexer)
             try:
                 os.replace(tmp, home / "hooks.json")
