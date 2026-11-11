@@ -96,3 +96,8 @@
 - Not tested: a failure half-way through the install and running restore.ps1 itself (backlog).
 - Backlog: the "decision refs" Stop check flags any "(letters+digits)" in brackets, not only decision codes; it fired on my own "(S4)".
 - S4-T2 evidence tool: tools/probe_live_hooks.py counts the live hook entries and runs a dangerous-command payload through the live Bash hooks (read-only; the payload is only piped to the hooks, never executed).
+
+## 2026-11-11 GPT-PM round 1 for sprint S4: MAJOR x1, accepted
+- Finding (verified in code): tools/probe_live_hooks.py printed the list of blocking hooks but exited 0 even when it was empty, and matched "deny"/"block" as plain substrings. Fix: it requires shell_policy_gate.py to be configured for Bash and to deny the payload, reads the answer structurally (exit 2, permissionDecision deny, or decision block), and exits 1 on a missing hook, timeout, allow, non-JSON or unreadable output. 17 new checks in tests/test_probe_live_hooks.py.
+- PM Bridge mode was OFF and the first review request was rejected by Gate C; with the operator's yes it was switched on (pid 45168) for the review. It should be switched off again after the sprint.
+- Backlog: probe does not support a hook command written as one string; restore.ps1 and a half-way install failure are still untested.
