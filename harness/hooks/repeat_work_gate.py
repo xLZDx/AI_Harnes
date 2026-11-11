@@ -114,8 +114,7 @@ def human_count(path) -> int:
 
 
 def git(cwd, *args):
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=20)
+    r = agentio.run_git(list(args), cwd=cwd)
     return r.stdout if r.returncode == 0 else ""
 
 

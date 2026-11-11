@@ -320,6 +320,128 @@ class file_lock:
                     return
 
 
+_EXIT_TEXT_RE = re.compile(r"(?:exit(?:ed)?\s+code|exit\s+status|exited\s+with\s+code)\s*[:=]?\s*(-?\d+)", re.I)
+_EXIT_KEYS = ("exit_code", "exitCode", "returncode", "return_code", "code", "status_code")
+
+
+def _exit_from_text(text: str):
+    """Last 'Exit code: N' / 'exited with code N' in shell output text as int, or None."""
+    found = _EXIT_TEXT_RE.findall(text or "")
+    return int(found[-1]) if found else None
+
+
+def command_succeeded(data: dict):
+    """Did the shell command of a PostToolUse payload succeed? True = proven success, False = failed or
+    interrupted, None = cannot be determined. Callers must treat None as NOT succeeded (fail safe).
+    Accepted shapes of data['tool_response']: Claude dict (is_error / interrupted / stdout+stderr), dict with
+    exit_code (also under metadata), plain string or content-block list with 'Exit code: N' /
+    'exited with code N', and a JSON string holding one of those."""
+    try:
+        return _succeeded(data.get("tool_response"), 0)
+    except (AttributeError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def _succeeded(resp, depth: int):
+    if depth > 4 or resp is None:
+        return None
+    if isinstance(resp, str):
+        s = resp.strip()
+        if s[:1] in ("{", "["):
+            try:
+                inner = _succeeded(json.loads(s), depth + 1)
+            except ValueError:
+                inner = None
+            if inner is not None:
+                return inner
+        code = _exit_from_text(resp)
+        return None if code is None else code == 0
+    if isinstance(resp, list):
+        return _succeeded(_text_of(resp), depth + 1)
+    if not isinstance(resp, dict):
+        return None
+    for k in ("is_error", "isError", "interrupted", "timed_out", "timedOut"):
+        if resp.get(k):
+            return False
+    if resp.get("success") is False:
+        return False
+    for holder in (resp, resp.get("metadata"), resp.get("result")):
+        if isinstance(holder, dict):
+            for k in _EXIT_KEYS:
+                v = holder.get(k)
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, int):
+                    return v == 0
+                if isinstance(v, str) and re.fullmatch(r"-?\d+", v.strip()):
+                    return int(v) == 0
+    for k in ("output", "content", "text", "stdout"):
+        if k in resp:
+            code = _exit_from_text(_text_of(resp[k]))
+            if code is not None:
+                return code == 0
+    if resp.get("success") is True:
+        return True
+    # Claude Bash shape: no exit code, but explicit stdout/stderr keys and no error/interrupt flag
+    if "stdout" in resp and ("interrupted" in resp or "stderr" in resp):
+        return True
+    return None
+
+
+GIT_TIMEOUT_S = 20  # one time budget for every git subprocess a hook starts
+
+
+def run_git(args, cwd=None, timeout=None) -> "subprocess.CompletedProcess":
+    """Run `git <args>` (in cwd when given) within GIT_TIMEOUT_S. Never raises: on timeout, a missing git or any
+    OSError it returns a CompletedProcess with returncode 124 (timeout) / 127 (cannot start), empty stdout and a
+    reason in stderr, so callers that check returncode treat it as a failed git call."""
+    import subprocess
+    cmd = ["git", *[str(a) for a in args]]
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        return subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", creationflags=flags,
+                              timeout=timeout or GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "git timed out")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", "git unavailable: " + str(exc)[:120])
+
+
+_PATH_KEY_RE = re.compile(r"(_DIR|_STATE|_TOOL|_CLI|_ROOT|_ROOTS|_HINTS|_PATH|_FILE)$")
+_CREATABLE_KEY_RE = re.compile(r"(_DIR|_STATE)$")
+
+
+def config_path_problems() -> list:
+    """'KEY: path does not exist' for each path-like key of the machine config whose target is missing.
+    Empty values and '<placeholder>' values are ignored; a *_DIR / *_STATE target that does not exist yet is fine
+    when its parent folder exists. Never raises."""
+    path = Path(os.environ.get("HARNESS_HOOK_CONFIG") or Path.home() / ".harness-hooks" / "config.json")
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return []
+    problems: list = []
+    if not isinstance(cfg, dict):
+        return problems
+    for k, v in cfg.items():
+        if not (isinstance(k, str) and k.isupper() and _PATH_KEY_RE.search(k) and isinstance(v, str)):
+            continue
+        if not v.strip() or v.lstrip().startswith("<"):
+            continue
+        val = os.path.expandvars(os.path.expanduser(v.strip()))
+        parts = [p for p in val.split(os.pathsep) if p.strip()] if k.endswith("_ROOTS") else [val]
+        for p in parts:
+            try:
+                pp = Path(p)
+                if pp.exists() or (_CREATABLE_KEY_RE.search(k) and pp.parent.exists()):
+                    continue
+            except OSError:
+                pass
+            problems.append(f"{k}: {p} does not exist")
+    return problems
+
+
 def state_dir(name: str) -> Path:
     """Per-hook state folder; HARNESS_HOOK_STATE overrides the default under the user's home."""
     base = Path(os.environ.get("HARNESS_HOOK_STATE") or Path.home() / ".harness-hooks")

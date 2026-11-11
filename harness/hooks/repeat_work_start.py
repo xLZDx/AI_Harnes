@@ -39,8 +39,7 @@ SHARED_NAMES = {"decision_log.md", "lessons_log.md", "document_registry.md", "ch
 
 
 def git(cwd, *args):
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=20)
+    r = _agentio.run_git(list(args), cwd=cwd)
     return r.stdout if r.returncode == 0 else ""
 
 

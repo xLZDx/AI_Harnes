@@ -116,8 +116,7 @@ def _repo_top(cwd: str) -> str:
     if not cwd:
         return ""
     try:
-        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-                             timeout=8)
+        out = _agentio.run_git(["-C", cwd, "rev-parse", "--show-toplevel"])
         return out.stdout.strip() if out.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -206,7 +205,7 @@ def classify(text: str) -> str:
 def git_progress_key(cwd: str) -> str:
     def run(*args: str) -> str:
         try:
-            out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=8)
+            out = _agentio.run_git(["-C", cwd, *args])
             return out.stdout if out.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
             return ""

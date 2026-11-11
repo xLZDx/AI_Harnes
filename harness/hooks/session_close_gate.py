@@ -127,7 +127,7 @@ def load_tool():
 
 
 def git(project: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(project), *args], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    return _agentio.run_git(["-C", str(project), *args], timeout=GIT_TIMEOUT)  # never raises: failure = returncode != 0
 
 
 def git_head(project: Path) -> str:
@@ -170,8 +170,8 @@ def on_post_tool_use(data: dict) -> None:
     cmd = _agentio.shell_command(data)
     if not cmd or not PR_RE.search(cmd):
         return
-    resp = data.get("tool_response")
-    if isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted")):
+    if _agentio.command_succeeded(data) is not True:  # failed or unprovable (unknown Codex shape): record nothing
+        log({"event": "pr-event", "verdict": "not-succeeded", "cmd": cmd[:120]})
         return
     plan_dir = find_plan_dir(data.get("cwd") or "")
     if not plan_dir:
@@ -295,6 +295,23 @@ def on_stop(data: dict) -> None:
               f"BLOCKED_EXTERNAL in PROJECT_PLAN.md only with a verified cause. Do not start another sprint without operator approval.")
 
 
+def warn_config_once() -> None:
+    """One stderr warning line when the machine config names missing paths; repeated only when the set changes.
+    Informational: never blocks and never raises."""
+    try:
+        problems = _agentio.config_path_problems()
+        sig = "|".join(problems)
+        state = load_state()
+        if state.get("config_warned", "") == sig:
+            return
+        if problems:
+            sys.stderr.write("session_close_gate: config path problems: " + "; ".join(problems) + "\n")
+        state["config_warned"] = sig
+        save_state(state)
+    except Exception:  # noqa: BLE001  a self-check must never break the gate
+        pass
+
+
 def main() -> int:
     global _CODEX
     if mode() == "off":
@@ -311,6 +328,7 @@ def main() -> int:
         if event == "PostToolUse":
             on_post_tool_use(data)
         elif event == "Stop":
+            warn_config_once()
             on_stop(data)
     return 0
 

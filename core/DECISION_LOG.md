@@ -122,3 +122,7 @@
 
 ## 2026-11-11 S5-T5 done
 - install_claude.py and install_codex.py have a failure seam (env HARNESS_INSTALL_FAIL_AFTER=n, read only inside install()); a half-way failure prints the restore path, removes the temp file and leaves the main file unchanged; the real restore.ps1 was run through PowerShell in tests and returned the home to the snapshot bytes. The probe accepts a hook command written as one string. 17 checks in tests/test_install_failure_restore.py.
+
+## 2026-11-11 S5-T4 done
+- _agentio gained command_succeeded (one parser for the Claude and the plausible Codex shell response shapes; unknown shape = not proven = None), run_git (one 20 s budget, never raises, 124 on timeout, 127 when git cannot start) and config_path_problems (missing configured paths; a not-yet-created *_DIR/*_STATE folder with an existing parent is fine). session_close_gate records a PR event only when the command is proven successful and warns once per distinct config problem set on Stop; it never blocks because of it.
+- Not verified: real Codex PostToolUse payloads for the shell tool (the parser accepts several shapes by design); other git callers (decision_log_gate, gpt_review_gate, go_gate, worktree_policy, rosetta/report helpers) keep their own timeouts. 46 checks in tests/test_hook_helpers.py.
