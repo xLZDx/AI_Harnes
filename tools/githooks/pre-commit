@@ -22,5 +22,10 @@ run_py() {
   esac
 }
 cd "$TOP" || exit 0
-run_py "$T/report.py" --stage >/dev/null 2>&1 || log_err "pre-commit: report.py --stage failed or timed out"
+OUT="$(run_py "$T/report.py" --stage 2>&1)"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  LAST="$(printf '%s' "$OUT" | tail -n 1)"
+  log_err "pre-commit: report.py --stage exit $RC: $LAST"
+fi
 exit 0

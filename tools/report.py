@@ -53,6 +53,19 @@ def view(state: str) -> tuple:
 
 # ---------------------------------------------------------------- git access
 
+def safe_url(url: str) -> str:
+    """A remote URL without credentials: userinfo (user:token@), query and fragment are dropped, so a token embedded
+    in the remote never reaches a report that the pre-commit hook puts into git history."""
+    u = (url or "").strip()
+    if "://" not in u:
+        return re.sub(r"^[^@/\s]+:[^@/\s]*@", "", u) if re.match(r"^[^@/\s]+:[^@/\s]*@", u) else u
+    scheme, rest = u.split("://", 1)
+    rest = re.split(r"[?#]", rest, 1)[0]
+    host_path = rest.split("/", 1)
+    host = host_path[0].rsplit("@", 1)[-1]
+    return scheme + "://" + host + ("/" + host_path[1] if len(host_path) > 1 else "")
+
+
 BUDGET_S = 60.0
 DEADLINE = float("inf")  # set to now + BUDGET_S when main() starts
 
@@ -86,7 +99,7 @@ class Git:
              "ahead": None, "behind": None, "remote_url": ""}
         s["short"] = s["head"][:7]
         s["remote"] = s["upstream"].split("/", 1)[0] if s["upstream"] else "origin"
-        s["remote_url"] = self.out("remote", "get-url", s["remote"]) or self.out("config", "--get", f"remote.{s['remote']}.url")
+        s["remote_url"] = safe_url(self.out("remote", "get-url", s["remote"]) or self.out("config", "--get", f"remote.{s['remote']}.url"))
         if s["upstream"]:
             lr = self.out("rev-list", "--left-right", "--count", "HEAD...@{upstream}").split()
             if len(lr) == 2 and all(x.isdigit() for x in lr):
@@ -560,27 +573,24 @@ def busy_git_state(root: Path) -> str:
 
 
 def main(argv=None) -> int:
+    """Exit 0 = report written (or skipped by design); 1 = a real failure, reason on stderr. The pre-commit hook
+    ignores the code for the commit itself (it always lets the commit through) but logs the reason."""
     global DEADLINE
     DEADLINE = time.monotonic() + BUDGET_S
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out")
     ap.add_argument("--stage", action="store_true",
                     help="pre-commit mode: after writing, `git add` the report into the commit being made; "
-                         "never fails (exit 0 on every error), skipped during rebase/merge/cherry-pick")
+                         "skipped during rebase/merge/cherry-pick")
     a = ap.parse_args(argv)
     try:
         return run(a)
-    except Exception as e:  # noqa: BLE001 - the pre-commit mode must never break a commit
+    except Exception as e:  # noqa: BLE001
         print(f"report: unexpected error {type(e).__name__}: {e}", file=sys.stderr)
-        return 0 if a.stage else 1
+        return 1
 
 
 def run(a) -> int:
-    try:
-        d = ledger.load()
-    except (OSError, ValueError) as e:
-        print(f"report: ledger not readable ({e}); rendering an empty ledger", file=sys.stderr)
-        d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}
     top = Git(Path.cwd()).out("rev-parse", "--show-toplevel")
     root = Path(top) if top else Path.cwd()
     if a.stage:
@@ -588,24 +598,39 @@ def run(a) -> int:
         if busy:
             print(f"report: skipped ({busy} in progress)")
             return 0
+    ledger_error = ""
+    try:
+        d = ledger.load()
+    except (OSError, ValueError) as e:
+        ledger_error = str(e)
+        d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}
     out = Path(a.out) if a.out else default_out(d, root)
     if not is_ours(out):
-        print("report: refusing to overwrite a hand-made file", file=sys.stderr)
-        return 0
+        print(f"report: refusing to overwrite a hand-made file {out}", file=sys.stderr)
+        return 1
+    if ledger_error and out.exists():  # never replace a real report by an empty page
+        print(f"report: ledger not readable ({ledger_error}); the existing report {out} was left as it is", file=sys.stderr)
+        return 1
+    if ledger_error:
+        print(f"report: ledger not readable ({ledger_error}); rendering an empty ledger", file=sys.stderr)
     try:
         atomic_write_text(out, render(d, root))
     except OSError as e:
         print(f"report: cannot write {out}: {e}", file=sys.stderr)
-        return 0 if a.stage else 1
+        return 1
     print(f"report: {out}")
     if a.stage:
-        r = subprocess.run(["git", "-C", str(root), "add", "--", str(out)], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=30)
+        try:
+            r = subprocess.run(["git", "-C", str(root), "add", "--", str(out)], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"report: git add failed: {e}", file=sys.stderr)
+            return 1
         if r.returncode != 0:
             print(f"report: git add failed: {r.stderr.strip()}", file=sys.stderr)
-        else:
-            print("report: staged into the commit")
-    return 0
+            return 1
+        print("report: staged into the commit")
+    return 1 if ledger_error else 0
 
 
 if __name__ == "__main__":

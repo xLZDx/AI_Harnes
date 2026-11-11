@@ -144,3 +144,10 @@
 ## 2026-11-11 S6-T3: rules, skill and memory name the global report format; install in the 7 projects
 - harness/rules/CORE.md and the html-report skill now say: only this format, produced by tools/report.py, refreshed by the pre-commit hook and on request; the older golden pair and the English copy are superseded. Memory entry program-status-report-template records the template, its private copy and the rule.
 - Install into ERP, Fitness_App, AI_trading_assistance, Personal_Decision_Command_Center, Remote_Quality_Delivery_Office_Platform_rqdo, db-test-tool-analysis and TENDER with build.py --install-project <dir> --force (same hooksPath, ledger kept, .harness-tools refreshed). Marketing projects are not touched.
+
+## 2026-11-11 GPT-PM round 1 for sprint S6: MAJOR x3, all accepted
+- The first send was answered with a template (one task per review) because the note said "all three tasks"; resent with one task id and the others named as context.
+- F1 (verified in code): an unreadable ledger rendered an empty page over the real report and the hook staged it. Fix: an existing report is never replaced when the ledger cannot be read (exit 1, not re-staged); without an existing report an empty page is written, still exit 1.
+- F2 (verified): refusals and git add failures returned 0 and the hook only logged non-zero codes, so failures were invisible. Fix: report.py returns 1 for every real failure (hand-made file, write error, git add error, bad ledger, unexpected error); busy git state stays 0. The hook always exits 0 but logs the last output line with the exit code to .harness/hook-error.log.
+- F3 (verified): the remote URL went into the report unfiltered, and the hook commits the report. Fix: safe_url drops userinfo, query and fragment. Residual: other free text (commit subjects, task evidence typed by people) is shown as written.
+- Existing hook tests that expected exit 0 on failures were updated to the new contract.

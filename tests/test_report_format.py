@@ -163,6 +163,40 @@ def t_busy_git_state():
     assert report.busy_git_state(d) == "rebase-merge"
 
 
+def t_safe_url_cases():
+    cases = {"https://u:p@h/x.git": "https://h/x.git", "https://h/x.git?token=a#f": "https://h/x.git",
+             "git@github.com:o/r.git": "git@github.com:o/r.git", "ssh://git@h/o/r.git": "ssh://h/o/r.git", "": ""}
+    for src, want in cases.items():
+        assert report.safe_url(src) == want, (src, report.safe_url(src))
+
+
+def _repo_with_secret_remote():
+    d = tmp()
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                    "https://user:ghp_SYNTHETICTOKEN123@example.com/o/r.git?token=SECRET2#frag"], check=True)
+    return d
+
+
+def _no_secret(page):
+    assert "SYNTHETICTOKEN123" not in page and "SECRET2" not in page and "user:" not in page
+    assert "example.com/o/r.git" in page
+
+
+def t_remote_credentials_not_in_render():
+    _no_secret(report.render(ledger(), _repo_with_secret_remote()))
+
+
+def t_remote_credentials_not_in_cli_output():
+    d = _repo_with_secret_remote()
+    lf = d / "l.json"
+    lf.write_text(json.dumps(ledger()), encoding="utf-8")
+    out = d / "o" / "r.html"
+    r = run_cli(["--out", str(out)], d, lf)
+    assert r.returncode == 0, r.stderr
+    _no_secret(out.read_text(encoding="utf-8"))
+
+
 def main():
     for name, fn in list(globals().items()):
         if name.startswith("t_"):

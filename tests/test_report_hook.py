@@ -99,14 +99,15 @@ def t_failure_never_blocks():
     # reports is a plain file -> the report cannot be written
     d = installed()
     (d / "reports").write_text("not a dir", encoding="utf-8")
-    assert stage(d).returncode == 0
+    assert stage(d).returncode == 1  # real failure is reported (exit 1) but never blocks the commit
     r = commit(d, "a.txt", "1")
     assert r.returncode == 0, r.stderr
     assert git(d, "rev-parse", "--verify", "HEAD", check=False).returncode == 0
+    assert "report.py --stage exit 1" in hook_log(d)
     # corrupt ledger
     d2 = installed()
     (d2 / ".harness" / "ledger.json").write_text("{not json", encoding="utf-8")
-    assert stage(d2).returncode == 0
+    assert stage(d2).returncode == 1
     r = commit(d2, "a.txt", "1")
     assert r.returncode == 0, r.stderr
     assert git(d2, "rev-parse", "--verify", "HEAD", check=False).returncode == 0
@@ -137,6 +138,91 @@ def t_second_commit_updates_same_file():
 def t_post_commit_no_report():
     text = (ROOT / "tools" / "githooks" / "post-commit").read_text(encoding="utf-8")
     assert "report.py" not in text
+
+
+def hook_log(d):
+    p = d / ".harness" / "hook-error.log"
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def t_corrupt_ledger_keeps_existing_report():
+    d = repo()
+    assert stage(d).returncode == 0
+    git(d, "commit", "-q", "-m", "base", "--no-verify")
+    p = d / REPORT
+    before = p.read_bytes()
+    (d / ".harness" / "ledger.json").write_text("{not json", encoding="utf-8")
+    r = stage(d)
+    assert r.returncode == 1, (r.returncode, r.stderr)
+    assert "not readable" in r.stderr, r.stderr
+    assert p.read_bytes() == before
+    assert REPORT not in git(d, "diff", "--cached", "--name-only").stdout.split()
+
+
+def t_corrupt_ledger_no_report_renders_empty_but_exit_1():
+    d = repo()
+    (d / ".harness" / "ledger.json").write_text("{not json", encoding="utf-8")
+    r = stage(d)
+    assert r.returncode == 1, (r.returncode, r.stderr)
+    assert "not readable" in r.stderr
+    assert any((d / "reports").glob("*.html"))
+
+
+def t_hook_corrupt_ledger_commit_ok_old_report_kept():
+    d = installed()
+    assert commit(d, "a.txt", "1").returncode == 0
+    old = git(d, "show", f"HEAD:{REPORT}").stdout
+    (d / ".harness" / "ledger.json").write_text("{not json", encoding="utf-8")
+    r = commit(d, "b.txt", "2", "second\n\nTask: X-T1")
+    assert r.returncode == 0, r.stderr
+    assert git(d, "show", f"HEAD:{REPORT}").stdout == old
+    assert "report.py --stage exit 1" in hook_log(d), hook_log(d)
+
+
+def t_handmade_exit_1_and_logged():
+    d = repo()
+    p = d / REPORT
+    p.parent.mkdir()
+    p.write_text("<html>mine</html>", encoding="utf-8")
+    r = stage(d)
+    assert r.returncode == 1 and "refusing to overwrite" in r.stderr, (r.returncode, r.stderr)
+    assert p.read_text(encoding="utf-8") == "<html>mine</html>"
+    d2 = installed()
+    p2 = d2 / REPORT
+    p2.parent.mkdir()
+    p2.write_text("<html>mine</html>", encoding="utf-8")
+    assert commit(d2, "a.txt", "1").returncode == 0
+    assert p2.read_text(encoding="utf-8") == "<html>mine</html>"
+    assert "report.py --stage exit 1" in hook_log(d2) and "refusing to overwrite" in hook_log(d2), hook_log(d2)
+
+
+def t_git_add_failure_exit_1_and_logged():
+    d = installed()
+    (d / ".gitignore").write_text("reports/\n", encoding="utf-8")
+    r = stage(d)
+    assert r.returncode == 1 and "git add failed" in r.stderr, (r.returncode, r.stderr)
+    d2 = installed()
+    (d2 / ".gitignore").write_text("reports/\n", encoding="utf-8")
+    assert commit(d2, ".gitignore", "reports/\n").returncode == 0
+    assert "report.py --stage exit 1" in hook_log(d2), hook_log(d2)
+    assert REPORT not in files_of(d2)
+
+
+def t_busy_state_exit_0_no_log():
+    d = installed()
+    (d / ".git" / "MERGE_HEAD").write_text("0" * 40 + "\n")
+    r = stage(d)
+    assert r.returncode == 0 and "skipped" in r.stdout
+    assert hook_log(d) == ""
+
+
+def t_token_not_in_committed_report():
+    d = installed()
+    git(d, "remote", "add", "origin", "https://user:ghp_SYNTHETICTOKEN123@example.com/o/r.git?token=SECRET2#frag")
+    assert commit(d, "a.txt", "1").returncode == 0
+    page = git(d, "show", f"HEAD:{REPORT}").stdout
+    assert "SYNTHETICTOKEN123" not in page and "SECRET2" not in page and "user:" not in page
+    assert "example.com/o/r.git" in page
 
 
 def main():
