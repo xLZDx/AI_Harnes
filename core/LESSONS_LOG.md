@@ -134,3 +134,6 @@
 ## 2026-11-11 Probe that could not fail
 - Kind: FAILURE. Facts: my own proof script printed a list and exited 0 whatever the list held. Root cause: written as a demo, not as a check. Layer missed: author; the tester only saw the installer, and only GPT-PM read the probe. Rule: every proof script exits nonzero when the property does not hold, and has a test for the failing case.
 - Kind: SHORTCOMING. Facts: the same probe needed a second fix round because the first fix closed only the cases the reviewer named (empty result) and left the matcher test as a text search. Rule: when fixing a check, list every way it can say OK wrongly (input selection, execution, result reading) and close all of them in one batch.
+
+## 2026-11-11 Decision-refs check false positives
+- Kind: SHORTCOMING. Facts: the Stop check treated any bracketed letters+digits as a decision code and blocked five of my replies that contained a sprint code or a commit hash. Root cause: the pattern was written for known codes but matched everything. Layer missed: author of the hook, tests. Rule: a text-pattern gate needs a list of known false-positive shapes (hashes, ids) and a test for each.

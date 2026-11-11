@@ -37,6 +37,12 @@ DECISION_REF_RE = re.compile(
     r'\)',
     re.IGNORECASE
 )
+GIT_HASH_RE = re.compile(r'\([0-9a-f]{7,40}\)', re.IGNORECASE)  # "(dc47d8a)" is a commit hash, not a decision code
+
+
+def is_decision_ref(ref: str) -> bool:
+    """False for a git commit hash in brackets (7-40 hex characters); True for every other bracketed code."""
+    return not GIT_HASH_RE.fullmatch(ref)
 EXPLANATION_WINDOW = 200  # chars after (D-N) to look for explanation
 
 
@@ -96,7 +102,7 @@ def main() -> int:
     if len(message) < MIN_CHARS:
         return 0
 
-    refs = [(m.group(), m.start()) for m in DECISION_REF_RE.finditer(message)]
+    refs = [(m.group(), m.start()) for m in DECISION_REF_RE.finditer(message) if is_decision_ref(m.group())]
     if not refs:
         return 0
 

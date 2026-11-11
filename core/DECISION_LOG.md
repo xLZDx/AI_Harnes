@@ -104,3 +104,9 @@
 
 ## 2026-11-11 GPT-PM round 2 for sprint S4: MAJOR x1, accepted
 - Finding (verified in code): the probe selected a hook group when its matcher merely contained the text Bash, so a matcher like ^NotBash$ passed although Claude would not run that hook for Bash. Fix: matcher_applies (empty and * = all tools; otherwise the matcher is a regular expression that must match the whole tool name; an invalid expression fails the probe). Strict on purpose: fewer matches means the probe fails. 15 more checks in tests/test_probe_live_hooks.py.
+
+## 2026-11-11 S5: cleanup after the Claude and Codex switch (operator: "ГО")
+- ERP bearer tokens moved from ~/.claude.json to user environment variables ERP_MCP_IVAN_AUTH and ERP_MCP_818HA_AUTH (values never printed); the config now holds ${VAR} references. The pre-move copy D:\Backup\claude-json-pre-token-move-20261111 still contains the plain tokens; the operator should delete it once the servers connect. Takes effect after Claude restarts.
+- Old Claude hook files not referenced by the live settings (11 files) moved to D:\Backup\claude-old-hooks-20261111. ~/.codex/hooks left alone: the completion watchdog files there are the operator's own.
+- S5-T1: the decision-refs Stop check no longer treats a bracketed 7-40 hex string (a commit hash) as a decision code; a 6-hex code and any D-1/S4 style code are still checked. 16 checks in tests/test_decision_explain_gate.py.
+- The five backlog items became ledger tasks S5-T2..T5 (atomic state writes; worktree ledger bad line; Codex PostToolUse shape + git time budget + config path check; install half-way failure and restore tests).
