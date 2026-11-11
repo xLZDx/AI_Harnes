@@ -56,7 +56,7 @@ def view(state: str) -> tuple:
 def safe_url(url: str) -> str:
     """A remote URL without credentials: userinfo (user:token@), query and fragment are dropped, so a token embedded
     in the remote never reaches a report that the pre-commit hook puts into git history."""
-    u = (url or "").strip()
+    u = re.split(r"[?#]", (url or "").strip(), 1)[0]  # query and fragment first, for every URL form
     if "://" not in u:
         return re.sub(r"^[^@/\s]+:[^@/\s]*@", "", u) if re.match(r"^[^@/\s]+:[^@/\s]*@", u) else u
     scheme, rest = u.split("://", 1)

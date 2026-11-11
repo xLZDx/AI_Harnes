@@ -197,6 +197,37 @@ def t_remote_credentials_not_in_cli_output():
     _no_secret(out.read_text(encoding="utf-8"))
 
 
+def t_safe_url_scp_query_fragment():
+    cases = {"git@github.com:org/repo.git?token=SYNTHETIC_SECRET": "git@github.com:org/repo.git",
+             "git@github.com:org/repo.git#SYNTHETIC_SECRET": "git@github.com:org/repo.git",
+             "user:pw@host:org/r.git?x=1": "host:org/r.git",
+             "https://u:p@h/x.git?t=1#f": "https://h/x.git",
+             "git@github.com:o/r.git": "git@github.com:o/r.git"}
+    for src, want in cases.items():
+        assert report.safe_url(src) == want, (src, report.safe_url(src))
+
+
+def _repo_with_scp_secret_remote():
+    d = tmp()
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                    "git@example.com:org/repo.git?token=SYNTHETIC_SECRET_SCP"], check=True)
+    return d
+
+
+def t_scp_remote_query_not_in_render_and_cli():
+    page = report.render(ledger(), _repo_with_scp_secret_remote())
+    assert "SYNTHETIC_SECRET_SCP" not in page and "example.com:org/repo.git" in page
+    d = _repo_with_scp_secret_remote()
+    lf = d / "l.json"
+    lf.write_text(json.dumps(ledger()), encoding="utf-8")
+    out = d / "o" / "r.html"
+    r = run_cli(["--out", str(out)], d, lf)
+    assert r.returncode == 0, r.stderr
+    page = out.read_text(encoding="utf-8")
+    assert "SYNTHETIC_SECRET_SCP" not in page and "example.com:org/repo.git" in page
+
+
 def main():
     for name, fn in list(globals().items()):
         if name.startswith("t_"):

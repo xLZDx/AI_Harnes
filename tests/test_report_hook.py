@@ -225,6 +225,16 @@ def t_token_not_in_committed_report():
     assert "example.com/o/r.git" in page
 
 
+def t_scp_remote_query_not_in_committed_report():
+    d = installed()
+    git(d, "remote", "add", "origin", "git@example.com:org/repo.git?token=SYNTHETIC_SECRET_SCP")
+    assert commit(d, "a.txt", "1").returncode == 0
+    assert REPORT in files_of(d), files_of(d)
+    page = git(d, "show", f"HEAD:{REPORT}").stdout
+    assert "SYNTHETIC_SECRET_SCP" not in page
+    assert "example.com:org/repo.git" in page
+
+
 def main():
     for name, fn in list(globals().items()):
         if name.startswith("t_"):

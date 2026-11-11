@@ -151,3 +151,6 @@
 - F2 (verified): refusals and git add failures returned 0 and the hook only logged non-zero codes, so failures were invisible. Fix: report.py returns 1 for every real failure (hand-made file, write error, git add error, bad ledger, unexpected error); busy git state stays 0. The hook always exits 0 but logs the last output line with the exit code to .harness/hook-error.log.
 - F3 (verified): the remote URL went into the report unfiltered, and the hook commits the report. Fix: safe_url drops userinfo, query and fragment. Residual: other free text (commit subjects, task evidence typed by people) is shown as written.
 - Existing hook tests that expected exit 0 on failures were updated to the new contract.
+
+## 2026-11-11 GPT-PM round 2 for sprint S6: one MAJOR left, accepted
+- F3 was only partly closed: safe_url removed the query and fragment only for URLs with "://", so an SCP-style remote (git@host:org/repo.git?token=...) kept the token. Fix: query and fragment are removed first for every URL form. Tests: five unit cases, an end-to-end render with a synthetic token remote, and a real hook commit whose committed report is checked.
