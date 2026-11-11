@@ -129,3 +129,4 @@
 
 ## 2026-11-11 Claude hooks were left on the old set while Codex was built
 - Kind: FAILURE. Facts: the day-one install put agents, skills and commands into ~/.claude but left settings.json hooks on the old system (35 entries, 3 af_cli calls), and no report said so; Codex was then built from the shared source first. The operator found the gap. Root cause: I filed the live switch as a "separate decision" although the hook set was already chosen. Layer missed: author (reporting), no gate. Rule: when an install is reported done, list what was NOT switched; never turn an already-made decision into a new question.
+- Kind: SUCCESS. Facts: the live switch was proven by a probe that runs the real installed hook commands with a dangerous payload, not by reading the settings file. Rule: prove a protection by trying to break it.

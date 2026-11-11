@@ -95,3 +95,4 @@
 - Live proof: 35 old entries -> 27 new; a rm -rf payload run through the live Bash hooks is blocked by shell_policy_gate. Other settings.json keys were verified unchanged on a copy first.
 - Not tested: a failure half-way through the install and running restore.ps1 itself (backlog).
 - Backlog: the "decision refs" Stop check flags any "(letters+digits)" in brackets, not only decision codes; it fired on my own "(S4)".
+- S4-T2 evidence tool: tools/probe_live_hooks.py counts the live hook entries and runs a dangerous-command payload through the live Bash hooks (read-only; the payload is only piped to the hooks, never executed).
