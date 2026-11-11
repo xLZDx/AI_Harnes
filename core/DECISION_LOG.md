@@ -83,3 +83,9 @@
 - Accepted and fixed: tool matchers (`*`, parentheses, spaces, `^$`) are normalized and every dropped or narrowed group prints a warning; a broken project settings file or bad timeout stops the project step with exit 1 instead of "no project hooks"; a re-run with the same backup folder keeps the first hooks.json backup; the project variable is replaced in the command, the arguments and the shell form; the installer checks every file shape before its first write, removes its temp file on any failure and always prints the restore path; restore.ps1 doubles apostrophes, is written with a BOM, can be re-run, and does not roll back config.toml (Codex may change it after the install: trust state).
 - Accepted as printout only: the hooks.json merge matches by script file name, so the installer lists every replaced old entry for the operator to check.
 - Not done (backlog): a shim path that follows junctions in snapshots (copytree symlinks) and a stale-script cleanup of ~/.codex/hooks.
+
+## 2026-11-11 GPT-PM round 1 for sprint S3: MAJOR x2, both accepted
+- The first send came back as a template ("one task per review") because the packet had no TASK id; resent with `TASK: S3-T3` (final task, review covers the whole sprint diff).
+- Finding 1 (verified in code): a Codex spawn with no model/effort and no agent definition was allowed, so a subagent could inherit the parent model. Fix: the effective model and effort must come from the call or the agent TOML; otherwise deny. Built-in agents without a harness TOML now need both values passed explicitly.
+- Finding 2 (verified in code): an unexpected error in the Codex branch exited 0. Fix: spawn_agent fails closed (exit 2) like Agent; a non-object tool_input is denied.
+- Not covered by a test: forcing an unexpected exception inside main() (needs a fault-injection seam); registered as backlog.

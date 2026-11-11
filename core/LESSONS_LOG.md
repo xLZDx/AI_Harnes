@@ -123,3 +123,6 @@
 ## 2026-11-11 S3-T3 review fixes
 - Kind: FAILURE. Facts: a parity test passed only because the word config.toml appeared in a comment of the generated restore script; it checked the wrong thing after the restore design changed. Layer missed: tests (a text-contains check on a whole file). Rule: assert on the lines that matter, and re-read old expectations when a design decision flips.
 - Kind: SUCCESS. Facts: the silent-failure review found 12 items, 10 of them were already fixed by the earlier batch; the rest became a printout of replaced hook entries and temp-file cleanup. Rule: send the reviewer the diff after the fix batch, not before.
+
+## 2026-11-11 GPT-PM round 1 findings on the Codex spawn gate
+- Kind: FAILURE. Facts: the Luna rule was enforced only for values that were present; an absent model fell through to "allow", and the error handler failed closed for one client only. Root cause: the gate was written as a deny-list of wrong values instead of a proof of the right one. Layer missed: author and three reviewers; only the sprint-level GPT-PM saw it. Rule: a policy gate must prove the required value and fail closed on unknown, and every client branch needs the same error handling.

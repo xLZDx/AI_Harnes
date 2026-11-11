@@ -797,17 +797,79 @@ def test_agent_model_gate_codex_spawn_agent_with_opus_model_is_denied():
     trio(sb, "agent_model_gate.py", c, x, "deny")
     for model, effort, want in (("gpt-6-luna", "medium", "allow"), ("gpt-5.6-luna", "medium", "deny"),
                                 ("gpt-6-luna", "high", "deny"), ("gpt-6-sol", "medium", "deny"),
-                                ("", "", "allow")):
+                                ("", "", "exit_or_deny")):  # nothing establishes model/effort: fail closed
         ti = {"agent_type": "helper", "message": "do it"}
         if model:
             ti["model"] = model
         if effort:
             ti["reasoning_effort"] = effort
         _, x2 = pl(sb, PRE, tool="Agent", ti=_agent("sonnet"), xtool="spawn_agent", xti=ti)
-        r = run_hook(sb, "newx", "agent_model_gate.py", x2)
-        assert r.kind == want, f"model={model!r} effort={effort!r}: got {r.kind}, expected {want}\n{r.dump()}"
+        r = run_hook(sb, "newx", "agent_model_gate.py", x2, {"CODEX_HOME": str(sb.root / "empty_codex_home")})
+        ok = r.kind in ("deny", "exit2") if want == "exit_or_deny" else r.kind == want
+        assert ok, f"model={model!r} effort={effort!r}: got {r.kind}, expected {want}\n{r.dump()}"
     reg = json.loads((NEW / "registry.json").read_text(encoding="utf-8"))
     assert any(e["script"] == "agent_model_gate.py" and e.get("codex") == "spawn_agent" for e in reg["hooks"])
+
+
+def _codex_spawn(sb, xti, toml=None, name="helper"):
+    """Run the Codex spawn_agent payload with an empty CODEX_HOME; optional agent TOML under cwd/.codex/agents."""
+    proj = sb.root / "cproj"
+    proj.mkdir(exist_ok=True)
+    home = sb.root / "empty_codex_home"
+    home.mkdir(exist_ok=True)
+    if toml is not None:
+        (proj / ".codex" / "agents").mkdir(parents=True, exist_ok=True)
+        (proj / ".codex" / "agents" / f"{name}.toml").write_text(toml, encoding="utf-8", newline="\n")
+    _, x = pl(sb, PRE, tool="Agent", ti=_agent("sonnet"), xtool="spawn_agent", xti=xti, cwd=proj)
+    return run_hook(sb, "newx", "agent_model_gate.py", x, {"CODEX_HOME": str(home)})
+
+
+def test_agent_model_gate_codex_fails_closed_when_model_or_effort_cannot_be_established():
+    blocked = ("deny", "exit2")
+    base = {"agent_type": "helper", "message": "do it"}
+    # omitted model and effort, no TOML anywhere
+    r = _codex_spawn(SB("amc1"), dict(base))
+    assert r.kind in blocked, r.dump()
+    # unknown agent type, nothing declared
+    r = _codex_spawn(SB("amc2"), {"agent_type": "no-such-agent", "message": "m"})
+    assert r.kind in blocked, r.dump()
+    # explicit policy pair is allowed
+    r = _codex_spawn(SB("amc3"), {**base, "model": "gpt-6-luna", "reasoning_effort": "medium"})
+    assert r.kind == "allow", r.dump()
+    # TOML with luna/medium, no explicit values: allowed
+    ok_toml = 'name = "helper"\nmodel = "gpt-6-luna"\nmodel_reasoning_effort = "medium"\n'
+    r = _codex_spawn(SB("amc4"), dict(base), toml=ok_toml)
+    assert r.kind == "allow", r.dump()
+    # TOML lacking model (effort only), no explicit model: cannot establish model
+    r = _codex_spawn(SB("amc5"), dict(base), toml='name = "helper"\nmodel_reasoning_effort = "medium"\n')
+    assert r.kind in blocked, r.dump()
+    # TOML lacking effort, explicit model only: effort open
+    r = _codex_spawn(SB("amc5b"), {**base, "model": "gpt-6-luna"}, toml='name = "helper"\nmodel = "gpt-6-luna"\n')
+    assert r.kind in blocked, r.dump()
+    # model given, effort missing, no TOML
+    r = _codex_spawn(SB("amc6"), {**base, "model": "gpt-6-luna"})
+    assert r.kind in blocked, r.dump()
+    # effort given, model missing, no TOML
+    r = _codex_spawn(SB("amc6b"), {**base, "reasoning_effort": "medium"})
+    assert r.kind in blocked, r.dump()
+    # wrong model with correct effort
+    r = _codex_spawn(SB("amc8"), {**base, "model": "gpt-5.5", "reasoning_effort": "medium"})
+    assert r.kind in blocked, r.dump()
+    # TOML declaring another model is denied even when the call is silent
+    r = _codex_spawn(SB("amc9"), dict(base), toml='model = "gpt-5.5"\nmodel_reasoning_effort = "medium"\n')
+    assert r.kind in blocked, r.dump()
+
+
+def test_agent_model_gate_codex_non_object_tool_input_is_blocked():
+    for i, bad in enumerate(("just a string", ["agent_type", "helper"], 5)):
+        r = _codex_spawn(SB(f"amn{i}"), bad)
+        assert r.kind in ("deny", "exit2"), f"tool_input={bad!r}\n{r.dump()}"
+    # a Codex payload with tool_input absent entirely must not pass either
+    sb = SB("amn9")
+    _, x = pl(sb, PRE, tool="Agent", ti=_agent("sonnet"), xtool="spawn_agent", xti={})
+    del x["tool_input"]
+    r = run_hook(sb, "newx", "agent_model_gate.py", x, {"CODEX_HOME": str(sb.root / "empty_codex_home")})
+    assert r.kind in ("deny", "exit2"), r.dump()
 
 
 def test_agent_model_gate_claude_payload_is_not_taken_for_codex_when_codex_home_is_set():
