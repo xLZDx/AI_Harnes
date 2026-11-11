@@ -29,7 +29,19 @@ sys.modules["hv2"] = h
 _s.loader.exec_module(h)
 
 NEW = h.SRC / "harness" / "hooks"
-OLD = Path.home() / ".claude" / "hooks"
+def _old_hooks_dir() -> Path:
+    """Folder with the ORIGINAL (pre-Harness-v2) hooks used as the oracle. Once the live ~/.claude/hooks holds the new
+    set, point OLD_HOOKS_DIR (env var, or key in ~/.harness-hooks/config.json) at a snapshot of the original files."""
+    v = os.environ.get("OLD_HOOKS_DIR", "")
+    if not v:
+        try:
+            v = str(json.loads((Path.home() / ".harness-hooks" / "config.json").read_text(encoding="utf-8-sig")).get("OLD_HOOKS_DIR", ""))
+        except (OSError, ValueError):
+            v = ""
+    return Path(v) if v and not v.startswith("<") else Path.home() / ".claude" / "hooks"
+
+
+OLD = _old_hooks_dir()
 OUT = h.SRC / "out"
 SIDES = ("old", "new", "newx")  # original (Claude payload), port (Claude payload), port (Codex payload)
 DROP_ENV = re.compile(r"^(CLAUDE|CODEX|HARNESS|SESSION_|PM_BRIDGE|ANTHROPIC)")

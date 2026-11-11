@@ -140,3 +140,6 @@
 - Kind: SUCCESS. Facts: two backlog fixes were delegated with exact behaviors to assert, then tested by a separate agent: 61 checks passed on the first run. Rule: the implementer lists the behaviors a tester must assert; the tester writes the tests.
 - Kind: SUCCESS. Facts: a tiny env-var seam made a half-way install failure testable end to end, including a real restore.ps1 run. Rule: add a test seam instead of mocking inside the tool.
 - Kind: SHORTCOMING. Facts: the Codex shell response shape is still unverified; the code now fails safe (unknown shape = no success recorded) instead of guessing. Rule: when a payload shape is unverified, make the unknown case the safe case and say so in the log.
+
+## 2026-11-11 Tests that used the live folder as the oracle
+- Kind: FAILURE. Facts: after I installed the new hooks into ~/.claude, 27 parity tests failed because they read the original hooks from that same live folder; I misread the first red run as a product regression until I read the traceback. Layer missed: author of the tests (oracle tied to a mutable live path) and me (installed before checking what else reads the folder). Rule: a test oracle is a frozen snapshot, not a live folder; before overwriting a live folder, grep the tests for it.

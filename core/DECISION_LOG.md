@@ -126,3 +126,6 @@
 ## 2026-11-11 S5-T4 done
 - _agentio gained command_succeeded (one parser for the Claude and the plausible Codex shell response shapes; unknown shape = not proven = None), run_git (one 20 s budget, never raises, 124 on timeout, 127 when git cannot start) and config_path_problems (missing configured paths; a not-yet-created *_DIR/*_STATE folder with an existing parent is fine). session_close_gate records a PR event only when the command is proven successful and warns once per distinct config problem set on Stop; it never blocks because of it.
 - Not verified: real Codex PostToolUse payloads for the shell tool (the parser accepts several shapes by design); other git callers (decision_log_gate, gpt_review_gate, go_gate, worktree_policy, rosetta/report helpers) keep their own timeouts. 46 checks in tests/test_hook_helpers.py.
+
+## 2026-11-11 S5 sprint-end test run and an oracle fix
+- The parity tests in tests/test_hooks_dual.py compare each ported hook with the ORIGINAL one. After the live switch ~/.claude/hooks holds the new set, so 27 of them failed with "original gpt gate changed shape" (not a product defect). The oracle folder is now OLD_HOOKS_DIR (env or ~/.harness-hooks/config.json, outside git) pointing at the pre-switch snapshot; the default stays ~/.claude/hooks. Result: 45 PASS, 0 failing. Other test files of the sprint: all OK, 0 failing.
