@@ -50,7 +50,11 @@ instruction wins; platform permission and safety controls always apply.
   to HEAD; a new commit removes it. The pre-push git hook checks it.
 - One branch and one PR per sprint. Commit message: at most two sentences + `Task: <ID>`.
 - Each commit adds an entry to `core/LESSONS_LOG.md` (FAILURE / SHORTCOMING / SUCCESS).
-- After every commit the git hook redraws the changed section of the HTML report.
+- Every project produces program status reports ONLY in the one global format (`tools/report.py`, Russian HTML,
+  the layout of the operator's template: hero tiles, provenance bar with copy button, program bar with formula,
+  sprint rows, active-sprint table, all tasks with criteria, formulas, commit update log). Never hand-write another layout.
+- The pre-commit hook regenerates `reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html` and stages it into the commit; it
+  never blocks a commit and the report is not reviewed. On request ("дай репорт") run `tools/report.py` the same way.
 
 ## Safety
 - Operator-only: unrecoverable deletion, real money and live trading, force-push,

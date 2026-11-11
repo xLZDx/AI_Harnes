@@ -140,3 +140,7 @@
 - tools/githooks/pre-commit runs report.py --stage and exits 0 in every case (no check, no review, errors go to .harness/hook-error.log). --stage adds the report to the commit being made, and does nothing during a merge, rebase, cherry-pick or revert. report.py has one 60 s time budget for all its git calls. The post-commit hook no longer calls report.py: regenerating after the commit would dirty the tree.
 - Consequence to know: the report inside a commit shows the state before that commit is recorded on its task; the next commit's report shows it. The freshness section says so.
 - Not tested: a linked git worktree; "report tool not found" and "no Python" branches of the hook.
+
+## 2026-11-11 S6-T3: rules, skill and memory name the global report format; install in the 7 projects
+- harness/rules/CORE.md and the html-report skill now say: only this format, produced by tools/report.py, refreshed by the pre-commit hook and on request; the older golden pair and the English copy are superseded. Memory entry program-status-report-template records the template, its private copy and the rule.
+- Install into ERP, Fitness_App, AI_trading_assistance, Personal_Decision_Command_Center, Remote_Quality_Delivery_Office_Platform_rqdo, db-test-tool-analysis and TENDER with build.py --install-project <dir> --force (same hooksPath, ledger kept, .harness-tools refreshed). Marketing projects are not touched.
