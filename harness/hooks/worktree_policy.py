@@ -84,13 +84,30 @@ def git(args, cwd=None):
         return 1, ""
 
 
+SKIPPED_LINES = 0  # corrupt ledger lines seen by the last ledger_rows() call
+
+
 def ledger_rows():
+    """Read the JSONL ledger; a corrupt line is skipped and counted, later entries are still read."""
+    global SKIPPED_LINES
     rows = []
+    skipped = 0
     try:
-        for ln in LEDGER.read_text(encoding="utf-8").splitlines():
-            rows.append(json.loads(ln))
+        for ln in LEDGER.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                skipped += 1
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+            else:
+                skipped += 1
     except Exception:
         pass
+    SKIPPED_LINES = skipped
     return rows
 
 
@@ -204,6 +221,8 @@ def prompt(data):
     if notes:
         ctx = ("[Worktree policy] Scratch worktrees that must be removed after their merge: " + "; ".join(notes[:10]) +
                ". Remove them after the CLAUDE.md section 9 checks.")
+        if SKIPPED_LINES:
+            ctx += f" Note: {SKIPPED_LINES} corrupt ledger line(s) were skipped."
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}},
                          ensure_ascii=False))
         sys.exit(0)

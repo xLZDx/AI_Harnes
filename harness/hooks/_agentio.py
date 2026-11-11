@@ -329,3 +329,32 @@ def state_dir(name: str) -> Path:
     except OSError:
         pass
     return d
+
+
+def atomic_write_text(path, text: str, retries: int = 5) -> None:
+    """Write text to path atomically: temp file in the same folder, then os.replace.
+
+    os.replace is retried briefly on PermissionError (Windows winerror 5/32). Raises OSError when it
+    cannot finish; the temp file is removed on failure so no truncated or stray file is left behind.
+    """
+    import time
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        for attempt in range(retries):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise

@@ -110,3 +110,7 @@
 - Old Claude hook files not referenced by the live settings (11 files) moved to D:\Backup\claude-old-hooks-20261111. ~/.codex/hooks left alone: the completion watchdog files there are the operator's own.
 - S5-T1: the decision-refs Stop check no longer treats a bracketed 7-40 hex string (a commit hash) as a decision code; a 6-hex code and any D-1/S4 style code are still checked. 16 checks in tests/test_decision_explain_gate.py.
 - The five backlog items became ledger tasks S5-T2..T5 (atomic state writes; worktree ledger bad line; Codex PostToolUse shape + git time budget + config path check; install half-way failure and restore tests).
+
+## 2026-11-11 S5-T2 and S5-T3 done
+- State files of keep_going_gate and repeat_work_gate are written atomically through _agentio.atomic_write_text (temp file in the same folder, replace with a short retry); a corrupt or non-dict state file counts as empty state. The worktree ledger reader skips a corrupt line, keeps reading, and the reminder mentions the skipped count. 61 checks in tests/test_state_robustness.py.
+- Still open: concurrent sessions can lose an update through read-modify-write races (no lock added); worktree_policy.stop() and the stdin path of the reminder are not covered by a test.

@@ -59,12 +59,13 @@ def _counts(data: dict, reset: bool = False) -> int:
     key = str(data.get("session_id") or "default")
     try:
         counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, ValueError):
+        if not isinstance(counts, dict):  # truncated/corrupt content that still parses (e.g. a bare number)
+            counts = {}
+    except (OSError, ValueError):  # missing, unreadable or corrupt (UnicodeDecodeError is a ValueError)
         counts = {}
     counts[key] = 0 if reset else counts.get(key, 0) + 1
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(counts), encoding="utf-8")
+        _agentio.atomic_write_text(path, json.dumps(counts))
     except OSError:
         pass
     return counts[key]

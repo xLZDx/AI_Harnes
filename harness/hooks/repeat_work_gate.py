@@ -166,15 +166,15 @@ def subject_of(command: str) -> str:
 
 def load_state() -> dict:
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}  # corrupt content that still parses -> empty state
     except Exception:
         return {}
 
 
 def save_state(state: dict) -> None:
     try:
-        STATE.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+        agentio.atomic_write_text(STATE_FILE, json.dumps(state))
     except OSError:
         pass
 
