@@ -101,3 +101,6 @@
 - Finding (verified in code): tools/probe_live_hooks.py printed the list of blocking hooks but exited 0 even when it was empty, and matched "deny"/"block" as plain substrings. Fix: it requires shell_policy_gate.py to be configured for Bash and to deny the payload, reads the answer structurally (exit 2, permissionDecision deny, or decision block), and exits 1 on a missing hook, timeout, allow, non-JSON or unreadable output. 17 new checks in tests/test_probe_live_hooks.py.
 - PM Bridge mode was OFF and the first review request was rejected by Gate C; with the operator's yes it was switched on (pid 45168) for the review. It should be switched off again after the sprint.
 - Backlog: probe does not support a hook command written as one string; restore.ps1 and a half-way install failure are still untested.
+
+## 2026-11-11 GPT-PM round 2 for sprint S4: MAJOR x1, accepted
+- Finding (verified in code): the probe selected a hook group when its matcher merely contained the text Bash, so a matcher like ^NotBash$ passed although Claude would not run that hook for Bash. Fix: matcher_applies (empty and * = all tools; otherwise the matcher is a regular expression that must match the whole tool name; an invalid expression fails the probe). Strict on purpose: fewer matches means the probe fails. 15 more checks in tests/test_probe_live_hooks.py.

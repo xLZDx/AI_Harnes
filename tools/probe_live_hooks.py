@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,16 @@ def verdict(returncode: int, stdout: str) -> str:
     return "allow"
 
 
+def matcher_applies(matcher: str, tool: str) -> bool:
+    """Would a hook group with this matcher run for the tool? Empty and '*' mean every tool; otherwise the matcher is
+    a regular expression that must match the whole tool name (strict on purpose: fewer matches = the probe fails).
+    Raises re.error for an invalid expression."""
+    m = matcher.strip()
+    if m in ("", "*"):
+        return True
+    return re.fullmatch(m, tool) is not None
+
+
 def probe(settings_path: Path, require: str, timeout: int) -> tuple[bool, str]:
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
@@ -51,7 +62,13 @@ def probe(settings_path: Path, require: str, timeout: int) -> tuple[bool, str]:
         return False, f"cannot read PreToolUse hooks from {settings_path}: {e}"
     found = False
     for g in groups if isinstance(groups, list) else []:
-        if not isinstance(g, dict) or "Bash" not in str(g.get("matcher") or ""):
+        if not isinstance(g, dict):
+            continue
+        try:
+            applies = matcher_applies(str(g.get("matcher") or ""), "Bash")
+        except re.error as e:
+            return False, f"invalid matcher {g.get('matcher')!r} in a PreToolUse group: {e}"
+        if not applies:
             continue
         for h in g.get("hooks") or []:
             if not isinstance(h, dict):

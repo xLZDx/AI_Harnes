@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -119,6 +120,24 @@ expect_fail("13 other denying hook does not satisfy requirement", s13, "not conf
 s14 = make(DENY_EXIT2, name="custom_gate.py")
 rc, out = run_main(s14, "--require", "custom_gate.py")
 check("14 --require custom name", rc == 0 and "PROBE OK" in out, f"rc={rc} out={out}")
+
+# 15 matcher_applies unit cases (spec: empty and '*' = all tools; else re.fullmatch on the tool name)
+for i, (m, tool, want) in enumerate([
+        ("Bash", "Bash", True), ("Bash|PowerShell", "Bash", True), ("^Bash$", "Bash", True),
+        ("^NotBash$", "Bash", False), ("Edit|Write", "Bash", False), ("", "Bash", True), ("*", "Bash", True)]):
+    check(f"15{chr(97 + i)} matcher_applies({m!r}, {tool!r}) is {want}", plh.matcher_applies(m, tool) is want)
+try:
+    plh.matcher_applies("(", "Bash")
+    check("15h invalid regex '(' raises re.error", False, "no exception")
+except re.error:
+    check("15h invalid regex '(' raises re.error", True)
+
+# 16 probe() end to end with a blocking required hook under different matchers
+for lbl, mt in [("a", "Bash"), ("b", "Bash|PowerShell"), ("c", "^Bash$"), ("d", "")]:
+    expect_ok(f"16{lbl} matcher {mt!r} applies -> ok", make(DENY_EXIT2, matcher=mt))
+expect_fail("16e matcher '^NotBash$' -> not configured", make(DENY_EXIT2, matcher="^NotBash$"), "not configured")
+expect_fail("16f matcher 'Edit|Write' -> not configured", make(DENY_EXIT2, matcher="Edit|Write"), "not configured")
+expect_fail("16g invalid matcher '(' -> invalid matcher", make(DENY_EXIT2, matcher="("), "invalid matcher")
 
 for t in _TMPS:
     shutil.rmtree(t, ignore_errors=True)

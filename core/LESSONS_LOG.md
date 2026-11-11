@@ -133,3 +133,4 @@
 
 ## 2026-11-11 Probe that could not fail
 - Kind: FAILURE. Facts: my own proof script printed a list and exited 0 whatever the list held. Root cause: written as a demo, not as a check. Layer missed: author; the tester only saw the installer, and only GPT-PM read the probe. Rule: every proof script exits nonzero when the property does not hold, and has a test for the failing case.
+- Kind: SHORTCOMING. Facts: the same probe needed a second fix round because the first fix closed only the cases the reviewer named (empty result) and left the matcher test as a text search. Rule: when fixing a check, list every way it can say OK wrongly (input selection, execution, result reading) and close all of them in one batch.
