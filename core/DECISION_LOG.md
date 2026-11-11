@@ -135,3 +135,8 @@
 - Output name reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html (a constant name, so each commit changes the same file). A file without the marker comment is treated as hand-made and never overwritten; this protects a project's own reports, including the template's original.
 - English copy dropped: the operator's template is Russian only (the old skill asked for RU+EN).
 - Not done in this task: duration/share per sprint come only from commits recorded on ledger tasks (NR otherwise); the browser view of the page was not checked (the built-in browser refused localhost and local files), only the structure.
+
+## 2026-11-11 S6-T2: pre-commit hook puts the refreshed report into every commit
+- tools/githooks/pre-commit runs report.py --stage and exits 0 in every case (no check, no review, errors go to .harness/hook-error.log). --stage adds the report to the commit being made, and does nothing during a merge, rebase, cherry-pick or revert. report.py has one 60 s time budget for all its git calls. The post-commit hook no longer calls report.py: regenerating after the commit would dirty the tree.
+- Consequence to know: the report inside a commit shows the state before that commit is recorded on its task; the next commit's report shows it. The freshness section says so.
+- Not tested: a linked git worktree; "report tool not found" and "no Python" branches of the hook.

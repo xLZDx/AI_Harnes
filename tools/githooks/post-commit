@@ -20,7 +20,6 @@ run_py() {
 }
 log_err() { mkdir -p "$COMMON/.harness"; echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$COMMON/.harness/hook-error.log"; echo "HARNESS HOOK ERROR: $1" >&2; }
 [ -n "$T" ] || { log_err "post-commit: harness tools not found"; exit 0; }
-# Record the commit against its task (line 'Task: <ID>') and redraw changed report sections.
+# Record the commit against its task (line 'Task: <ID>').
 run_py "$T/ledger.py" commit-hook || log_err "post-commit: ledger.py commit-hook failed"
-run_py "$T/report.py" >/dev/null || log_err "post-commit: report.py failed"
 exit 0

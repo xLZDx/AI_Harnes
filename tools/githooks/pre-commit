@@ -1,0 +1,26 @@
+#!/bin/sh
+# Harness git hook (installed by harness v2 build.py --install-project).
+# Refreshes the program status report and stages it into the commit being made. It never blocks a commit:
+# no check, no review, every failure is logged and the hook exits 0.
+TOP="$(git rev-parse --show-toplevel)"
+COMMON="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+if [ -f "$COMMON/.harness-tools/report.py" ]; then T="$COMMON/.harness-tools"
+elif grep -qs "program status report" "$TOP/tools/report.py"; then T="$TOP/tools"
+else T=""; fi
+if [ -n "$HARNESS_PYTHON" ]; then PYKIND=env
+elif command -v py >/dev/null 2>&1 && py -3 -c "import sys" >/dev/null 2>&1; then PYKIND=py
+elif command -v python >/dev/null 2>&1 && python -c "import sys" >/dev/null 2>&1; then PYKIND=python
+else PYKIND=""; fi
+log_err() { mkdir -p "$COMMON/.harness"; echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$COMMON/.harness/hook-error.log"; echo "HARNESS HOOK ERROR: $1" >&2; }
+[ -n "$T" ] || { log_err "pre-commit: report tool not found"; exit 0; }
+[ -n "$PYKIND" ] || { log_err "pre-commit: no working Python (set HARNESS_PYTHON)"; exit 0; }
+run_py() {
+  case "$PYKIND" in
+    env) "$HARNESS_PYTHON" -I "$@" ;;
+    py) py -3 -I "$@" ;;
+    python) python -I "$@" ;;
+  esac
+}
+cd "$TOP" || exit 0
+run_py "$T/report.py" --stage >/dev/null 2>&1 || log_err "pre-commit: report.py --stage failed or timed out"
+exit 0

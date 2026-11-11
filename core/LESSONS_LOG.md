@@ -147,3 +147,4 @@
 ## 2026-11-11 Report format work
 - Kind: SHORTCOMING. Facts: I could not look at the rendered page (browser refused local files and localhost), so the check was structural: classes used vs defined, section order, private words. Found one missing class (headline) and a Windows timezone name in the text. Rule: when the visual check is impossible, say so and compare structure mechanically against the template.
 - Kind: SUCCESS. Facts: reading the asset before reuse caught a defect in the template's own script (the copy button copied one table). Rule: read generic assets before copying them into a shared tool.
+- Kind: SUCCESS. Facts: the hook test makes a real git commit with the installed hook and shows the report inside that commit; two failure variants (reports path is a file, corrupt ledger) still create the commit. Rule: test a never-block hook by making it fail on purpose.
