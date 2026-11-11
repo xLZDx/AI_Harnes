@@ -234,7 +234,8 @@ def c_start(a, d):
     if t["state"] not in ("todo", "failed", "in_progress", "not_run", "implemented"):
         sys.exit(f"ledger: {a.id} is {t['state']}; start works on todo, failed, not_run or implemented tasks")
     busy = [x["id"] for s in d["sprints"] for x in s["tasks"] if x["state"] == "in_progress" and x["id"] != a.id]
-    if busy:
+    # Operator 2026-11-11: "one task at a time" is off by default; opt in with HARNESS_ONE_TASK=1.
+    if busy and os.environ.get("HARNESS_ONE_TASK") == "1":
         sys.exit(f"ledger: one task at a time; {', '.join(busy)} is in progress")
     if not t["commits"]:
         t["state"] = "in_progress"

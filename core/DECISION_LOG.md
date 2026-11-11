@@ -115,3 +115,7 @@
 - State files of keep_going_gate and repeat_work_gate are written atomically through _agentio.atomic_write_text (temp file in the same folder, replace with a short retry); a corrupt or non-dict state file counts as empty state. The worktree ledger reader skips a corrupt line, keeps reading, and the reminder mentions the skipped count. 61 checks in tests/test_state_robustness.py.
 - Still open: concurrent sessions can lose an update through read-modify-write races (no lock added); worktree_policy.stop() and the stdin path of the reminder are not covered by a test.
 - S5-T3 evidence: delivered in the same code commit as S5-T2 (the ledger records one task per commit trailer), tests/test_state_robustness.py checks 6 and 7 cover the ledger reader and the reminder sentence; 61 checks, 0 failing.
+
+## 2026-11-11 One-task-at-a-time check off by default
+- Decision (operator): rules "one task at a time" and "agent review after every task" are disabled; ledger start refuses a second in_progress task only with HARNESS_ONE_TASK=1. Operator also said no GPT-PM review for this change; none was run, tests NOT_RUN (prohibited).
+- Evidence: tools/ledger.py c_start diff (3 lines); the tool was installed into 7 projects that carry .harness (two needed --force; old hooks of db-test-tool-analysis backed up under D:/Backup/hooks-before-harness-20261111).
