@@ -89,3 +89,9 @@
 - Finding 1 (verified in code): a Codex spawn with no model/effort and no agent definition was allowed, so a subagent could inherit the parent model. Fix: the effective model and effort must come from the call or the agent TOML; otherwise deny. Built-in agents without a harness TOML now need both values passed explicitly.
 - Finding 2 (verified in code): an unexpected error in the Codex branch exited 0. Fix: spawn_agent fails closed (exit 2) like Agent; a non-object tool_input is denied.
 - Not covered by a test: forcing an unexpected exception inside main() (needs a fault-injection seam); registered as backlog.
+
+## 2026-11-11 S4: live Claude hooks switched to the Harness v2 set
+- Operator order ("делай") after pointing out that Claude must stand on the same hooks as Codex. New tools/install_claude.py replaces only the "hooks" key of ~/.claude/settings.json with out/claude/settings.hooks.json and copies the built hook files; snapshot and restore.ps1 first (D:\Backup\claude-hooks-pre-harness-v2-20261111). Old hook files are left in place, just not called: af_cli, report_due, report_gate, rosetta_audit, rosetta_due.
+- Live proof: 35 old entries -> 27 new; a rm -rf payload run through the live Bash hooks is blocked by shell_policy_gate. Other settings.json keys were verified unchanged on a copy first.
+- Not tested: a failure half-way through the install and running restore.ps1 itself (backlog).
+- Backlog: the "decision refs" Stop check flags any "(letters+digits)" in brackets, not only decision codes; it fired on my own "(S4)".

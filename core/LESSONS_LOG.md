@@ -126,3 +126,6 @@
 
 ## 2026-11-11 GPT-PM round 1 findings on the Codex spawn gate
 - Kind: FAILURE. Facts: the Luna rule was enforced only for values that were present; an absent model fell through to "allow", and the error handler failed closed for one client only. Root cause: the gate was written as a deny-list of wrong values instead of a proof of the right one. Layer missed: author and three reviewers; only the sprint-level GPT-PM saw it. Rule: a policy gate must prove the required value and fail closed on unknown, and every client branch needs the same error handling.
+
+## 2026-11-11 Claude hooks were left on the old set while Codex was built
+- Kind: FAILURE. Facts: the day-one install put agents, skills and commands into ~/.claude but left settings.json hooks on the old system (35 entries, 3 af_cli calls), and no report said so; Codex was then built from the shared source first. The operator found the gap. Root cause: I filed the live switch as a "separate decision" although the hook set was already chosen. Layer missed: author (reporting), no gate. Rule: when an install is reported done, list what was NOT switched; never turn an already-made decision into a new question.
