@@ -129,3 +129,9 @@
 
 ## 2026-11-11 S5 sprint-end test run and an oracle fix
 - The parity tests in tests/test_hooks_dual.py compare each ported hook with the ORIGINAL one. After the live switch ~/.claude/hooks holds the new set, so 27 of them failed with "original gpt gate changed shape" (not a product defect). The oracle folder is now OLD_HOOKS_DIR (env or ~/.harness-hooks/config.json, outside git) pointing at the pre-switch snapshot; the default stays ~/.claude/hooks. Result: 45 PASS, 0 failing. Other test files of the sprint: all OK, 0 failing.
+
+## 2026-11-11 S6-T1: one program status report format for all projects (operator order)
+- Operator named a finished ERP program report as the GLOBAL template. Decisions: the page is rendered by tools/report.py from the ledger and git, Russian only, dark theme, sections in the template order. The template file itself holds private project data, so it is kept as a frozen local copy (~/.harness-hooks/templates, config key REPORT_TEMPLATE_FILE) and never enters this public repo; only generic CSS/JS assets live in harness/report. One asset fix: the copy button copied only the first table (.wrap) and now copies the whole <main>.
+- Output name reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html (a constant name, so each commit changes the same file). A file without the marker comment is treated as hand-made and never overwritten; this protects a project's own reports, including the template's original.
+- English copy dropped: the operator's template is Russian only (the old skill asked for RU+EN).
+- Not done in this task: duration/share per sprint come only from commits recorded on ledger tasks (NR otherwise); the browser view of the page was not checked (the built-in browser refused localhost and local files), only the structure.

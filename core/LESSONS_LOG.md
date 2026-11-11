@@ -143,3 +143,7 @@
 
 ## 2026-11-11 Tests that used the live folder as the oracle
 - Kind: FAILURE. Facts: after I installed the new hooks into ~/.claude, 27 parity tests failed because they read the original hooks from that same live folder; I misread the first red run as a product regression until I read the traceback. Layer missed: author of the tests (oracle tied to a mutable live path) and me (installed before checking what else reads the folder). Rule: a test oracle is a frozen snapshot, not a live folder; before overwriting a live folder, grep the tests for it.
+
+## 2026-11-11 Report format work
+- Kind: SHORTCOMING. Facts: I could not look at the rendered page (browser refused local files and localhost), so the check was structural: classes used vs defined, section order, private words. Found one missing class (headline) and a Windows timezone name in the text. Rule: when the visual check is impossible, say so and compare structure mechanically against the template.
+- Kind: SUCCESS. Facts: reading the asset before reuse caught a defect in the template's own script (the copy button copied one table). Rule: read generic assets before copying them into a shared tool.

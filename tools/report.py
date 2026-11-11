@@ -1,189 +1,610 @@
-"""HTML sprint report built from the ledger and git. No model calls.
+"""Harness v2 program status report tool: the Russian HTML PROGRAM STATUS page built from the ledger and git. No model calls.
 
-Each section is regenerated from data and compared with the previous report: unchanged sections
-are kept byte-for-byte, changed ones are replaced and tagged with the commit that changed them.
-Output: .harness/report.html (operator-facing text is Russian by operator rule).
-Usage: python tools/report.py [--out PATH]
+The page is rendered from scratch on every run (nothing is merged with an older file).
+Default output: <git top-level>/reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html.
+A file whose first 400 bytes lack the marker comment is treated as hand-made and never overwritten.
+Usage: python tools/report.py [--out PATH] [--stage]   (--stage: pre-commit mode, adds the report to the commit, never fails)
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
+import datetime as dt
 import html
-import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ledger  # noqa: E402
 
-STATE_RU = {"todo": ("не начато", "s-todo"), "in_progress": ("в работе", "s-wip"), "implemented": ("код готов, ждёт тестов", "s-wip"),
-            "not_run": ("тесты не запускались", "s-block"), "verified": ("на ревью", "s-rev"), "done": ("готово", "s-done"),
-            "failed": ("тесты красные", "s-block")}
+MARKER = "<!-- harness-report v1 -->"
+E = lambda x: html.escape(str(x), quote=True)  # noqa: E731
+NR = "NR"  # not recorded / not measurable
+
+# ledger state -> (css key for bars and swatches, pill class, Russian label, group)
+STATE_VIEW = {
+    "done": ("accepted", "state-accepted", "принято", "done"),
+    "verified": ("registry-review", "state-registry-review", "на ревью", "review"),
+    "in_progress": ("registry-progress", "state-registry-progress", "в работе", "wip"),
+    "implemented": ("registry-progress", "state-registry-progress", "код готов, ждёт тестов", "wip"),
+    "not_run": ("registry-progress", "state-registry-progress", "тесты не запускались", "wip"),
+    "failed": ("registry-blocked", "state-registry-blocked", "тесты красные", "red"),
+    "todo": ("registry-open", "state-registry-open", "не начато", "todo"),
+}
+GROUPS = [("done", "принято"), ("review", "на ревью"), ("wip", "в работе + код готов"), ("red", "тесты красные"), ("todo", "не начато")]
+GROUP_CSS = {"done": ("accepted", "state-accepted"), "review": ("registry-review", "state-registry-review"),
+             "wip": ("registry-progress", "state-registry-progress"), "red": ("registry-blocked", "state-blocked"),
+             "todo": ("registry-open", "state-registry-open")}
+REMAINING = {"todo": "Код не написан.", "in_progress": "Закончить код и записать коммит с Task:.",
+             "implemented": "Тесты не запускались на последнем коммите задачи.", "not_run": "Тесты не запущены (см. основание).",
+             "verified": "Ревью не принято для последнего коммита.", "failed": "Исправить код и повторить тесты.", "done": "—"}
+NEXT_CMD = {"todo": "/next", "in_progress": "/next", "implemented": "/verify", "not_run": "/verify", "verified": "/ship",
+            "failed": "исправить, затем /verify", "done": "—"}
 RISK_RU = {"trivial": "тривиально", "local": "локально", "multi-module": "несколько модулей", "risky": "опасно"}
-E = html.escape
-
-CSS = """:root{--bg:#f3f5f4;--surface:#fff;--ink:#18201d;--muted:#5d6a65;--line:#d6ddda;--done:#1f6f5c;--rev:#9a6a00;--wip:#2d5fa8;--block:#a23a32;--new:#6b4bb0}
-@media (prefers-color-scheme:dark){:root{--bg:#121715;--surface:#1a211e;--ink:#e4ebe8;--muted:#97a6a0;--line:#2c3632;--done:#6fd0b2;--rev:#e5b64a;--wip:#86aef0;--block:#f08b80;--new:#b9a0f0;color-scheme:dark}}
-body{background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0}
-main{max-width:1100px;margin:0 auto;padding:24px max(16px,env(safe-area-inset-left,0px)) 48px}
-section{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-top:14px}
-h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 10px}.muted{color:var(--muted);font-size:13px}
-.row{display:grid;grid-template-columns:minmax(140px,240px) 1fr 70px;gap:12px;align-items:center;margin:6px 0}
-.bar{height:12px;border-radius:6px;background:var(--line);overflow:hidden;display:flex}.bar i{height:100%;display:block}
-.v{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,Consolas,monospace;font-size:13px}
-.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:8px}.legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px}
-.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:720px;font-size:14px}
-th{text-align:left;font-size:12px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--line);padding:8px}
-td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}tr:last-child td{border-bottom:0}
-.st{white-space:nowrap}.st::before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;background:currentColor;margin-right:6px}
-.s-done{color:var(--done)}.s-rev{color:var(--rev)}.s-wip{color:var(--wip)}.s-todo{color:var(--muted)}.s-block{color:var(--block)}
-.upd{outline:2px dashed var(--new);outline-offset:3px}.tag{font-size:11px;color:var(--new);margin-left:8px;font-family:ui-monospace,monospace}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.kpi{border:1px solid var(--line);border-radius:8px;padding:10px}
-.kpi .n{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}code{font-family:ui-monospace,Consolas,monospace;font-size:13px}"""
+BUCKETS = ("code", "docs", "tests", "other")
 
 
-def git(*args) -> str:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+def view(state: str) -> tuple:
+    return STATE_VIEW.get(state, ("registry-open", "state-registry-open", str(state), "todo"))
 
 
-def bar(parts: list[tuple[int, str]], total: int) -> str:
+# ---------------------------------------------------------------- git access
+
+BUDGET_S = 60.0
+DEADLINE = float("inf")  # set to now + BUDGET_S when main() starts
+
+
+class Git:
+    """Read-only git access in one folder; every failure becomes an empty answer, never an exception."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self._commits: dict[str, tuple | None] = {}
+        self._pushed: dict[str, bool] = {}
+
+    def run(self, *args) -> tuple[int, str]:
+        if time.monotonic() > DEADLINE:  # one time budget for the whole report: later git calls answer 'unknown'
+            return 124, ""
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+        try:
+            r = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               cwd=self.root, env=env, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            return 127, ""
+        return r.returncode, r.stdout.strip()
+
+    def out(self, *args) -> str:
+        rc, o = self.run(*args)
+        return o if rc == 0 else ""
+
+    def snapshot(self) -> dict:
+        s = {"head": self.out("rev-parse", "HEAD"), "branch": self.out("rev-parse", "--abbrev-ref", "HEAD"),
+             "upstream": self.out("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
+             "ahead": None, "behind": None, "remote_url": ""}
+        s["short"] = s["head"][:7]
+        s["remote"] = s["upstream"].split("/", 1)[0] if s["upstream"] else "origin"
+        s["remote_url"] = self.out("remote", "get-url", s["remote"]) or self.out("config", "--get", f"remote.{s['remote']}.url")
+        if s["upstream"]:
+            lr = self.out("rev-list", "--left-right", "--count", "HEAD...@{upstream}").split()
+            if len(lr) == 2 and all(x.isdigit() for x in lr):
+                s["ahead"], s["behind"] = int(lr[0]), int(lr[1])
+        return s
+
+    def is_pushed(self, sha: str, upstream: str) -> bool:
+        """True only when git confirms the commit is an ancestor of the upstream tip."""
+        if sha not in self._pushed:
+            self._pushed[sha] = bool(upstream) and self.run("merge-base", "--is-ancestor", sha, "@{upstream}")[0] == 0
+        return self._pushed[sha]
+
+    def commit(self, sha: str) -> tuple | None:
+        """(committer timestamp, {bucket: added+deleted lines}) or None when the commit is unknown here."""
+        if sha not in self._commits:
+            rc, o = self.run("show", "--numstat", "--format=%ct", sha)
+            info = None
+            lines = o.splitlines()
+            if rc == 0 and lines and lines[0].isdigit():
+                counts = dict.fromkeys(BUCKETS, 0)
+                for ln in lines[1:]:
+                    parts = ln.split("\t", 2)
+                    if len(parts) == 3:
+                        n = sum(int(x) for x in parts[:2] if x.isdigit())
+                        counts[bucket_of(parts[2])] += n
+                info = (int(lines[0]), counts)
+            self._commits[sha] = info
+        return self._commits[sha]
+
+    def log(self, n: int = 30) -> list[dict]:
+        o = self.out("log", f"-{n}", "--numstat",
+                     "--format=%x1e%h%x1f%ct%x1f%s%x1f%(trailers:key=Task,valueonly,separator=%x2c)%x1f")
+        res = []
+        for rec in o.split("\x1e"):
+            f = rec.split("\x1f", 4)
+            if len(f) == 5 and f[1].isdigit():
+                res.append({"sha": f[0], "ts": int(f[1]), "subject": f[2], "task": f[3].strip().replace("\n", ", "),
+                            "files": sum(1 for ln in f[4].splitlines() if ln.count("\t") >= 2)})
+        return res
+
+
+def bucket_of(path: str) -> str:
+    p = "/" + path.replace("\\", "/").lower().lstrip("/")
+    name = p.rsplit("/", 1)[-1]
+    if "/tests/" in p or "test_" in name or "_test" in name or ".spec." in name:
+        return "tests"
+    if name.endswith((".md", ".rst", ".txt")) or p.startswith(("/docs/", "/core/", "/reports/")):
+        return "docs"
+    if name.endswith((".json", ".yaml", ".yml", ".lock", ".toml", ".ini", ".cfg")) or p.startswith(("/.github/", "/.harness/")):
+        return "other"
+    return "code"
+
+
+# ---------------------------------------------------------------- small helpers
+
+def pct(n: int, m: int) -> float:
+    return n / m * 100 if m else 0.0
+
+
+def fmt_pct(v: float) -> str:
+    return f"{v:.1f}".replace(".", ",") + "%"
+
+
+def fmt_ts(ts: int | None) -> str:
+    return dt.datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M") if ts else NR
+
+
+def fmt_dur(sec: float) -> str:
+    sec = max(0, int(sec))
+    if sec < 3600:
+        return f"{max(1, sec // 60)} мин"
+    if sec < 86400:
+        return f"{sec // 3600} ч {sec % 3600 // 60} мин"
+    return f"{sec // 86400} д {sec % 86400 // 3600} ч"
+
+
+def tzinfo_text() -> str:
+    n = dt.datetime.now().astimezone()
+    return f"{n.strftime('%Y-%m-%d %H:%M')} (UTC{n.strftime('%z')[:3]}:{n.strftime('%z')[3:]})"
+
+
+def safe_name(project: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(project)) or "project"
+
+
+def all_tasks(d: dict) -> list[tuple[dict, dict]]:
+    return [(s, t) for s in d.get("sprints", []) for t in s.get("tasks", [])]
+
+
+def group_counts(tasks: list[dict]) -> dict:
+    c = dict.fromkeys((g for g, _ in GROUPS), 0)
+    for t in tasks:
+        c[view(t.get("state", "todo"))[3]] += 1
+    return c
+
+
+def seg_bar(parts: list[tuple[str, int, str]], total: int, cls: str = "bar") -> str:
+    """parts: (css key, count, tooltip). Segments with a zero count are skipped."""
+    segs = "".join(f'<span class="{k}" style="width:{pct(n, total):.4f}%" title="{E(tip)}"></span>' for k, n, tip in parts if n)
+    return f'<div class="{cls}">{segs}</div>'
+
+
+def commits_info(g: Git, t: dict) -> tuple[list[str], list[int], dict]:
+    """Recorded commits of a task, their timestamps and summed bucket line counts (known commits only)."""
+    shas = [c for c in t.get("commits") or [] if isinstance(c, str)]
+    stamps, counts = [], dict.fromkeys(BUCKETS, 0)
+    for c in shas:
+        info = g.commit(c)
+        if info:
+            stamps.append(info[0])
+            for k in BUCKETS:
+                counts[k] += info[1][k]
+    return shas, stamps, counts
+
+
+def shares_text(counts: dict | None) -> tuple[str, str]:
+    """('a / b / c / d %' or 'NR / NR / NR / NR', raw-count tooltip)."""
+    total = sum(counts.values()) if counts else 0
     if not total:
-        return '<div class="bar"></div>'
-    return '<div class="bar">' + "".join(f'<i style="width:{n / total * 100:.1f}%;background:var(--{c})"></i>' for n, c in parts if n) + "</div>"
+        return " / ".join([NR] * 4), "нет точно связанных коммитов или изменённых строк"
+    shown = " / ".join(f"{round(counts[k] / total * 100)}" for k in BUCKETS) + " %"
+    tip = "; ".join(f"{k}: {counts[k]} строк" for k in BUCKETS) + f"; всего {total} (добавлено + удалено)"
+    return shown, tip
 
 
-def sprint_parts(s):
-    c = {k: sum(1 for t in s["tasks"] if t["state"] == k) for k in ledger.STATES}
-    return [(c["done"], "done"), (c["verified"], "rev"), (c["in_progress"] + c["implemented"], "wip"), (c["failed"], "block")]
+# ---------------------------------------------------------------- facts
 
-
-def sec_progress(d):
-    done = sum(ledger.counter(s)[0] for s in d["sprints"])
-    total = sum(ledger.counter(s)[1] for s in d["sprints"])
-    pct = round(done / total * 100) if total else 0
-    rows = [f'<div class="row"><div><b>Весь проект</b> <span class="muted">({sum(s["state"] == "closed" for s in d["sprints"])} из {len(d["sprints"])} спринтов закрыто)</span></div>{bar([(done, "done")], total)}<div class="v">{pct} %</div></div>']
-    for s in d["sprints"]:
-        n, m = ledger.counter(s)
-        rows.append(f'<div class="row"><div>{E(s["id"])} {E(s["title"])}</div>{bar(sprint_parts(s), m)}<div class="v">{n} / {m}</div></div>')
-    legend = ('<div class="legend"><span><b style="background:var(--done)"></b>готово: тесты зелёные и ревью принято</span>'
-              '<span><b style="background:var(--rev)"></b>на ревью</span><span><b style="background:var(--wip)"></b>в работе</span>'
-              '<span><b style="background:var(--block)"></b>тесты красные</span><span><b style="background:var(--line)"></b>не начато</span></div>'
-              '<p class="muted">Формула: готово = задачи с коммитом, зелёными тестами тестировщика и принятым ревью ÷ все задачи.</p>')
-    return "<h2>Прогресс</h2>" + "".join(rows) + legend
-
-
-def sec_kpis(d):
-    s = ledger.active_sprint(d)
-    tasks = s["tasks"] if s else []
-    tok = [t["tokens"] for t in tasks if t.get("tokens")]
-    code, tests, docs = (sum(x[k] for x in tok) for k in ("code", "tests", "docs"))
-    total = code + tests + docs
-    split = f"{round(code / total * 100)} / {round(tests / total * 100)} / {round(docs / total * 100)} %" if total else "нет данных"
-    revs = sum(len((t.get("routing") or {}).get("reviewers", [])) for t in tasks)
+def gather(d: dict, g: Git) -> dict:
+    snap = g.snapshot()
+    pairs = all_tasks(d)
+    total = len(pairs)
+    done = [t for _, t in pairs if t.get("state") == "done"]
+    checked = bool(snap["upstream"])
+    shipped = [t for t in done if t.get("commits") and all(g.is_pushed(c, snap["upstream"]) for c in t["commits"])] if checked else []
     ap = d.get("approval") or {}
-    h = git("rev-parse", "HEAD")
-    gpt = "APPROVE для текущего коммита" if ap.get("head") == h else ("APPROVE устарел (был новый коммит)" if ap.get("head") else "ещё не было")
-    k = [("Токены активного спринта", f"{total / 1e6:.2f} млн" if total else "нет данных"), ("Код / тесты / документы (цель 40/40/20)", split),
-         ("Запусков ревьюеров", str(revs)), ("GPT-PM", gpt)]
-    return "<h2>Показатели</h2><div class=\"kpis\">" + "".join(f'<div class="kpi"><div class="muted">{E(a)}</div><div class="n">{E(b)}</div></div>' for a, b in k) + "</div>"
+    if snap["head"] and ap.get("head") == snap["head"]:
+        gpt = "APPROVE для текущего коммита"
+    elif ap.get("head"):
+        gpt = "APPROVE устарел (был новый коммит)"
+    else:
+        gpt = "ещё не было"
+    if not checked:
+        remote = "отправка на remote не проверена"
+    elif snap["ahead"] is None:
+        remote = "расхождение с upstream не определено"
+    elif snap["ahead"] == 0 and snap["behind"] == 0:
+        remote = "синхронно с upstream"
+    else:
+        remote = f"впереди на {snap['ahead']}, позади на {snap['behind']}"
+    return {"snap": snap, "total": total, "done": len(done), "shipped": len(shipped) if checked else None,
+            "checked": checked, "gpt": gpt, "remote": remote, "groups": group_counts([t for _, t in pairs])}
 
 
-def sec_tasks(d):
-    s = ledger.active_sprint(d)
-    if not s:
-        return "<h2>Задачи</h2><p class=\"muted\">Открытого спринта нет.</p>"
+# ---------------------------------------------------------------- sections
+
+def sec_hero(d: dict, f: dict, root: Path) -> str:
+    s = f["snap"]
+    if f["checked"]:
+        lead = f'<b>{fmt_pct(pct(f["shipped"], f["total"]))}</b> проекта закрыто и отправлено ({f["shipped"]} из {f["total"]} задач: принято и все коммиты есть на remote)'
+    else:
+        lead = f'<b>{NR}</b> проекта закрыто и отправлено: отправка на remote не проверена'
+    sprints = d.get("sprints", [])
+    closed = sum(1 for x in sprints if x.get("state") == "closed")
+    gr = f["groups"]
+    tiles = [(f'{f["done"]}/{f["total"]}', "принято"), (gr["review"], "на ревью"), (gr["wip"] + gr["red"], "в работе"),
+             (gr["todo"], "не начато"), (f"{closed}/{len(sprints)}", "спринтов закрыто"), (f["gpt"], "GPT-PM"), (f["remote"], "remote")]
+    up = f'upstream {s["upstream"]}' if s["upstream"] else "upstream не настроен"
+    return (f'<header class="hero" id="program-progress"><h1>Визуальный прогресс всей программы</h1>'
+            f'<p class="headline">{lead} · <b>принято {f["done"]}/{f["total"]} задач</b></p>'
+            f'<p class="muted">Снимок: {E(tzinfo_text())} · проект {E(d.get("project", NR))} · папка {E(root)} · '
+            f'ветка {E(s["branch"] or NR)} · HEAD {E(s["short"] or NR)} · {E(up)}</p>'
+            '<div class="metrics">' + "".join(f'<div class="metric"><b>{E(a)}</b><span>{E(b)}</span></div>' for a, b in tiles)
+            + "</div></header>")
+
+
+def sec_provenance(d: dict, f: dict, root: Path) -> str:
+    s = f["snap"]
+    ab = "" if s["ahead"] is None else f" · впереди {s['ahead']}, позади {s['behind']} относительно {s['upstream']}"
+    git_txt = f'{s["remote_url"] or "remote не настроен"} · {s["branch"] or NR} @ {s["head"] or NR}{ab}'
+    return ('<!-- report-conform:begin --><div class="rc-bar"><dl>'
+            f'<dt>Проект</dt><dd>{E(d.get("project", NR))}</dd><dt>Папка</dt><dd>{E(root)}</dd><dt>Git</dt><dd>{E(git_txt)}</dd></dl>'
+            '<button id="rc-copy" class="rc-copy" type="button" data-idle="Копировать страницу" data-done="Скопировано" '
+            'data-fail="Выделите вручную">Копировать страницу</button></div><!-- report-conform:end -->')
+
+
+def sec_program(f: dict) -> str:
+    n, m = f["done"], f["total"]
+    p = pct(n, m)
+    gr = f["groups"]
     rows = []
-    for t in s["tasks"]:
-        st, cls = STATE_RU.get(t["state"], (t["state"], "s-todo"))
+    for key, label in GROUPS:
+        css, pill = GROUP_CSS[key]
+        rows.append(f'<div class="gate-chart-row"><span class="gate-chart-name">{E(label)}</span><strong>{gr[key]}</strong>'
+                    f'{seg_bar([(css, gr[key], f"{label}: {gr[key]} из {m}")], m)}'
+                    f'<span class="pill {pill}">{fmt_pct(pct(gr[key], m))}</span></div>')
+    return ('<section class="panel program-visual" id="program-visual"><h2>Прогресс программы</h2>'
+            '<nav class="chart-jump" aria-label="Навигация по графикам"><a href="#program-visual">Вся программа</a>'
+            '<a href="#gate-charts">По состояниям</a><a href="#sprint-distribution">По спринтам</a><a href="#active-sprint">Активный спринт</a></nav>'
+            '<p class="chart-note">Принято = задача в состоянии done: тесты зелёные на последнем коммите и ревью принято.</p>'
+            f'<div class="program-total"><b>{fmt_pct(p)}</b><span>принято {n} из {m} задач</span></div>'
+            + seg_bar([("accepted", n, f"принято: {n}"), ("remaining", m - n, f"осталось: {m - n}")], m, "bar overall-progress")
+            + f'<p class="progress-caption"><code>{n} ÷ {m} × 100 = {fmt_pct(p)}</code> · знаменатель {m} — число задач в реестре '
+            '(.harness/ledger.json, все спринты).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
+            '<p class="gate-chart-note">Один цвет означает одно состояние во всех графиках страницы.</p>'
+            '<div class="gate-chart-list">' + "".join(rows) + "</div></section>")
+
+
+def sprint_row(g: Git, s: dict, active_id: str | None) -> str:
+    tasks = s.get("tasks", [])
+    m = len(tasks)
+    gr = group_counts(tasks)
+    stamps, counts = [], dict.fromkeys(BUCKETS, 0)
+    for t in tasks:
+        _, st, cn = commits_info(g, t)
+        stamps += st
+        for k in BUCKETS:
+            counts[k] += cn[k]
+    parts = [(GROUP_CSS[k][0], gr[k], f"{lab}: {gr[k]}/{m}") for k, lab in GROUPS]
+    aria = f'{s["id"]}: ' + "; ".join(f"{lab} {gr[k]}/{m}" for k, lab in GROUPS if gr[k])
+    if not stamps:
+        dur, dur_tip = NR, "нет коммитов, записанных на задачах спринта"
+    elif s["id"] == active_id:
+        dur, dur_tip = fmt_dur(time.time() - min(stamps)), f"от первого коммита {fmt_ts(min(stamps))} до сейчас"
+    else:
+        dur, dur_tip = fmt_dur(max(stamps) - min(stamps)), f"от {fmt_ts(min(stamps))} до {fmt_ts(max(stamps))}"
+    shown, tip = shares_text(counts)
+    summary = f'{gr["done"]}/{m} принято · {gr["review"]} на ревью · {gr["wip"] + gr["red"]} в работе'
+    return (f'<div class="sprint-chart-row" id="sp-{E(s["id"])}"><span class="sprint-chart-name"><b>Спринт {E(s["id"])} — {m} задач</b> '
+            f'{E(s.get("title", ""))}</span>'
+            f'<div class="sprint-chart-bar" role="img" aria-label="{E(aria)}">'
+            + "".join(f'<span class="{k}" style="width:{pct(n, m):.4f}%" title="{E(tp)}"></span>' for k, n, tp in parts if n)
+            + f'</div><strong>{E(summary)}</strong><span class="sprint-duration" title="{E(dur_tip)}">{E(dur)}</span>'
+            f'<span class="sprint-ratio" title="{E(tip)}">{E(shown)}</span></div>')
+
+
+def sec_sprints(d: dict, g: Git) -> str:
+    act = ledger.active_sprint(d) if d.get("sprints") else None
+    legend = "".join(f'<span><i class="swatch {GROUP_CSS[k][0]}"></i> {E(lab)}</span>' for k, lab in GROUPS)
+    rows = "".join(sprint_row(g, s, act["id"] if act else None) for s in d.get("sprints", [])) or '<p class="muted">Спринтов в реестре нет.</p>'
+    return ('<section class="panel" id="sprint-distribution"><h2 id="sprint-charts">Распределение по спринтам</h2>'
+            f'<div class="sprintlegend registry-legend">{legend}</div>'
+            '<p class="muted">Длительность: от времени первого до времени последнего коммита, записанного на задачах спринта '
+            f'(активный спринт: до текущего момента; часовой пояс UTC{E(dt.datetime.now().astimezone().strftime('%z')[:3] + ':' + dt.datetime.now().astimezone().strftime('%z')[3:])}). '
+            'Доли code / docs / tests / other считаются по строкам (добавлено + удалено, git numstat) этих коммитов.</p>'
+            '<div class="sprint-chart-list"><div class="sprint-chart-columns"><span>Спринт</span><span>Статус задач</span>'
+            '<span>Итог</span><span>Длительность</span><span>code / docs / tests / other</span></div>' + rows + "</div></section>")
+
+
+def evidence_html(t: dict) -> str:
+    v, r, rt = t.get("verify") or {}, t.get("review") or {}, t.get("routing") or {}
+    out = []
+    out.append(f'<p>Тесты: <b>{E(v.get("result", "NOT_RUN"))}</b>' + (f' — {E(v.get("evidence"))}' if v.get("evidence") else "") + "</p>")
+    out.append(f'<p>Ревью: <b>{E(r.get("result", NR))}</b>' + (f', замечаний: {E(r.get("findings", NR))}' if r else "") + "</p>")
+    revs = rt.get("reviewers") or []
+    if revs:
+        out.append("<p>Ревьюеры: " + "; ".join(f'{E(x.get("agent", NR))} ({E(x.get("reason", NR))})' for x in revs if isinstance(x, dict)) + "</p>")
+    if rt:
+        out.append(f'<p>Риск: {E(RISK_RU.get(rt.get("risk"), rt.get("risk", NR)))} — {E(rt.get("risk_reason", NR))}</p>')
+    if t.get("run"):
+        out.append(f'<p>Запуск: <code>{E(t["run"])}</code></p>')
+    return "".join(out)
+
+
+def risk_text(t: dict) -> str:
+    rt = t.get("routing") or {}
+    risk = rt.get("risk") or t.get("risk")
+    return f'{RISK_RU.get(risk, risk)}' if risk and risk not in ("trivial", "local") else "—"
+
+
+def sec_active(d: dict, g: Git) -> str:
+    s = ledger.active_sprint(d) if d.get("sprints") else None
+    s = s or (d["sprints"][-1] if d.get("sprints") else None)
+    head = '<section class="panel" id="active-sprint"><h2>Активный спринт</h2>'
+    if not s:
+        return head + '<p class="muted">В реестре нет спринтов.</p></section>'
+    tasks = s.get("tasks", [])
+    n = sum(1 for t in tasks if t.get("state") == "done")
+    rows = []
+    for t in tasks:
+        st = t.get("state", "todo")
+        css, pill, label, _ = view(st)
+        shas, stamps, counts = commits_info(g, t)
+        window = f'{fmt_ts(min(stamps))} → {fmt_ts(max(stamps))}' if stamps else NR
+        cm = " ".join(f"<code>{E(c[:7])}</code>" for c in shas) or "—"
+        shown, tip = shares_text(counts if stamps else None)
+        rows.append(
+            f'<tr data-state="{E(st)}"><td><code>{E(t.get("id", NR))}</code><br><span class="muted">позиция реестра</span><br>{E(t.get("title", ""))}</td>'
+            "<td><ol>" + "".join(f"<li>{E(c)}</li>" for c in t.get("criteria") or []) + "</ol></td>"
+            f'<td><span class="pill {pill}">{E(label)}</span></td>'
+            f"<td><details><summary>Основание</summary>{evidence_html(t)}</details></td>"
+            f"<td>{E(REMAINING.get(st, NR))}</td><td>{E(risk_text(t))}</td><td>{E(NEXT_CMD.get(st, NR))}</td>"
+            f"<td>{cm}<br><span class=\"muted\">{E(window)}</span></td><td title=\"{E(tip)}\">{E(shown)}</td></tr>")
+    cols = ["Позиция / задача", "Критерий приёмки", "Фактический статус", "Код / test / Git evidence", "Остаток", "Зависимость",
+            "Владелец / следующий шаг", "Exact task-ID commits / окно", "Доли code/docs/tests/other"]
+    return (head + f'<p class="active-summary"><b>Спринт {E(s["id"])}</b> — {E(s.get("title", ""))}: принято {n} из {len(tasks)}, '
+            f'состояние спринта: {E(s.get("state", NR))}.</p><div class="wrap"><table class="active-sprint-table"><thead><tr>'
+            + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>")
+
+
+def sec_stories(d: dict) -> str:
+    pairs = all_tasks(d)
+    present: dict[str, int] = {}
+    rows = []
+    for s, t in pairs:
+        st = t.get("state", "todo")
+        present[st] = present.get(st, 0) + 1
+        _, pill, label, _g = view(st)
+        crit = t.get("criteria") or []
         v = t.get("verify") or {}
-        vtxt = {"pass": "зелёные", "fail": "красные", "NOT_RUN": "НЕ ЗАПУСКАЛОСЬ"}.get(v.get("result"), "—")
-        if v.get("evidence"):
-            vtxt += f'<div class="muted">{E(v["evidence"][:120])}</div>'
-        rv = (t.get("routing") or {}).get("reviewers", [])
-        rtxt = ", ".join(E(x["agent"]) for x in rv) or "—"
-        if t.get("routing"):
-            rtxt += f'<div class="muted">{E(RISK_RU.get(t["routing"]["risk"], ""))}: {E(t["routing"]["risk_reason"][:90])}</div>'
-        commits = " ".join(f"<code>{E(c[:7])}</code>" for c in t["commits"]) or "—"
-        crit = "".join(f"<li>{E(c)}</li>" for c in t["criteria"])
-        rows.append(f'<tr><td><code>{E(t["id"])}</code></td><td>{E(t["title"])}<ul class="muted" style="margin:4px 0 0;padding-left:16px">{crit}</ul></td>'
-                    f'<td><span class="st {cls}">{st}</span></td><td>{vtxt}</td><td>{rtxt}</td><td>{commits}</td></tr>')
-    return (f"<h2>Задачи спринта {E(s['id'])} «{E(s['title'])}»</h2><div class=\"tbl\"><table><thead><tr><th>Задача</th><th>Что это и критерии</th>"
-            "<th>Состояние</th><th>Тесты</th><th>Ревью (кто и почему)</th><th>Коммиты</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>")
+        blob = " ".join([str(t.get("id", "")), str(t.get("title", "")), label, st, str(v.get("evidence", "")), *map(str, crit),
+                         *[str(c)[:7] for c in t.get("commits") or []]]).lower()
+        rows.append(
+            f'<tr data-search="{E(blob)}" data-state="{E(st)}"><td><code>{E(t.get("id", NR))}</code><br>{E(t.get("title", ""))}<br>'
+            f'<span class="muted">спринт {E(s["id"])}</span></td><td><span class="pill {pill}">{E(label)}</span></td>'
+            f'<td>{E(str(v.get("evidence", "—"))[:200])}</td><td>{E(REMAINING.get(st, NR))}</td><td>{E(risk_text(t))}</td>'
+            f"<td>{E(NEXT_CMD.get(st, NR))}</td>"
+            f'<td><details><summary>Критерии DoD ({len(crit)})</summary><ol>' + "".join(f"<li>{E(c)}</li>" for c in crit)
+            + "</ol></details></td></tr>")
+    opts = '<option value="">Все состояния</option>' + "".join(
+        f'<option value="{E(k)}">{E(view(k)[2])} ({n})</option>' for k, n in sorted(present.items(), key=lambda kv: ledger.STATES.index(kv[0]) if kv[0] in ledger.STATES else 99))
+    legend = "".join(f'<span><i class="swatch {GROUP_CSS[k][0]}"></i> {E(lab)}</span>' for k, lab in GROUPS)
+    cols = ["Задача", "Состояние", "Evidence", "Остаток", "Зависимость", "Следующий шаг", "Критерии"]
+    return ('<section class="panel" id="stories"><h2>Все истории и критерии</h2>'
+            f'<p class="muted">Все задачи всех спринтов: {len(pairs)}. Поиск работает по ID, названию, состоянию, критериям и evidence.</p>'
+            f'<div class="sprintlegend evidence-legend">{legend}</div>'
+            '<div class="toolbar"><input id="q" placeholder="Найти ID, название или evidence" type="search">'
+            f'<select id="st">{opts}</select><button id="open" type="button">Раскрыть все</button>'
+            '<button id="close" type="button">Свернуть все</button></div>'
+            '<p class="muted hide" id="empty">Ничего не найдено.</p><div class="wrap"><table><thead><tr>'
+            + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>")
 
 
-def sec_next(d):
-    s = ledger.active_sprint(d)
-    steps = []
-    if s:
-        pending = [t for t in s["tasks"] if t["state"] != "done"]
-        for t in pending[:3]:
-            nxt = {"todo": "/next — код", "in_progress": "/next — закончить код", "implemented": "/verify — тесты",
-                   "not_run": "/verify — запустить тесты", "verified": "/ship — ревью", "failed": "исправить и /verify"}[t["state"]]
-            steps.append((f"{t['id']} {t['title']}", nxt, "Claude"))
-        if not pending:
-            steps.append(("Весь спринт", "GPT-PM до APPROVE, push, PR, затем /close", "GPT-PM, затем Claude"))
-    rows = "".join(f"<tr><td>{E(a)}</td><td>{E(b)}</td><td>{E(c)}</td></tr>" for a, b, c in steps) or '<tr><td colspan="3">—</td></tr>'
-    return "<h2>Следующие шаги</h2><div class=\"tbl\"><table><thead><tr><th>Что</th><th>Шаг</th><th>Кто</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+def sec_freshness(d: dict, f: dict, root: Path) -> str:
+    tasks = [t for _, t in all_tasks(d)]
+    impl = sum(1 for t in tasks if t.get("commits"))
+    rev = sum(1 for t in tasks if (t.get("review") or {}).get("result") == "accepted")
+    run = sum(1 for t in tasks if (t.get("verify") or {}).get("result") == "pass")
+    not_run = len(tasks) - run
+    lp = ledger.ledger_path()
+    items = [
+        f"Источники: реестр {E(lp)}; git в папке {E(root)} (log, rev-list, merge-base, show --numstat).",
+        f"Дата отсчёта: {E(tzinfo_text())}; HEAD {E(f['snap']['head'] or NR)}.",
+        f"Формула прогресса: принято ÷ все задачи реестра = {f['done']} ÷ {f['total']}. Знаменатель — число задач во всех спринтах реестра.",
+        "Формула «закрыто и отправлено»: задача принята и каждый её коммит — предок @{upstream} (git merge-base --is-ancestor). "
+        "Без upstream или без git значение не оценивается.",
+        "Доли code/docs/tests/other: добавленные + удалённые строки коммитов, записанных на задачах (git numstat); без таких коммитов — NR.",
+        "Длительность: время коммитера первого и последнего коммитов спринта; у активного спринта конец — текущий момент.",
+        "Не измерялось: работа в runtime, CI, выпуск (release), содержимое тестов; отчёт не запускает тесты и не вызывает модели.",
+    ]
+    ev = [("IMPLEMENTED", impl, "у задачи есть записанный коммит"), ("REVIEWED", rev, "ревью принято (review accepted)"),
+          ("RUN", run, "тесты запускались и прошли (verify pass)"), ("NOT_RUN", not_run, "тесты не запускались или не прошли")]
+    return ('<section class="panel" id="freshness"><h2>Свежесть, формулы и ограничения</h2><ul>'
+            + "".join(f"<li>{x}</li>" for x in items) + '</ul><h3>Уровни доказательств (отдельно, не суммируются)</h3><ul>'
+            + "".join(f"<li><b>{k}</b>: {n} из {len(tasks)} — {E(tx)}</li>" for k, n, tx in ev) + "</ul></section>")
 
 
-SECTIONS = [("progress", sec_progress), ("kpis", sec_kpis), ("tasks", sec_tasks), ("next", sec_next)]
-SEC_RE = re.compile(r'<section id="(\w+)" data-hash="(\w+)"[^>]*>(.*?)</section>', re.S)
+def alerts_of(d: dict, g: Git, snap: dict) -> list[str]:
+    evs = d.get("events", [])
+    alerts = []
+    errs = [e.get("message", "") for e in evs if e.get("kind") == "hook-error"]
+    try:
+        log = ledger.ledger_path().parent / "hook-error.log"
+        if log.exists():  # shell-level failures never reach the ledger
+            known = set(errs)
+            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+                msg = line.split(" ", 1)[1].strip() if " " in line else line.strip()
+                if msg and msg not in known:
+                    errs.append(msg)
+                    known.add(msg)
+    except OSError:
+        pass
+    if errs:
+        alerts.append(f"Ошибки хуков: {len(errs)}, последняя: {errs[-1]}")
+    skips = [e for e in evs if e.get("kind") == "approval-skipped"]
+    if skips:
+        alerts.append(f"Проверка GPT-PM перед push была отключена {len(skips)} раз(а), последний {skips[-1].get('at', NR)}")
+    if snap["head"] and not any(e.get("sha") == snap["head"] for e in evs) and "Task:" in g.out("log", "-1", "--format=%B"):
+        alerts.append(f"Коммит {snap['short']} помечен задачей, но реестр его не записал")
+    return alerts
+
+
+def sec_updates(d: dict, g: Git, f: dict) -> str:
+    alerts = "".join(f'<p class="note">{E(a)}</p>' for a in alerts_of(d, g, f["snap"]))
+    rows = "".join(f'<tr><td><code>{E(c["sha"])}</code></td><td>{E(fmt_ts(c["ts"]))}</td><td>{E(c["subject"])}</td>'
+                   f'<td>{E(c["task"] or "—")}</td><td>{c["files"]}</td></tr>' for c in g.log(30))
+    if not rows:
+        rows = '<tr><td colspan="5">git-журнал недоступен (NR)</td></tr>'
+    return ('<section class="panel" id="updates"><h2>Журнал обновлений по коммитам</h2>' + alerts
+            + '<p class="muted">Последние 30 коммитов, новые сверху.</p><div class="wrap"><table><thead><tr><th>Коммит</th><th>Время</th>'
+            "<th>Тема</th><th>Task</th><th>Файлов</th></tr></thead><tbody>" + rows + "</tbody></table></div></section>")
+
+
+# ---------------------------------------------------------------- assets and page
+
+def asset_dir() -> Path:
+    here = Path(__file__).resolve().parent / "report"
+    return here if here.is_dir() else Path(__file__).resolve().parent.parent / "harness" / "report"
+
+
+def read_asset(name: str) -> str:
+    try:
+        return (asset_dir() / name).read_text(encoding="utf-8")
+    except OSError:
+        return ""  # page still renders, just unstyled
+
+
+def render(d: dict, root) -> str:
+    """The whole page as text. Pure: reads git and assets, writes nothing."""
+    root = Path(root)
+    g = Git(root)
+    f = gather(d, g)
+    title = f'{d.get("project", NR)} — программа и все спринты'
+    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g)
+            + sec_stories(d) + sec_freshness(d, f, root) + sec_updates(d, g, f))
+    return ("<!doctype html>\n" + MARKER + '\n<html lang="ru"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f"<title>{E(title)}</title><style>{read_asset('report.css').replace('</style', '<\\/style')}</style></head>"
+            f'<body><main>{body}</main>'
+            f"<script>{read_asset('filter.js').replace('</script', '<\\/script')}</script>"
+            f"<script>{read_asset('copy.js').replace('</script', '<\\/script')}</script></body></html>\n")
+
+
+def atomic_write_text(path: Path, text: str, retries: int = 5) -> None:
+    """Temp file next to the target, then os.replace (retried briefly on Windows PermissionError)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        for attempt in range(retries):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def is_ours(path: Path) -> bool:
+    """True when the file is absent, or carries the report marker in its first 400 bytes."""
+    if not path.exists():
+        return True
+    try:
+        with open(path, "rb") as fh:
+            return MARKER.encode() in fh.read(400)
+    except OSError:
+        return False
+
+
+def default_out(d: dict, root: Path) -> Path:
+    return root / "reports" / f"{safe_name(d.get('project', 'project'))}_PROGRAM_STATUS_LIVE.ru.html"
+
+
+def busy_git_state(root: Path) -> str:
+    """Name of a rebase / merge / cherry-pick / revert in progress ('' when none): the hook leaves such commits alone."""
+    gd = Git(root).out("rev-parse", "--git-dir")
+    if not gd:
+        return ""
+    g = Path(gd) if Path(gd).is_absolute() else root / gd
+    for name in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        if (g / name).exists():
+            return name
+    return ""
 
 
 def main(argv=None) -> int:
+    global DEADLINE
+    DEADLINE = time.monotonic() + BUDGET_S
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out")
+    ap.add_argument("--stage", action="store_true",
+                    help="pre-commit mode: after writing, `git add` the report into the commit being made; "
+                         "never fails (exit 0 on every error), skipped during rebase/merge/cherry-pick")
     a = ap.parse_args(argv)
-    d = ledger.load()
-    out = Path(a.out) if a.out else ledger.ledger_path().parent / "report.html"
-    old = {m.group(1): (m.group(2), m.group(0)) for m in SEC_RE.finditer(out.read_text(encoding="utf-8", errors="replace"))} if out.exists() else {}
-    sha = git("rev-parse", "--short", "HEAD") or "нет коммитов"
-    parts, changed = [], []
-    for sid, fn in SECTIONS:
-        body = fn(d)
-        h = hashlib.sha1(body.encode()).hexdigest()[:12]
-        if sid in old and old[sid][0] == h:
-            parts.append(re.sub(r' class="upd"|<span class="tag">.*?</span>', "", old[sid][1]))
+    try:
+        return run(a)
+    except Exception as e:  # noqa: BLE001 - the pre-commit mode must never break a commit
+        print(f"report: unexpected error {type(e).__name__}: {e}", file=sys.stderr)
+        return 0 if a.stage else 1
+
+
+def run(a) -> int:
+    try:
+        d = ledger.load()
+    except (OSError, ValueError) as e:
+        print(f"report: ledger not readable ({e}); rendering an empty ledger", file=sys.stderr)
+        d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}
+    top = Git(Path.cwd()).out("rev-parse", "--show-toplevel")
+    root = Path(top) if top else Path.cwd()
+    if a.stage:
+        busy = busy_git_state(root)
+        if busy:
+            print(f"report: skipped ({busy} in progress)")
+            return 0
+    out = Path(a.out) if a.out else default_out(d, root)
+    if not is_ours(out):
+        print("report: refusing to overwrite a hand-made file", file=sys.stderr)
+        return 0
+    try:
+        atomic_write_text(out, render(d, root))
+    except OSError as e:
+        print(f"report: cannot write {out}: {e}", file=sys.stderr)
+        return 0 if a.stage else 1
+    print(f"report: {out}")
+    if a.stage:
+        r = subprocess.run(["git", "-C", str(root), "add", "--", str(out)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30)
+        if r.returncode != 0:
+            print(f"report: git add failed: {r.stderr.strip()}", file=sys.stderr)
         else:
-            changed.append(sid)
-            tagged = body.replace("</h2>", f'<span class="tag">обновлено коммитом {E(sha)}</span></h2>', 1) if old else body
-            parts.append(f'<section id="{sid}" data-hash="{h}"{" class=\"upd\"" if old else ""}>{tagged}</section>')
-    evs = d.get("events", [])
-    last = evs[-1] if evs else {}
-    alerts = []
-    errs = [e.get("message", "") for e in evs if e["kind"] == "hook-error"]
-    # Shell-level failures (e.g. no working Python) never reach the ledger; read the hook log too.
-    log = ledger.ledger_path().parent / "hook-error.log"
-    if log.exists():
-        known = set(errs)
-        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-            msg = line.split(" ", 1)[1].strip() if " " in line else line.strip()
-            if msg and msg not in known:
-                errs.append(msg)
-                known.add(msg)
-    if errs:
-        alerts.append(f"Ошибки хуков: {len(errs)}, последняя: {errs[-1]}")
-    skips = [e for e in evs if e["kind"] == "approval-skipped"]
-    if skips:
-        alerts.append(f"Проверка GPT-PM перед push была отключена {len(skips)} раз(а), последний {skips[-1]['at']}")
-    full = git("rev-parse", "HEAD")
-    if full and not any(e.get("sha") == full for e in evs) and "Task:" in git("log", "-1", "--format=%B"):
-        alerts.append(f"Коммит {sha} помечен задачей, но реестр его не записал")
-    alert_html = "".join(f'<p class="s-block" style="font-weight:600">{E(x)}</p>' for x in alerts)
-    head = (f"<header><h1>{E(d['project'])} · отчёт по задачам</h1><p class=\"muted\">коммит {E(sha)} · "
-            f"последнее событие реестра: {E(last.get('kind', 'нет'))} {E(last.get('at', ''))} · "
-            f"изменено секций: {len(changed)} ({', '.join(changed) or 'нет'})</p>{alert_html}</header>")
-    doc = (f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-           f"<title>{E(d['project'])} отчёт</title><style>{CSS}</style></head><body><main>{head}{''.join(parts)}</main></body></html>")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".tmp")
-    tmp.write_text(doc, encoding="utf-8", newline="\n")
-    os.replace(tmp, out)
-    print(f"report: {out} (changed: {', '.join(changed) or 'none'})")
+            print("report: staged into the commit")
     return 0
 
 

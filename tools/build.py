@@ -531,7 +531,8 @@ def build(python: str = "") -> int:
 
 
 TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py")
-HOOKS = ("post-commit", "pre-push", "post-merge")
+REPORT_ASSETS = ("report.css", "filter.js", "copy.js")  # harness/report/* -> <project>/.harness-tools/report/
+HOOKS = ("pre-commit", "post-commit", "pre-push", "post-merge")
 
 
 def _git(target: Path, *args) -> subprocess.CompletedProcess:
@@ -546,7 +547,8 @@ def install_project(target: Path, force: bool = False) -> int:
     common = Path(r.stdout.strip())
     main = common.parent if common.name == ".git" else common  # tools live in the main checkout
     missing = [p for p in [*(ROOT / "tools" / f for f in TOOL_FILES), *(ROOT / "tools" / "githooks" / h for h in HOOKS),
-                           SRC / "routing.json", SRC / "manifest.json"] if not p.exists()]
+                           SRC / "routing.json", SRC / "manifest.json",
+                           *(SRC / "report" / a for a in REPORT_ASSETS)] if not p.exists()]
     if missing:
         print("install stopped, sources missing: " + ", ".join(map(str, missing)))
         return 1
@@ -562,6 +564,9 @@ def install_project(target: Path, force: bool = False) -> int:
     (tools / "harness").mkdir(parents=True, exist_ok=True)
     for f in TOOL_FILES:
         shutil.copy2(ROOT / "tools" / f, tools / f)
+    (tools / "report").mkdir(parents=True, exist_ok=True)
+    for a in REPORT_ASSETS:
+        shutil.copy2(SRC / "report" / a, tools / "report" / a)
     shutil.copy2(SRC / "routing.json", tools / "harness" / "routing.json")
     shutil.copy2(SRC / "manifest.json", tools / "harness" / "manifest.json")
     copytree(ROOT / "tools" / "githooks", tools / "githooks")
