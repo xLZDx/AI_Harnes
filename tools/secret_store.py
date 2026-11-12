@@ -29,8 +29,11 @@ def valid_name(name: str) -> bool:
     return bool(NAME_RE.fullmatch(name)) and name.upper() not in RESERVED
 
 
+DEFAULT_DIR = (Path.home() / ".harness-secrets").resolve()
+
+
 def store_dir() -> Path:
-    return Path(os.environ.get("HARNESS_SECRET_DIR") or (Path.home() / ".harness-secrets")).resolve()
+    return Path(os.environ.get("HARNESS_SECRET_DIR") or DEFAULT_DIR).resolve()
 
 
 def has_git_marker(p: Path) -> bool:
@@ -49,7 +52,9 @@ def inside_git(p: Path) -> bool:
     try:
         r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
     except OSError:
-        return False  # git is not installed and no .git marker exists above the folder
+        # git cannot be started, so the location cannot be confirmed safe (the work tree may use GIT_DIR/GIT_WORK_TREE and have no
+        # .git marker): only the default folder under the user's home is accepted, any other folder is refused.
+        return p != DEFAULT_DIR
     if r.returncode == 0:
         return r.stdout.strip() == "true"
     return "not a git repository" not in (r.stderr or "").lower()
@@ -65,33 +70,42 @@ def _publish(tmp: str, target: Path) -> str:
     except OSError:
         pass  # hard links unsupported here: publish under an exclusive lock, because os.rename replaces on POSIX
     lock = target.with_name(target.name + ".lock")
+    token = os.urandom(16).hex()
     deadline = time.monotonic() + 10
     while True:
         try:
-            os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            with os.fdopen(fd, "w") as f:
+                f.write(token)
             break
         except FileExistsError:
             if target.exists():
                 return "exists"
-            try:
-                if time.time() - lock.stat().st_mtime > 30:
-                    os.unlink(lock)  # a crashed run left a stale lock
-                    continue
-            except OSError:
-                pass
             if time.monotonic() > deadline:
-                raise SystemExit("refused: could not take the publish lock")
+                # A lock is never taken over: a paused owner could still publish and replace the new owner's value. A crashed run
+                # leaves its lock; remove the file named below by hand once no secret_store process runs.
+                raise SystemExit(f"refused: publish lock {lock.name} is held; if no secret_store run is active, delete that file")
             time.sleep(0.05)
     try:
         if target.exists():
             return "exists"
+        if _read(lock) != token:
+            return "exists"  # the lock is no longer ours: do not publish
         os.replace(tmp, target)
         return "created"
     finally:
-        try:
-            os.unlink(lock)
-        except OSError:
-            pass
+        if _read(lock) == token:
+            try:
+                os.unlink(lock)
+            except OSError:
+                pass
+
+
+def _read(p: Path) -> str:
+    try:
+        return Path(p).read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def put(name: str, value: str) -> str:

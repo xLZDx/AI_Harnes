@@ -254,3 +254,6 @@
 
 ## 2026-11-12 S9 tests for GPT-PM round 1 fixes
 - Evidence: tests/test_self_service.py 61 passed (tester ae4447d8, 7 new H cases incl. 8 concurrent puts with os.link disabled: one created, seven exists, no temp or lock left; git unstartable plus .git marker refused). Not covered: fresh lock with no target (10 s wait then refusal), the 30 s boundary, a crash while holding the lock.
+
+## 2026-11-12 S9 GPT-PM round 2 (HEAD 17816a2): REVISE, 2 MAJOR
+- Both real. F1: a stale-lock takeover after 30 s lets a paused first owner replace the second owner's value. Fixed: a lock is never taken over; it holds an owner token, the owner publishes only if the token is still its own and removes only its own lock; after 10 s a held lock gives a clear refusal naming the file (a crashed run needs that file deleted by hand). F2 real: with git unstartable and no .git marker the old code allowed any folder, but a work tree may use GIT_DIR and have no marker. Fixed: with git unstartable only the default folder under the user home is accepted. The test test_h2_git_not_startable_no_marker_put_works fixed the unsafe behaviour and is replaced. Trade-off accepted: without git a custom HARNESS_SECRET_DIR is refused.
