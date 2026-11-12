@@ -545,3 +545,4 @@ Decisions:
 
 ## 2026-11-13 Codex handoff (operator: write a detailed prompt so a Codex agent checks and fixes the Codex side itself)
 - docs/CODEX_HANDOFF.md: rules, architecture of the Codex half, history with my wrong claims, the hooks/list state of 2026-11-13, the read-only probe script, and tasks C1-C5 (live firing of every hook event inside Codex, B22 project-hook loading rule, AI_trading_assistance hook review, B21/B19 audit fix via the S15 flow, Codex-side fixes). Reason: payload shapes, stderr visibility and project-hook loading can only be observed from inside Codex. Rejected: guessing them from Claude.
+- B16 widened: the commit hook reopens tasks of a closed sprint and review/verify use different freshness rules. S14-T3 restored by re-recording the unchanged test evidence and a new reliability-reviewer check that 53f4a3e is docs-only.
