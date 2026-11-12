@@ -400,6 +400,10 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
     raw_git(repo, "update-index", "-q", "--refresh")
     snap_status, snap_stage = status_map(repo), stage_map(repo)
     ita = [p for p, c in snap_status.items() if c == " A"]
+    # ' M' that is only a line-ending difference (no content change once CR at end of line is ignored): when the tool
+    # rewrites such a file, git sees it clean afterwards, which is not lost work
+    eol_only = {p for p, c in snap_status.items()
+                if c == " M" and git(repo, "diff", "--quiet", "--ignore-cr-at-eol", "--", p).returncode == 0}
     scratch.mkdir(parents=True, exist_ok=True)
     tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
     run = f"{repo.name}-{tag}"
@@ -456,7 +460,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             set_phase(jp, j, "index-refreshed")
             after, stage_after = status_map(repo), stage_map(repo)
             for p in set(snap_status) | set(after):
-                if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??"):
+                if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??")                         and not (p in files and p in eol_only and after.get(p) is None):
                     raise RuntimeError(f"status changed for {p}: {snap_status.get(p)!r} -> {after.get(p)!r}")
             for p in set(snap_stage) | set(stage_after):
                 if p not in files and snap_stage.get(p) != stage_after.get(p):

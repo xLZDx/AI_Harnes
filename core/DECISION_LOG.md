@@ -457,3 +457,6 @@ Decisions:
 
 ## 2026-11-12 S14-T7 verify and review need a recorded agent run
 - The code is in the S14-T6 commit (same file tools/ledger.py); this commit updates the verify and harness-flow instructions. verify pass needs --by functional-test-reviewer|tdd-guide|e2e-runner, review accepted needs --by reviewer roles; each needs a finished run of that role, started after the task's last commit, in ~/.harness-hooks/agents/active.json (60 newest runs kept).
+
+## 2026-11-12 S14-T3 line-ending-only file rewritten by the dirty CI switch-off
+- functional-test-reviewer: test_crlf_rewritten_content_equal_log_with_dirty_workflow_is_changed failed ('status changed for core/LESSONS_LOG.md: ' M' -> None'); update-index --refresh does not clear an autocrlf content-equal file. Fix: before the run, record ' M' files with no change under --ignore-cr-at-eol; such a file the tool itself rewrites may end clean. Any other status change still restores everything.
