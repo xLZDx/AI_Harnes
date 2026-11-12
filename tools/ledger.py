@@ -281,6 +281,9 @@ def c_commit_hook(a, d):
     if not m:
         return
     tid = m.group(1)
+    if tid in HOUSEKEEPING_TASKS:  # harness maintenance commits (tools/ci_triggers_off.py) are not project tasks
+        event(d, "housekeeping-commit", task=tid, sha=sha)
+        return
     if not any(t["id"] == tid for s in d["sprints"] for t in s["tasks"]):
         hook_error(d, f"commit {sha[:12]} names unknown task {tid}")
         return
@@ -383,8 +386,36 @@ def c_sprint_close(a, d):
     print(f"sprint {a.id} closed")
 
 
+UNKNOWN_TASK_RE = re.compile(r"names unknown task (\S+)")
+HOUSEKEEPING_TASKS = {"CI-OFF"}  # Task: trailers of harness maintenance commits in project repos
+
+
+def open_hook_errors(d) -> list:
+    """Hook errors still worth a warning. History is never removed (operator rule 5): an error is only hidden when
+    (a) it reported an unknown task that the ledger now has (the plan sync added it), or
+    (b) an 'ack-errors' event recorded later acknowledges it with a reason."""
+    ids = {t["id"] for s in d["sprints"] for t in s["tasks"]}
+    events = d.get("events", [])
+    last_ack = max((i for i, e in enumerate(events) if e.get("kind") == "hook-error-ack"), default=-1)
+    out = []
+    for i, e in enumerate(events):
+        if e.get("kind") != "hook-error" or i < last_ack:
+            continue
+        m = UNKNOWN_TASK_RE.search(str(e.get("message", "")))
+        if m and (m.group(1) in ids or m.group(1) in HOUSEKEEPING_TASKS):
+            continue
+        out.append(e)
+    return out
+
+
+def c_ack_errors(a, d):
+    n = len(open_hook_errors(d))
+    event(d, "hook-error-ack", reason=a.reason, count=n)
+    print(f"ledger: {n} open hook error(s) acknowledged ({a.reason}); history kept")
+
+
 def c_status(a, d):
-    errs = [e for e in d.get("events", []) if e["kind"] == "hook-error"]
+    errs = open_hook_errors(d)
     if errs:
         print(f"WARNING: {len(errs)} hook error(s); last: {errs[-1]['message']}")
     if not d["sprints"]:
@@ -425,6 +456,7 @@ def main(argv=None) -> int:
     sub.add_parser("check-approval")
     x = sub.add_parser("sprint-close"); x.add_argument("id"); x.add_argument("--force", action="store_true")
     sub.add_parser("status")
+    x = sub.add_parser("ack-errors"); x.add_argument("--reason", required=True, help="why the open hook errors are acknowledged")
     a = p.parse_args(argv)
     fn = globals()["c_" + a.cmd.replace("-", "_")]
     try:

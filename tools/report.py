@@ -466,7 +466,7 @@ def sec_freshness(d: dict, f: dict, root: Path) -> str:
 def alerts_of(d: dict, g: Git, snap: dict) -> list[str]:
     evs = d.get("events", [])
     alerts = []
-    errs = [e.get("message", "") for e in evs if e.get("kind") == "hook-error"]
+    errs = [e.get("message", "") for e in ledger.open_hook_errors(d)]  # resolved and acknowledged errors stay in history only
     try:
         log = ledger.ledger_path().parent / "hook-error.log"
         if log.exists():  # shell-level failures never reach the ledger

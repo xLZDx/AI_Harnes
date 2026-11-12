@@ -399,3 +399,6 @@
 
 ## 2026-11-12 S14-T2 rules_gate: more runners, substitution, case
 - flutter, dart, go, cargo, playwright, dotnet, mvn, gradle test runs without a named test file are full suites (operator rule 4 prohibits full suites; no new operator decision needed); a named file (flutter/dart *.dart, go *_test.go, cargo --test name, playwright *.spec.*) is allowed for test agents only; dotnet/mvn/gradle have no named form yet (always full). Commands inside dollar-paren, backticks and case branches are classified like top-level ones; plain quoted text stays data. Engineer proof table piped through the hook (main session and functional-test-reviewer).
+
+## 2026-11-12 S14-T4 old hook errors
+- ledger.py: status and the report show only open hook errors; an 'unknown task X' error is resolved when the ledger now has X (the plan sync added it) or X is a harness housekeeping id (CI-OFF, the ci_triggers_off commits); new command ack-errors --reason appends a hook-error-ack event that hides earlier errors; nothing is deleted (operator rule 5). commit-hook records CI-OFF commits as housekeeping-commit events instead of errors. Read-only check on real ledgers: PDCC 1 -> 0; ERP 7 and Fitness_App 24 remain (ids that never were plan tasks) for ack-errors after tests.
