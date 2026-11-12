@@ -339,3 +339,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-12 S14-T3: the live-race test proves the pre-write hash check keeps a user edit made mid-run.
 - FAILURE 2026-11-12 S14-T3: my second fix still checked then replaced; GPT-PM found the window. Next time: a 'never overwrite' guarantee needs an operation that cannot overwrite (move aside, no-clobber place), not a check before an overwrite.
 - SHORTCOMING 2026-11-12 S14-T3: I designed swap_in for races but not for its own crash points; the reviewer walked each step. Next time: list every crash point of a multi-step file operation and the recovery for each before committing.
+- SHORTCOMING 2026-11-12 S14-T3: a module-level list cleared only on success leaked between repos; found by reliability-reviewer. Next time: per-run state is reset at the start of the run, not at one exit.

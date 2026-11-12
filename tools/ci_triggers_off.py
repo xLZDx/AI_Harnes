@@ -272,7 +272,8 @@ def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
                 return f"{p.name} was created by someone else during the run; theirs kept"
             return None
         if a.exists():
-            return f"{a.name} exists from an earlier interrupted swap; run --recover"
+            return (f"{a.name} exists from an earlier swap; check that it holds old bytes of {p.name} (pre-run or "
+                    f"merged), delete it by hand, then run again")
         try:
             os.replace(p, a)  # step 1 (a does not exist, so nothing is overwritten)
         except FileNotFoundError:
@@ -448,6 +449,11 @@ def rollback(repo: Path, j: dict) -> list[str]:
         for f, name in j["files"].items():
             p = repo / f
             a = aside_path(p)
+            for t in p.parent.glob(f".{p.name}.cioff-*.tmp"):  # temp files of a crashed swap (our new bytes only)
+                try:
+                    t.unlink()
+                except OSError:
+                    pass
             try:
                 if not p.exists() and a.exists() and not _place_noclobber(a, p):  # crash inside swap_in: unpark
                     errs.append(f"{f}: could not move {a.name} back; both kept")
@@ -521,6 +527,7 @@ def recover(repo: Path) -> str:
 def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
     """Switch triggers off in a repo whose working tree holds uncommitted work, without touching that work.
     Caller holds the repo lock and has checked that there is no journal."""
+    LEFTOVER_ASIDES.clear()  # never carry another repo's note into this run
     if git(repo, "diff", "--cached", "--quiet").returncode != 0:
         return "SKIP staged changes present (--dirty-ok needs an empty index)"
     why = unsafe_state(repo)
@@ -617,9 +624,6 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                     raise RuntimeError(f"index entry changed for {p}")
             set_phase(jp, j, "done")
             result = f"CHANGED {new[:7]} (dirty merge into {', '.join(files)})"
-            if LEFTOVER_ASIDES:
-                result += "; NOTE could not delete parked copies (known pre-run bytes): " + ", ".join(LEFTOVER_ASIDES)
-                LEFTOVER_ASIDES.clear()
             journaled = False
             try:
                 jp.unlink(missing_ok=True)  # only after the final status/stage check passed
@@ -638,6 +642,9 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                 else:
                     cleanup_run(repo, j, jp)
                     result = f"ERROR {e}; working files restored, branch back at {old[:7]}"
+        if LEFTOVER_ASIDES:  # this repo's parked copies only (the list is cleared when the run starts)
+            result += "; NOTE could not delete parked copies (known old bytes), delete by hand: " + ", ".join(LEFTOVER_ASIDES)
+            LEFTOVER_ASIDES.clear()
         return result
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
