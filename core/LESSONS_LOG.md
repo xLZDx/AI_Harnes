@@ -232,3 +232,5 @@
 - Kind: FAILURE. Facts: my stale-lock recovery created a new race (paused owner), and my test asserted the fail-open git behaviour as correct. Root cause: I fixed the symptom GPT-PM named, not the whole class (any automatic recovery needs owner proof); the test copied my assumption. Layer that missed it: author, tester; GPT-PM round 2 found it. Rule: when a fix adds recovery or a fallback, list who else can hold the resource before choosing it, and never let a test assert the weak branch.
 
 - Kind: SUCCESS. Facts: the tests now assert the strict contract in both findings and the old fail-open test was removed. Rule: when a review changes a contract, rewrite the test that encoded the old one first.
+
+- Kind: SHORTCOMING. Facts: my round-2 exception for the default folder repeated the round-1 mistake (an assumed-safe location without proof). Root cause: I patched the named input, not the class "git unavailable". Layer that missed it: author and tester; GPT-PM round 3. Rule: when a check cannot run, refuse for the whole class, never add an exception.

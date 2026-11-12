@@ -29,11 +29,8 @@ def valid_name(name: str) -> bool:
     return bool(NAME_RE.fullmatch(name)) and name.upper() not in RESERVED
 
 
-DEFAULT_DIR = (Path.home() / ".harness-secrets").resolve()
-
-
 def store_dir() -> Path:
-    return Path(os.environ.get("HARNESS_SECRET_DIR") or DEFAULT_DIR).resolve()
+    return Path(os.environ.get("HARNESS_SECRET_DIR") or (Path.home() / ".harness-secrets")).resolve()
 
 
 def has_git_marker(p: Path) -> bool:
@@ -52,9 +49,9 @@ def inside_git(p: Path) -> bool:
     try:
         r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
     except OSError:
-        # git cannot be started, so the location cannot be confirmed safe (the work tree may use GIT_DIR/GIT_WORK_TREE and have no
-        # .git marker): only the default folder under the user's home is accepted, any other folder is refused.
-        return p != DEFAULT_DIR
+        # git cannot be started, so no location can be confirmed safe: a work tree may use GIT_DIR/GIT_WORK_TREE or core.worktree and
+        # carry no .git marker, in the default folder as well. Refuse; the harness always runs where git is installed.
+        return True
     if r.returncode == 0:
         return r.stdout.strip() == "true"
     return "not a git repository" not in (r.stderr or "").lower()

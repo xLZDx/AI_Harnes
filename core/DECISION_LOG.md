@@ -260,3 +260,6 @@
 
 ## 2026-11-12 S9 tests for GPT-PM round 2 fixes
 - Evidence: tests/test_self_service.py 65 passed (tester af773916): a leftover lock of any age is never taken over and the refusal names the lock file; a paused owner whose token is gone does not publish; git unstartable refuses a custom folder, accepts the default folder, refuses a tree with external GIT_DIR. Not covered: a real process pause; only Windows was run.
+
+## 2026-11-12 S9 GPT-PM round 3 (HEAD a56a036): REVISE, 1 MAJOR
+- F1 closed. F2 remains and is real: with git unstartable the default folder was accepted without proof, but a work tree with GIT_DIR/GIT_WORK_TREE pointing at it has no .git marker. Fixed: with git unstartable every folder, the default one too, is refused (inside_git returns True). Trade-off accepted: no secret store without git; the harness runs only where git is installed. Test test_h2_git_not_startable_default_dir_still_works is replaced by a refusal test plus the GPT-PM failing input (GIT_WORK_TREE = default folder, external GIT_DIR).
