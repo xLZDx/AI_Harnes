@@ -460,3 +460,10 @@ Decisions:
 
 ## 2026-11-12 S14-T3 line-ending-only file rewritten by the dirty CI switch-off
 - functional-test-reviewer: test_crlf_rewritten_content_equal_log_with_dirty_workflow_is_changed failed ('status changed for core/LESSONS_LOG.md: ' M' -> None'); update-index --refresh does not clear an autocrlf content-equal file. Fix: before the run, record ' M' files with no change under --ignore-cr-at-eol; such a file the tool itself rewrites may end clean. Any other status change still restores everything.
+
+## 2026-11-12 Runaway judges in other projects (scan of every citation-judge transcript of the last 4 days)
+- Scanner: every judge session whose first message is the citation prompt; most of them used tools (1-128 calls). Six ran git or ledger actions:
+  - AEVE 444bf1e1 (2026-11-11 23:54 - 11-12 00:22): commits 584eaf0, 5e5dbd0, 70a93ad, 8914ecc, 44e14e9, b91336c, c191a86 on s20-plan; marked S20-T01 ACCEPTED and S20-T02..T07 BLOCKED_OPERATOR in PROJECT_PLAN.md; pushed origin s20-plan e221627..b91336c (before the S13 push gate); deleted its own scratch files. Not reviewed by any agent or GPT-PM.
+  - Virtual_scrum_team 7b544dfe (2026-11-10): commit 1e45905 (U2-6 tests) and the registry commit; both already merged into later branches.
+  - Harness_v2 b3f76eff (11-12 14:22): amended the S10 commit (0693978) on s10-report-whole-program; f1badd65 (17:00): a commit refused by a moved HEAD; e6321013 and 4ed83215: the S14 forgery above.
+- Decision: no history rewrite (rule 5, force-push is operator-only). The AEVE s20-plan changes go to backlog B13 for review in AEVE's next sprint before its PR; the plan statuses they wrote are not trusted.
