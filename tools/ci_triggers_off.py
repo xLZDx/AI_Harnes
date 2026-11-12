@@ -8,7 +8,11 @@ stays byte-identical, line endings included. The result is re-parsed with tools/
 Then core/DECISION_LOG.md and core/LESSONS_LOG.md get an entry and exactly those paths are committed with git's normal
 hooks (never --no-verify). Nothing is pushed. Stdlib only.
 
-Usage: ci_triggers_off.py [--dry-run] [--project NAME] [--include-deploy] [--root D:\\Repo]
+--dirty-ok handles a repo whose workflow/log files have uncommitted edits: the commit is made in a temp worktree, the
+branch is moved with update-ref, the change is 3-way merged into the working copy (index entries intent-to-add kept),
+and everything is rolled back on any conflict or unexpected status change. Refused when anything is staged.
+
+Usage: ci_triggers_off.py [--dry-run] [--project NAME] [--include-deploy] [--root D:\\Repo] [--dirty-ok] [--scratch DIR]
 Exit code 1 when any row is ERROR."""
 from __future__ import annotations
 
@@ -16,8 +20,11 @@ import argparse
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -137,7 +144,145 @@ def log_path(repo: Path, name: str) -> str:
 
 # ---------------------------------------------------------------- per repo
 
-def process(repo: Path, include_deploy: bool, dry: bool) -> dict:
+def raw_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    """Bytes-safe git call (blob contents)."""
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+
+
+def status_map(repo: Path) -> dict[str, str]:
+    out = git(repo, "status", "--porcelain=v1", "-uall", "-z").stdout
+    return {e[3:]: e[:2] for e in out.split("\0") if len(e) > 3}
+
+
+def stage_map(repo: Path) -> dict[str, str]:
+    out = git(repo, "ls-files", "--stage", "-z").stdout
+    return {e.split("\t", 1)[1]: e.split("\t", 1)[0] for e in out.split("\0") if "\t" in e}
+
+
+def refresh_index(repo: Path, ita: list[str]) -> None:
+    """Index := HEAD (working tree untouched), then re-apply intent-to-add entries that git reset drops."""
+    r = git(repo, "reset", "-q")
+    if r.returncode != 0:
+        raise RuntimeError("git reset failed: " + r.stderr.strip()[-200:])
+    for p in ita:
+        if (repo / p).is_file() and git(repo, "cat-file", "-e", f"HEAD:{p}").returncode != 0:
+            r = git(repo, "add", "-N", "--", p)
+            if r.returncode != 0:
+                raise RuntimeError(f"git add -N {p} failed: " + r.stderr.strip()[-200:])
+
+
+def merge_into_working(repo: Path, old: str, new: str, rel: str, tmp: Path, backups: dict) -> None:
+    p = repo / rel
+    is_log = rel.endswith("_LOG.md")
+    base = raw_git(repo, "cat-file", "blob", f"{old}:{rel}")
+    theirs = raw_git(repo, "cat-file", "blob", f"{new}:{rel}").stdout
+    base_b = base.stdout if base.returncode == 0 else b""
+    if not p.exists():
+        if base.returncode == 0:
+            raise RuntimeError(f"{rel}: deleted in working copy but changed in the commit")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(theirs)  # new file only in the commit (e.g. the LIVE report), absent locally
+        return
+    if base.returncode != 0 and not is_log:
+        return  # untracked local file that the commit also adds: keep the local one
+    cur = p.read_bytes()
+    crlf = b"\r\n" in cur and b"\r\n" not in base_b  # working copy CRLF, blobs LF
+    if crlf:
+        p.write_bytes(cur.replace(b"\r\n", b"\n"))
+    bt, nt = tmp / "base", tmp / "new"
+    bt.write_bytes(base_b)
+    nt.write_bytes(theirs)
+    m = subprocess.run(["git", "merge-file", *(["--union"] if is_log else []), str(p), str(bt), str(nt)],
+                       capture_output=True, text=True)
+    if m.returncode != 0:
+        raise RuntimeError(f"merge conflict in {rel} (rc={m.returncode})")
+    if crlf:
+        p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+
+
+def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
+    """Switch triggers off in a repo whose working tree holds uncommitted work, without touching that work."""
+    if git(repo, "diff", "--cached", "--quiet").returncode != 0:
+        return "SKIP staged changes present (--dirty-ok needs an empty index)"
+    why = unsafe_state(repo)
+    if why:
+        return f"SKIP {why}"
+    branch = git(repo, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
+    old = git(repo, "rev-parse", "HEAD").stdout.strip()
+    snap_status, snap_stage = status_map(repo), stage_map(repo)
+    ita = [p for p, c in snap_status.items() if c == " A"]
+    scratch.mkdir(parents=True, exist_ok=True)
+    tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    tmpb, wt = f"ci-off/{repo.name}-{tag}", scratch / f"cioff-{repo.name}-{tag}"
+    a = git(repo, "worktree", "add", "-q", "-b", tmpb, str(wt), old)
+    if a.returncode != 0:
+        return "ERROR worktree add failed: " + a.stderr.strip()[-300:]
+    backups: dict[str, bytes | None] = {}
+    state = {"moved": False, "indexed": False}
+    new = old
+    tmpdir = Path(tempfile.mkdtemp(dir=scratch, prefix="cioff-merge-"))
+    result = ""
+    try:
+        try:
+            inner = process(wt, include_deploy, False)
+            if not inner["status"].startswith("CHANGED"):
+                return inner["status"] if inner["status"] == "CLEAN" or inner["status"].startswith(("ERROR", "SKIP")) \
+                    else "ERROR " + inner["status"]
+            new = git(wt, "rev-parse", "HEAD").stdout.strip()
+            if new == old:
+                return "ERROR tool made no commit in the temp worktree"
+            files = [f for f in git(repo, "diff", "--name-only", "-z", old, new).stdout.split("\0") if f]
+            for f in files:
+                p = repo / f
+                backups[f] = p.read_bytes() if p.is_file() else None
+            u = git(repo, "update-ref", f"refs/heads/{branch}", new, old)  # fails if HEAD moved
+            if u.returncode != 0:
+                return "ERROR branch moved meanwhile, nothing changed: " + u.stderr.strip()[-200:]
+            state["moved"] = True
+            for f in files:
+                merge_into_working(repo, old, new, f, tmpdir, backups)
+            state["indexed"] = True
+            refresh_index(repo, ita)
+            after, stage_after = status_map(repo), stage_map(repo)
+            for p in set(snap_status) | set(after):
+                if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??"):
+                    raise RuntimeError(f"status changed for {p}: {snap_status.get(p)!r} -> {after.get(p)!r}")
+            for p in set(snap_stage) | set(stage_after):
+                if p not in files and snap_stage.get(p) != stage_after.get(p):
+                    raise RuntimeError(f"index entry changed for {p}")
+            result = f"CHANGED {new[:7]} (dirty merge into {', '.join(files)})"
+        except Exception as e:  # noqa: BLE001 - restore everything
+            for f, b in backups.items():
+                p = repo / f
+                if b is None:
+                    if p.exists():
+                        p.unlink()
+                else:
+                    p.write_bytes(b)
+            errs = []
+            if state["moved"]:
+                if git(repo, "update-ref", f"refs/heads/{branch}", old, new).returncode != 0:
+                    errs.append("branch rollback FAILED")
+            if state["indexed"]:
+                try:
+                    refresh_index(repo, ita)
+                except Exception as e2:  # noqa: BLE001
+                    errs.append(f"index restore failed: {e2}")
+            result = f"ERROR {e}; working files restored, branch back at {old[:7]}" + (
+                "; " + "; ".join(errs) if errs else "")
+        return result
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        git(repo, "worktree", "remove", "--force", str(wt))
+        git(repo, "worktree", "prune")
+        if git(repo, "merge-base", "--is-ancestor", tmpb, branch).returncode == 0:
+            git(repo, "branch", "-q", "-d", tmpb)
+        if git(repo, "rev-parse", "-q", "--verify", f"refs/heads/{tmpb}").returncode == 0:
+            print(f"note: temp branch {tmpb} left in {repo.name} (not merged; deleting it is operator-only)")
+
+
+def process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
+            scratch: Path = Path(r"D:\tmp\scratch_worktrees")) -> dict:
     row = {"repo": repo.name, "branch": "", "files": "", "trig": "", "status": ""}
     b = git(repo, "symbolic-ref", "-q", "--short", "HEAD")
     row["branch"] = b.stdout.strip() if b.returncode == 0 else "(detached)"
@@ -174,10 +319,13 @@ def process(repo: Path, include_deploy: bool, dry: bool) -> dict:
     # safety
     why = unsafe_state(repo)
     dlog, llog = log_path(repo, "DECISION_LOG.md"), log_path(repo, "LESSONS_LOG.md")
+    use_dirty = False
     if why is None:
         dirty = dirty_paths(repo, [t[0] for t in targets] + [dlog, llog])
-        if dirty:
+        if dirty and not dirty_ok:
             why = "uncommitted changes in " + ", ".join(dirty)
+        elif dirty:
+            use_dirty = True
     if why is None:
         for rel in (dlog, llog):
             if git(repo, "check-ignore", "-q", rel).returncode == 0:
@@ -199,7 +347,10 @@ def process(repo: Path, include_deploy: bool, dry: bool) -> dict:
             return row
         new_files.append((rel, raw, join_workflow(new, bom)))
     if dry:
-        row["status"] = "WOULD CHANGE"
+        row["status"] = "WOULD CHANGE" + (" (dirty merge)" if use_dirty else "")
+        return row
+    if use_dirty:
+        row["status"] = process_dirty(repo, include_deploy, scratch)
         return row
 
     originals: dict[str, bytes | None] = {}
@@ -274,6 +425,9 @@ def main() -> int:
     ap.add_argument("--project")
     ap.add_argument("--include-deploy", action="store_true")
     ap.add_argument("--root", default=r"D:\Repo")
+    ap.add_argument("--dirty-ok", action="store_true",
+                    help="repo has uncommitted work: commit in a temp worktree and 3-way merge into the working copy")
+    ap.add_argument("--scratch", default=r"D:\tmp\scratch_worktrees", help="folder for the temp worktree (--dirty-ok)")
     a = ap.parse_args()
     root = Path(a.root)
     rows = []
@@ -284,7 +438,7 @@ def main() -> int:
             continue
         if not (d / ".git").exists() or not (d / ".github" / "workflows").is_dir():
             continue
-        rows.append(process(d, a.include_deploy, a.dry_run))
+        rows.append(process(d, a.include_deploy, a.dry_run, a.dirty_ok, Path(a.scratch)))
     print_table(rows)
     return 1 if any(r["status"].startswith("ERROR") for r in rows) else 0
 
