@@ -103,6 +103,15 @@ def main() -> int:
             return 0  # repeat-work gate asked the operator; waiting for the answer is not stalling
     except Exception:
         pass
+    try:
+        from session_close_gate import pending_agents
+        running = pending_agents(data.get("transcript_path") or "")
+        if running:  # waiting for an own background agent: a short status line is a valid end of turn
+            log({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "verdict": "waiting-for-own-agents", "agents": running[:6]})
+            _counts(data, reset=True)
+            return 0
+    except Exception:
+        pass
     message = data.get("last_assistant_message") or ""
     if not message and _agentio.client(data) == "codex":  # Codex may send null here; read the transcript instead
         message = _agentio.last_assistant_text(data)
