@@ -304,3 +304,6 @@
 
 ## 2026-11-12 S13-R1 R2 R4 enforcement hooks
 - New rules_gate.py (PreToolUse, Claude Bash/PowerShell and Codex shell): denies full test runs, vitest, jest, lint, typecheck, verify scripts, gh workflow run/enable, gh run rerun/watch/log, gh pr checks; named test files only for test agents; git push and gh pr create only when the ledger approval is bound to HEAD and every task of the open sprint is verified, done or explicitly blocked. New tools/workflow_guard.py called by the project pre-push hook: a push whose tip commit has a workflow started by push, pull_request, pull_request_target or schedule is refused. agent_visibility is now registered for SubagentStart (it was missing from build.py HOOK_EVENTS for Claude, so START never fired) plus a PreToolUse Agent|Task fallback with dedupe; the START line names the role.
+
+## 2026-11-12 S13-R5 shell gate: quoted text is not a command
+- dangerous_command_gate splits commands on separators without honouring quotes, so a separator inside a quoted log text made the next word look like a command. shell_policy_gate now sanitizes first: separators inside quotes become spaces, heredoc bodies are dropped, except text that runs as code (bash -c, sh, cmd /c, powershell -c, eval, source, xargs, command substitution), which stays raw so the gate is not weaker.

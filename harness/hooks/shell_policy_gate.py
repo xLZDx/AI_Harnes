@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -44,6 +45,90 @@ def deny(reason: str) -> None:
     }, ensure_ascii=False))
 
 
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+_WRAPPER_WORDS = {"sh", "bash", "zsh", "ksh", "dash", "pwsh", "powershell", "powershell.exe", "cmd", "cmd.exe", "eval", "source", ".", "xargs"}
+
+
+def _is_wrapper(raw: str) -> bool:
+    """True when the segment runs its quoted argument as shell code (bash -c "...", cmd /c "...", eval "...", bash <<EOF):
+    its quoted text IS a command and must stay visible to the destructive-command checks."""
+    seg = raw.strip()
+    while seg:  # same prefix/leader stripping as dangerous.segments()
+        nxt = dangerous.LEADERS.sub("", dangerous.PREFIXES.sub("", seg, count=1).strip(), count=1).strip()
+        if nxt == seg:
+            break
+        seg = nxt
+    if dangerous.SHELL_C.match(seg) or dangerous.EVAL_WRAPPER.match(seg):
+        return True
+    first = seg.split(None, 1)[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if seg.split() else ""
+    return first in _WRAPPER_WORDS
+
+
+def _sanitize(cmd: str) -> str:
+    """The command with DATA made inert, so a destructive word counts only as the command word of a pipeline segment.
+    Outside quotes nothing changes. Inside a quoted string the separators ; | & and newlines become spaces (the string stays one
+    argument, an echo/printf/git commit -m text can no longer be split into fake "commands"); a double-quoted string that holds
+    $( ) or a backtick is kept raw (it really runs code). Heredoc bodies are dropped. A segment that runs its argument as shell
+    code (bash -c, cmd /c, eval, bash <<EOF) is kept raw, quotes and heredoc body included. Any error returns the raw command."""
+    try:
+        segs: list[list] = []  # [raw, san, body, separator]
+        raw: list[str] = []
+        san: list[str] = []
+        body: list[str] = []
+        pending: list[str] = []
+        i, n = 0, len(cmd)
+
+        def flush(sep: str) -> None:
+            segs.append(["".join(raw), "".join(san), "".join(body), sep])
+            raw.clear(); san.clear(); body.clear()
+
+        while i < n:
+            ch = cmd[i]
+            if ch == "\\" and i + 1 < n:
+                raw.append(cmd[i:i + 2]); san.append(cmd[i:i + 2]); i += 2
+                continue
+            if ch in "'\"":
+                j = i + 1
+                while j < n and cmd[j] != ch:
+                    j += 2 if (ch == '"' and cmd[j] == "\\") else 1
+                span = cmd[i:j + 1] if j < n else cmd[i:]
+                i = j + 1 if j < n else n
+                keep = ch == '"' and ("$(" in span or "`" in span)
+                raw.append(span); san.append(span if keep else re.sub(r"[;|&\r\n]", " ", span))
+                continue
+            if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                m = _HEREDOC_RE.match(cmd, i)
+                if m:
+                    pending.append(m.group(2))
+                    raw.append(m.group(0)); san.append(m.group(0)); i = m.end()
+                    continue
+            if ch == "\n" and pending:
+                i += 1
+                for delim in pending:
+                    while i < n:
+                        end = cmd.find("\n", i)
+                        line = cmd[i:] if end < 0 else cmd[i:end]
+                        i = n if end < 0 else end + 1
+                        if line.strip() == delim:
+                            break
+                        body.append(line + "\n")
+                pending.clear()
+                flush("\n")
+                continue
+            m = dangerous.SEPARATORS.match(cmd, i)
+            if m and m.group():
+                flush(m.group()); i = m.end()
+                continue
+            raw.append(ch); san.append(ch); i += 1
+        flush("")
+        out = []
+        for r, s, b, sep in segs:
+            out.append((r + ("\n" + b if b else "") if _is_wrapper(r) else s) + sep)
+        return "".join(out)
+    except Exception:  # noqa: BLE001  never weaken the gate by failing: fall back to the raw command
+        return cmd
+
+
 def _evaluate(data: dict) -> int:
     if _IMPORT_ERROR is not None:
         raise RuntimeError("shell policy sibling module failed to import:\n" + _IMPORT_ERROR)
@@ -58,7 +143,7 @@ def _evaluate(data: dict) -> int:
     if not isinstance(command, str) or not command.strip():
         return 0
 
-    hits = dangerous.find_hits(command)
+    hits = dangerous.find_hits(_sanitize(command))
     if hits or os.environ.get("CLAUDE_SHELL_POLICY_AUDIT", "").lower() in {"1", "true", "on"}:
         dangerous.log({
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
