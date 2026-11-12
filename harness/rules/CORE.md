@@ -59,6 +59,16 @@ instruction wins; platform permission and safety controls always apply.
 ## Autonomy and visibility (S7, operator 2026-11-12)
 - Do it yourself first: everything that is not prohibited is allowed, except money. Ask the operator for credentials, state,
   settings or access only after real attempts whose results are in the transcript (`ask_last_gate`).
+- Self-service ladder (S9, operator 2026-11-12): the operator is the last resort. Before any ask, in this order, with the result of
+  each step in the transcript: (1) check that nothing prohibits the action (permission denies, these rules, the operator-only list);
+  (2) search for what is needed: environment variable names, `.env.example`, project and user config files, the secret store, CLI
+  status (`gh auth status`, `aws sts get-caller-identity`, and the like); (3) use what was found; (4) if it is missing and the tool
+  allows it, issue a new key or token, or create the missing tool, stack or file (for example a Terraform stack that is absent), with
+  the smallest working content; (5) store the result outside git (environment variable or a store outside the repository) and
+  write one value-free line to `core/DECISION_LOG.md` (what was created, where, never the value); (6) only then ask.
+- Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
+  trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
+  production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.
 - Show the work plan before the first change (`plan_first_gate`); a plan that was not presented does not count.
 - A turn does not end while its ledger tasks are open (`session_close_gate`); a task that cannot proceed is marked with
   `ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause "<verified cause>"`.

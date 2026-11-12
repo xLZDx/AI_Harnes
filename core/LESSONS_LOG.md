@@ -198,3 +198,5 @@
 - Kind: SHORTCOMING. Facts: two ledger tasks were committed together under one Task trailer, so the ledger could not verify the first. Rule: one commit per task, or add the second task by a note commit before verify.
 
 - Kind: FAILURE. Facts: a path with a TAB (D: TAB mp) shipped in four test files; my own end-to-end test passed because it only counted fixture rows in the real folder. Root cause: escapes in a generated patch script; no check of the written bytes. Layer that missed it: author; GPT-PM found it. Rule: after any scripted edit of a path, grep the written bytes, and test that an isolation path is absolute.
+
+- Kind: SUCCESS. Facts: S9-T1 put the self-service ladder in CORE.md, the one source that build.py copies into both the Claude CLAUDE.md and the Codex AGENTS.md. Why it worked: one source file, no per-client copy. Rule: put shared behaviour rules in CORE.md only.
