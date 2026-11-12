@@ -319,6 +319,21 @@ def approval_on_head(d: Path) -> bool:
     return bool(ap and head and ap == head)
 
 
+def make_unapproved_probe_repo(parent: Path) -> Path:
+    """Create an isolated harness repo with no remote or approval for client-level hook probes."""
+    probe = parent / "unapproved-probe"
+    probe.mkdir()
+    init = run(["git", "init", "-q"], cwd=probe)
+    if init is None or init.returncode != 0:
+        raise RuntimeError("git init failed for disposable no-approval probe")
+    ledger_dir = probe / ".harness"
+    ledger_dir.mkdir()
+    ledger = {"version": 1, "project": "audit-probe", "approval": None,
+              "sprints": [{"id": "AUDIT", "state": "open", "tasks": [{"id": "AUDIT-T1", "state": "todo"}]}]}
+    (ledger_dir / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8", newline="\n")
+    return probe
+
+
 def run_gate(handlers, command: str, cwd: Path, tmp: Path, client: str):
     """Returns (denied_by hook name or None, notes list)."""
     payload = json.dumps({
@@ -351,33 +366,48 @@ def chk_gates_live(cwd: Path, cfg_path: Path, client: str, is_project_dir: bool)
         return FAIL, "no PreToolUse Bash hooks registered"
     AUDIT_TMP.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="g_", dir=str(AUDIT_TMP)))
+    probe_cwd = cwd
+    disposable_probe_cwd = None
+    if not is_project_dir:
+        try:
+            disposable_probe_cwd = make_unapproved_probe_repo(tmp)
+            probe_cwd = disposable_probe_cwd
+        except (OSError, RuntimeError) as exc:
+            partial_probe = tmp / "unapproved-probe"
+            if partial_probe.exists() and partial_probe.parent.resolve() == tmp.resolve():
+                shutil.rmtree(partial_probe)
+            return FAIL, f"could not create disposable no-approval probe repo: {exc}"
     deny = list(DENY_CMDS)
     skipped = ""
-    if is_project_dir and approval_on_head(cwd):
+    if is_project_dir and approval_on_head(probe_cwd):
         deny.remove("git push")
         skipped = "git push skipped (ledger approval is on HEAD)"
     todo = [(c, True) for c in deny] + [(c, False) for c in ALLOW_CMDS]
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        results = list(ex.map(lambda t: run_gate(handlers, t[0], cwd, tmp, client), todo))
-    not_denied, wrongly_denied, notes = [], [], []
-    for (c, want_deny), (by, nts) in zip(todo, results):
-        notes += nts
-        if want_deny and by is None:
-            not_denied.append(c)
-        if not want_deny and by is not None:
-            wrongly_denied.append(f"{c} (by {by})")
-    reg = [hook_name(c) for c, _ in handlers]
-    msgs = []
-    if not_denied:
-        msgs.append("not denied: " + ", ".join(not_denied))
-    if wrongly_denied:
-        msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
-    if "rules_gate.py" not in reg:
-        msgs.append("rules_gate.py not registered")
-    if msgs:
-        extra = ("; " + skipped) if skipped else ""
-        return FAIL, "; ".join(msgs) + extra
-    return OK, (skipped or f"{len(deny)} denied, git status allowed") + (f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]" if notes else "")
+    try:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            results = list(ex.map(lambda t: run_gate(handlers, t[0], probe_cwd, tmp, client), todo))
+        not_denied, wrongly_denied, notes = [], [], []
+        for (c, want_deny), (by, nts) in zip(todo, results):
+            notes += nts
+            if want_deny and by is None:
+                not_denied.append(c)
+            if not want_deny and by is not None:
+                wrongly_denied.append(f"{c} (by {by})")
+        reg = [hook_name(c) for c, _ in handlers]
+        msgs = []
+        if not_denied:
+            msgs.append("not denied: " + ", ".join(not_denied))
+        if wrongly_denied:
+            msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
+        if "rules_gate.py" not in reg:
+            msgs.append("rules_gate.py not registered")
+        if msgs:
+            extra = ("; " + skipped) if skipped else ""
+            return FAIL, "; ".join(msgs) + extra
+        return OK, (skipped or f"{len(deny)} denied, git status allowed") + (f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]" if notes else "")
+    finally:
+        if disposable_probe_cwd is not None and disposable_probe_cwd.parent.resolve() == tmp.resolve():
+            shutil.rmtree(disposable_probe_cwd)
 
 
 # ---- client rows --------------------------------------------------------------------------------------------------------------
