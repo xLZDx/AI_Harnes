@@ -16,3 +16,4 @@ end of the planned pass. Each item: what, why it is open, what closes it.
 | B9 | CLOSED 2026-11-12 by the OS lock (1791aee), no stale lock can exist: A plan lock whose creator crashed between create and write is never taken over (safe) | Needs a manual delete in that rare case | A creation-time-only lock format, or a documented manual step |
 | B10 | GitHub "Preview deploy" (PDCC) and deploy/migrate workflows stay enabled by decision | Deploys are not CI checks; operator may want them off too | Operator decision recorded |
 | B11 | Merge PRs 1 and 2 (S9, S10) and the S11+S13 PR | Merge is the operator's step per project rules | Merged |
+| B12 | PM Bridge state/messages.jsonl and the agent_visibility state are local files an agent could write, so the S14-T6/T7 checks stop a typed claim but not a deliberate file forgery | Needs a signed record (PM Bridge daemon signature) or a gate that denies agent writes to those files | Gate or signature in place, tested |

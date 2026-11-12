@@ -451,3 +451,6 @@ Decisions:
 - S14-T7: verify pass / review accepted need `--by <role>` and a finished run of that role after the task commit in the agent_visibility state.
 - S14 keeps its branch and PR #4 (one PR per sprint); the remote branch holds unreviewed code until a real GPT-PM APPROVE; nothing is merged. The commits stay in history (rule 5). Their files moved out of the repo: D:\Backupunaway-judge-20261112 (s14_review.txt, s14_full_diff.diff, s14_diff_stat.txt).
 - PM Bridge (3cd22c2): GPT-PM was told "a review covers exactly ONE task"; now one sprint (operator: "ты должен был снять это ограничение").
+
+## 2026-11-12 S14-T6 approve checked against the PM Bridge reply
+- `approve --request-id` reads correlated inbound replies; a reply passes only with a bare APPROVE line, no REVISE/RESEND/REQUEST_CHANGES/MODIFY/REJECT line, the same project, and a HEAD line (reply, else our request) equal to the approved commit. Checked live: request 15a3aabe (S14, RESEND) refused; c3f1b7a2 (S13 round 3 APPROVE) accepted for 5f73c59. Backlog B12 for file forgery.

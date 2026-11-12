@@ -627,6 +627,9 @@ def _ledger_problems(cwd: str, led: Path) -> list[str]:
         return ["ledger unreadable or malformed"]
     if not ap:
         problems.append("no GPT-PM approval is recorded in the ledger (run the gpt-pm-gate skill, then `ledger.py approve`)")
+    elif not (approval or {}).get("request_id"):
+        problems.append("the recorded approval has no PM Bridge request id, so it was never checked against a GPT-PM "
+                        "reply; record it again with `ledger.py approve --request-id <id>`")
     elif head and ap != head:
         problems.append(f"the GPT-PM approval is bound to {ap[:12]}, not to the current HEAD {head[:12]} "
                         "(a new commit removes the approval; run gpt-pm-gate again)")
