@@ -393,3 +393,6 @@
 
 ## 2026-11-12 OS lock tests
 - tests/test_s13_gpt_round1.py lock tests moved to the OS-lock contract plus the GPT scenario (A killed, B holds and waits, C waits 1.5 s without acquiring while a third probe times out naming the path, B releases, C acquires) and 20 rounds of two racers with strictly alternating enter/leave and no overlapping intervals; tests/test_s13_review_tools.py concurrent imports (6 rounds), old-scheme lock file kept and not blocking, live holder blocks whatever the file age, dry run lock-free. All three files OK: 0 failing (functional-test-reviewer). fcntl branch NOT_RUN (Windows).
+
+## 2026-11-12 S13 closed, S14 planned (operator rule 7)
+- S13 and S11: GPT-PM APPROVE round 3 (c3f1b7a2) for 5f73c59, approval recorded in the ledger, branch pushed, PR https://github.com/xLZDx/AI_Harnes/pull/3 (stacked on #2), reviews recorded, both sprints closed (Harness_v2 done 42 of 45; the 3 open are S12 tasks closed as superseded). Final install: built and installed hook files equal in both client homes (hash check), 17 projects reinstalled. S14 opened on branch s14-backlog-gates with backlog B2, B3+B4, B6, B5 as S14-T1..T4; B3 needs no operator decision because full suites are already prohibited; B9 closed by the OS lock; B7, B10, B11 stay operator steps.
