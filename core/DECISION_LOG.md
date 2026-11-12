@@ -227,3 +227,6 @@
 
 ## 2026-11-12 S9-T6 OPERATOR block needs a named case
 - Decision: ledger.py block --class OPERATOR now requires --case from a fixed list (prohibition, money, personal-secret, captcha, account, irreversible-delete, force-push, production-data); prohibition also needs the tool error quoted. EXTERNAL and PROHIBITED unchanged. Evidence of behaviour: pending tester run.
+
+## 2026-11-12 S9-T6 tests
+- Evidence: tests/test_self_service.py 38 passed (tester run, 18 new cases for the OPERATOR case rule, isolated ledger in a temp dir). Not covered: concurrent block calls, boundary of the quoted-error rule.

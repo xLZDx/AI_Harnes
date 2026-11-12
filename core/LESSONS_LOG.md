@@ -210,3 +210,5 @@
 - Kind: SHORTCOMING. Facts: four S9 commits were made without the ledger post-commit hook installed (core.hooksPath empty in Harness_v2), so verify refused them. Root cause: the harness repo itself is not installed as a project. Layer that missed it: author. Rule: after the first commit of a task run ledger.py status and check the commit was recorded.
 
 - Kind: SUCCESS. Facts: closed the OPERATOR loophole in the ledger by a fixed case list instead of free text. Rule: a gate on a free-text reason is not a gate; require a value from a closed list.
+
+- Kind: SUCCESS. Facts: tester wrote 18 cases from the criteria and all passed first run with an isolated ledger. Rule: tests for a state file always point it at a temp path.

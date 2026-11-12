@@ -187,3 +187,88 @@ def test_d_concurrent_put_exactly_one_created(sdir):
         outs.append(o.strip())
     assert outs.count("created") == 1, outs
     assert outs.count("exists") == 7, outs
+
+
+# ---------- E: ledger block --class OPERATOR needs --case (S9-T6) ----------
+LEDGER = ROOT / "tools" / "ledger.py"
+ALL_CASES = ["prohibition", "money", "personal-secret", "captcha", "account", "irreversible-delete", "force-push", "production-data"]
+
+
+@pytest.fixture()
+def ledger_env(tmp_path):
+    lp = tmp_path / "ledger.json"
+    env = {**os.environ, "HARNESS_LEDGER": str(lp), "PYTHONIOENCODING": "utf-8"}
+
+    def run(*args):
+        return subprocess.run([PY, str(LEDGER), *args], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", cwd=str(tmp_path), env=env)
+
+    assert run("sprint-add", "--id", "ST", "--title", "t").returncode == 0
+    r = run("task-add", "--sprint", "ST", "--id", "ST-T1", "--title", "x")
+    assert r.returncode == 0, r.stderr
+
+    def blocked():
+        d = json.loads(lp.read_text(encoding="utf-8"))
+        for s in d["sprints"]:
+            for t in s["tasks"]:
+                if t["id"] == "ST-T1":
+                    return t.get("blocked")
+        raise AssertionError("task missing")
+
+    return run, blocked
+
+
+def test_e_operator_without_case_refused(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--cause", "needs the operator to decide")
+    assert r.returncode != 0
+    assert blocked() is None
+
+
+@pytest.mark.parametrize("bad", ["foo", "Money", "", "decision", "prohibited"])
+def test_e_operator_unknown_case_refused(ledger_env, bad):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", bad, "--cause", "needs the operator to decide")
+    assert r.returncode != 0
+    assert blocked() is None
+
+
+def test_e_operator_money_accepted(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", "money", "--cause", "real trading order needs the operator")
+    assert r.returncode == 0, r.stderr
+    b = blocked()
+    assert b and b["class"] == "OPERATOR" and b["case"] == "money"
+
+
+@pytest.mark.parametrize("case", [c for c in ALL_CASES if c != "prohibition"])
+def test_e_operator_each_nonprohibition_case_accepted(ledger_env, case):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", case, "--cause", "only the operator can do this")
+    assert r.returncode == 0, r.stderr
+    assert blocked()["class"] == "OPERATOR"
+
+
+def test_e_prohibition_without_quoted_error_refused(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", "prohibition", "--cause", "the tool was prohibited by policy")
+    assert r.returncode != 0
+    assert blocked() is None
+
+
+def test_e_prohibition_with_quoted_error_accepted(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", "prohibition",
+            "--cause", 'tool said "permission denied by policy X"')
+    assert r.returncode == 0, r.stderr
+    b = blocked()
+    assert b["class"] == "OPERATOR" and b["case"] == "prohibition"
+
+
+@pytest.mark.parametrize("klass", ["EXTERNAL", "PROHIBITED"])
+def test_e_other_classes_work_without_case(ledger_env, klass):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", klass, "--cause", "service returned HTTP 503 twice")
+    assert r.returncode == 0, r.stderr
+    b = blocked()
+    assert b["class"] == klass and "case" not in b
