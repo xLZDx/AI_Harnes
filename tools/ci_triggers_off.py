@@ -11,13 +11,29 @@ hooks (never --no-verify). Nothing is pushed. Stdlib only.
 --dirty-ok handles a repo whose workflow/log files have uncommitted edits: the commit is made in a temp worktree, the
 branch is moved with update-ref, the change is 3-way merged into the working copy (index entries intent-to-add kept),
 and everything is rolled back on any conflict or unexpected status change. Refused when anything is staged.
+The temp commit lives on a private ref refs/harness/ci-off/<run>, never on a branch.
 
-Usage: ci_triggers_off.py [--dry-run] [--project NAME] [--include-deploy] [--root D:\\Repo] [--dirty-ok] [--scratch DIR]
+Safety of the --dirty-ok path (and of every non-dry run):
+- Concurrency: an OS lock on byte 0 of <git common dir>/ci_triggers_off.lock (msvcrt.locking / fcntl.flock, file never
+  deleted). A second run waits up to 30 s, then reports SKIP 'another ci_triggers_off run holds the lock'. The update-ref
+  compare-and-swap (new, expected old) stays as the backstop.
+- Crash half-way: before the branch moves, <common>/ci_triggers_off.journal.json records old/new sha, branch, a byte-backup
+  folder under --scratch (outside the repo), touched paths, the stage and status snapshot and the phase (prepared,
+  branch-moved, files-merged, index-refreshed, done). It is deleted only after the final status/stage check passed. A run that
+  finds a journal refuses to start (SKIP 'interrupted run found; use --recover'). --recover rolls back: branch back to the old
+  sha (compare-and-swap), backed-up bytes restored, index refreshed and intent-to-add entries re-added, temp worktree and
+  private ref removed, journal deleted; reports RECOVERED. A journal in phase done is just removed.
+- TEST-ONLY fault injection: env HARNESS_CI_OFF_FAIL_AFTER=<phase> makes the process exit(70) at once (os._exit, no
+  cleanup) right after that phase is journaled. Off by default; never set it in real use.
+
+Usage: ci_triggers_off.py [--dry-run] [--project NAME] [--include-deploy] [--root D:\\Repo] [--dirty-ok] [--scratch DIR] [--recover]
 Exit code 1 when any row is ERROR."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import json
 import os
 import re
 import shutil
@@ -200,8 +216,178 @@ def merge_into_working(repo: Path, old: str, new: str, rel: str, tmp: Path, back
         p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
 
 
+LOCK_WAIT_SECONDS = 30.0
+LOCK_BUSY = "another ci_triggers_off run holds the lock"
+INTERRUPTED = "interrupted run found; use --recover"
+PHASES = ("prepared", "branch-moved", "files-merged", "index-refreshed", "done")
+
+
+def common_dir(repo: Path) -> Path:
+    r = git(repo, "rev-parse", "--git-common-dir")
+    p = Path(r.stdout.strip())
+    return (p if p.is_absolute() else repo / p).resolve()
+
+
+def _try_lock(fd: int) -> bool:
+    """One non-blocking exclusive OS lock attempt on byte 0 of fd. The kernel drops the lock when the holder dies."""
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, 0)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, 0)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass  # closing the descriptor releases the lock anyway
+
+
+@contextlib.contextmanager
+def repo_lock(common: Path, timeout: float = LOCK_WAIT_SECONDS):
+    """Exclusive OS lock on byte 0 of <common>/ci_triggers_off.lock (same pattern as plan_lock in plan_import_ledger_md.py).
+    The file is never deleted; the kernel releases the lock when the holder exits or dies. TimeoutError after `timeout` s."""
+    lock = common / "ci_triggers_off.lock"
+    deadline = time.monotonic() + timeout
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT)
+    try:
+        try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\n")  # byte 0 must exist
+        except OSError:
+            pass
+        while not _try_lock(fd):
+            if time.monotonic() > deadline:
+                raise TimeoutError(LOCK_BUSY)
+            time.sleep(0.05)
+        try:
+            yield
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
+
+
+def journal_path(repo: Path) -> Path:
+    return common_dir(repo) / "ci_triggers_off.journal.json"
+
+
+def write_journal(jp: Path, j: dict) -> None:
+    tmp = jp.with_name(jp.name + ".tmp")
+    tmp.write_text(json.dumps(j, indent=1), encoding="utf-8", newline="\n")
+    for i in range(20):  # os.replace is briefly refused on Windows
+        try:
+            os.replace(tmp, jp)
+            return
+        except OSError:
+            if i == 19:
+                raise
+            time.sleep(0.05)
+
+
+def set_phase(jp: Path, j: dict, phase: str) -> None:
+    j["phase"] = phase
+    write_journal(jp, j)
+    if os.environ.get("HARNESS_CI_OFF_FAIL_AFTER") == phase:  # test-only fault injection: simulate a crash
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(70)
+
+
+def rollback(repo: Path, j: dict) -> list[str]:
+    """Undo a (partial) dirty run from its journal. Returns errors; empty means the pre-run state is back."""
+    branch, old, new = j["branch"], j["old"], j["new"]
+    ref = f"refs/heads/{branch}"
+    cur = git(repo, "rev-parse", "-q", "--verify", ref).stdout.strip()
+    if cur == new and new != old:
+        if git(repo, "update-ref", ref, old, new).returncode != 0:  # compare-and-swap
+            return ["branch rollback FAILED"]
+    elif cur != old:
+        return [f"branch {branch} is at {cur[:7]}, expected {new[:7]} or {old[:7]}; left alone"]
+    errs: list[str] = []
+    if j["phase"] != "prepared":  # before the branch move nothing in the working tree was touched
+        bdir = Path(j["backup_dir"])
+        for f, name in j["files"].items():
+            p = repo / f
+            try:
+                if name is None:
+                    if p.exists():
+                        p.unlink()
+                else:
+                    p.write_bytes((bdir / name).read_bytes())
+            except OSError as e:
+                errs.append(f"restore of {f} failed: {e}")
+    try:
+        refresh_index(repo, j["ita"])
+    except Exception as e:  # noqa: BLE001
+        errs.append(f"index restore failed: {e}")
+    return errs
+
+
+def cleanup_run(repo: Path, j: dict, jp: Path | None) -> None:
+    """Remove the temp worktree, the private ref, the backups and (last) the journal."""
+    wt = j.get("worktree")
+    if wt:
+        git(repo, "worktree", "remove", "--force", wt)
+        git(repo, "worktree", "prune")
+        shutil.rmtree(wt, ignore_errors=True)
+    if j.get("ref") and git(repo, "rev-parse", "-q", "--verify", j["ref"]).returncode == 0:
+        git(repo, "update-ref", "-d", j["ref"])  # private ref, not a branch
+    for d in (j.get("backup_dir"), j.get("tmpdir")):
+        if d:
+            shutil.rmtree(d, ignore_errors=True)
+    if jp is not None:
+        jp.unlink(missing_ok=True)
+
+
+def drift(repo: Path, j: dict) -> str:
+    notes = []
+    if status_map(repo) != j["snap_status"]:
+        notes.append("status differs from the pre-run snapshot")
+    if stage_map(repo) != j["snap_stage"]:
+        notes.append("stage differs from the pre-run snapshot")
+    return ("; " + "; ".join(notes)) if notes else ""
+
+
+def recover(repo: Path) -> str:
+    jp = journal_path(repo)
+    if not jp.is_file():
+        return "SKIP no interrupted run (no journal)"
+    try:
+        j = json.loads(jp.read_text(encoding="utf-8"))
+        j["phase"], j["files"], j["old"], j["new"], j["branch"]  # noqa: B018 - shape check
+    except (OSError, ValueError, KeyError) as e:
+        return f"ERROR journal {jp} unreadable: {e}"
+    if j["phase"] == "done":
+        cleanup_run(repo, j, jp)
+        return f"RECOVERED run had completed at {j['new'][:7]}; journal removed"
+    errs = rollback(repo, j)
+    if errs:
+        return "ERROR recovery incomplete, journal kept: " + "; ".join(errs)
+    extra = drift(repo, j)
+    cleanup_run(repo, j, jp)
+    return f"RECOVERED from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, {len(j['files'])} file(s) restored{extra}"
+
+
 def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
-    """Switch triggers off in a repo whose working tree holds uncommitted work, without touching that work."""
+    """Switch triggers off in a repo whose working tree holds uncommitted work, without touching that work.
+    Caller holds the repo lock and has checked that there is no journal."""
     if git(repo, "diff", "--cached", "--quiet").returncode != 0:
         return "SKIP staged changes present (--dirty-ok needs an empty index)"
     why = unsafe_state(repo)
@@ -213,18 +399,27 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
     ita = [p for p, c in snap_status.items() if c == " A"]
     scratch.mkdir(parents=True, exist_ok=True)
     tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
-    tmpb, wt = f"ci-off/{repo.name}-{tag}", scratch / f"cioff-{repo.name}-{tag}"
-    a = git(repo, "worktree", "add", "-q", "-b", tmpb, str(wt), old)
+    run = f"{repo.name}-{tag}"
+    ref, wt = f"refs/harness/ci-off/{run}", scratch / f"cioff-{run}"
+    jp = journal_path(repo)
+    if git(repo, "update-ref", ref, old).returncode != 0:
+        return "ERROR cannot create private ref " + ref
+    a = git(repo, "worktree", "add", "-q", "--detach", str(wt), old)
+    if a.returncode == 0:  # commit on the private ref, never on a branch
+        a = git(wt, "symbolic-ref", "HEAD", ref)
+    j: dict = {"version": 1, "repo": str(repo), "branch": branch, "old": old, "new": old, "ref": ref,
+               "worktree": str(wt), "backup_dir": str(scratch / f"cioff-backup-{run}"), "files": {},
+               "ita": ita, "snap_stage": snap_stage, "snap_status": snap_status, "phase": "prepared"}
     if a.returncode != 0:
+        cleanup_run(repo, j, None)
         return "ERROR worktree add failed: " + a.stderr.strip()[-300:]
-    backups: dict[str, bytes | None] = {}
-    state = {"moved": False, "indexed": False}
-    new = old
     tmpdir = Path(tempfile.mkdtemp(dir=scratch, prefix="cioff-merge-"))
+    j["tmpdir"] = str(tmpdir)
     result = ""
+    journaled = False
     try:
         try:
-            inner = process(wt, include_deploy, False)
+            inner = _process(wt, include_deploy, False)
             if not inner["status"].startswith("CHANGED"):
                 return inner["status"] if inner["status"] == "CLEAN" or inner["status"].startswith(("ERROR", "SKIP")) \
                     else "ERROR " + inner["status"]
@@ -232,17 +427,30 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             if new == old:
                 return "ERROR tool made no commit in the temp worktree"
             files = [f for f in git(repo, "diff", "--name-only", "-z", old, new).stdout.split("\0") if f]
-            for f in files:
+            bdir = Path(j["backup_dir"])
+            bdir.mkdir(parents=True, exist_ok=True)
+            for n, f in enumerate(files):  # byte backups outside the repo, before anything is touched
                 p = repo / f
-                backups[f] = p.read_bytes() if p.is_file() else None
+                if p.is_file():
+                    (bdir / str(n)).write_bytes(p.read_bytes())
+                    j["files"][f] = str(n)
+                else:
+                    j["files"][f] = None
+            j["new"] = new
+            write_journal(jp, j)
+            journaled = True
+            set_phase(jp, j, "prepared")
             u = git(repo, "update-ref", f"refs/heads/{branch}", new, old)  # fails if HEAD moved
             if u.returncode != 0:
+                journaled = False
+                cleanup_run(repo, j, jp)
                 return "ERROR branch moved meanwhile, nothing changed: " + u.stderr.strip()[-200:]
-            state["moved"] = True
+            set_phase(jp, j, "branch-moved")
             for f in files:
-                merge_into_working(repo, old, new, f, tmpdir, backups)
-            state["indexed"] = True
+                merge_into_working(repo, old, new, f, tmpdir, {})
+            set_phase(jp, j, "files-merged")
             refresh_index(repo, ita)
+            set_phase(jp, j, "index-refreshed")
             after, stage_after = status_map(repo), stage_map(repo)
             for p in set(snap_status) | set(after):
                 if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??"):
@@ -250,39 +458,53 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             for p in set(snap_stage) | set(stage_after):
                 if p not in files and snap_stage.get(p) != stage_after.get(p):
                     raise RuntimeError(f"index entry changed for {p}")
+            set_phase(jp, j, "done")
             result = f"CHANGED {new[:7]} (dirty merge into {', '.join(files)})"
+            journaled = False
+            jp.unlink(missing_ok=True)  # only after the final status/stage check passed
+            shutil.rmtree(j["backup_dir"], ignore_errors=True)
         except Exception as e:  # noqa: BLE001 - restore everything
-            for f, b in backups.items():
-                p = repo / f
-                if b is None:
-                    if p.exists():
-                        p.unlink()
+            if not journaled:
+                result = f"ERROR {e}"
+            else:
+                errs = rollback(repo, j)
+                if errs:
+                    result = f"ERROR {e}; rollback incomplete, journal kept (use --recover): " + "; ".join(errs)
                 else:
-                    p.write_bytes(b)
-            errs = []
-            if state["moved"]:
-                if git(repo, "update-ref", f"refs/heads/{branch}", old, new).returncode != 0:
-                    errs.append("branch rollback FAILED")
-            if state["indexed"]:
-                try:
-                    refresh_index(repo, ita)
-                except Exception as e2:  # noqa: BLE001
-                    errs.append(f"index restore failed: {e2}")
-            result = f"ERROR {e}; working files restored, branch back at {old[:7]}" + (
-                "; " + "; ".join(errs) if errs else "")
+                    cleanup_run(repo, j, jp)
+                    result = f"ERROR {e}; working files restored, branch back at {old[:7]}"
         return result
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
         git(repo, "worktree", "remove", "--force", str(wt))
         git(repo, "worktree", "prune")
-        if git(repo, "merge-base", "--is-ancestor", tmpb, branch).returncode == 0:
-            git(repo, "branch", "-q", "-d", tmpb)
-        if git(repo, "rev-parse", "-q", "--verify", f"refs/heads/{tmpb}").returncode == 0:
-            print(f"note: temp branch {tmpb} left in {repo.name} (not merged; deleting it is operator-only)")
+        if git(repo, "rev-parse", "-q", "--verify", ref).returncode == 0:
+            git(repo, "update-ref", "-d", ref)  # private ref: no leftover branch is ever created
 
 
 def process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
-            scratch: Path = Path(r"D:\tmp\scratch_worktrees")) -> dict:
+            scratch: Path = Path(r"D:\tmp\scratch_worktrees"), recover_run: bool = False) -> dict:
+    """Locked entry point: one run per repo at a time (OS lock in the git common dir), journal check, optional --recover."""
+    if dry and not recover_run:
+        return _process(repo, include_deploy, dry, dirty_ok, scratch)
+    row = {"repo": repo.name, "branch": "", "files": "", "trig": "", "status": ""}
+    b = git(repo, "symbolic-ref", "-q", "--short", "HEAD")
+    row["branch"] = b.stdout.strip() if b.returncode == 0 else "(detached)"
+    try:
+        with repo_lock(common_dir(repo)):
+            if recover_run:
+                row["status"] = recover(repo)
+            elif journal_path(repo).exists():
+                row["status"] = f"SKIP {INTERRUPTED}"
+            else:
+                return _process(repo, include_deploy, dry, dirty_ok, scratch)
+    except TimeoutError:
+        row["status"] = f"SKIP {LOCK_BUSY}"
+    return row
+
+
+def _process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
+             scratch: Path = Path(r"D:\tmp\scratch_worktrees")) -> dict:
     row = {"repo": repo.name, "branch": "", "files": "", "trig": "", "status": ""}
     b = git(repo, "symbolic-ref", "-q", "--short", "HEAD")
     row["branch"] = b.stdout.strip() if b.returncode == 0 else "(detached)"
@@ -428,6 +650,8 @@ def main() -> int:
     ap.add_argument("--dirty-ok", action="store_true",
                     help="repo has uncommitted work: commit in a temp worktree and 3-way merge into the working copy")
     ap.add_argument("--scratch", default=r"D:\tmp\scratch_worktrees", help="folder for the temp worktree (--dirty-ok)")
+    ap.add_argument("--recover", action="store_true",
+                    help="roll back an interrupted --dirty-ok run from its journal (branch, files, index)")
     a = ap.parse_args()
     root = Path(a.root)
     rows = []
@@ -438,7 +662,7 @@ def main() -> int:
             continue
         if not (d / ".git").exists() or not (d / ".github" / "workflows").is_dir():
             continue
-        rows.append(process(d, a.include_deploy, a.dry_run, a.dirty_ok, Path(a.scratch)))
+        rows.append(process(d, a.include_deploy, a.dry_run, a.dirty_ok, Path(a.scratch), a.recover))
     print_table(rows)
     return 1 if any(r["status"].startswith("ERROR") for r in rows) else 0
 
