@@ -215,3 +215,6 @@
 
 ## 2026-11-12 S9-T2 /unblock command
 - Decision: one source file harness/commands/unblock.md; build.py already copies commands to Claude commands and Codex prompts, so no installer change. Evidence: build output lists unblock.md in out/claude/commands and out/codex/prompts. Not yet shown: that the installed Codex session offers the prompt (needs a new Codex session after install).
+
+## 2026-11-12 S9-T3 ask_last_gate deny message
+- Finding: the gate already handles prose asks (Stop handler) and is already wired for Codex (Stop entry in out/codex/hooks.json line 110); only Claude has the AskUserQuestion pre-check because Codex has no such tool. Decision: change only the deny message so it names the ladder next step (/unblock, create the missing item, store outside git, log without value). Tests for it are written by the tester in /verify, not run here.

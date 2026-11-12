@@ -202,3 +202,5 @@
 - Kind: SUCCESS. Facts: S9-T1 put the self-service ladder in CORE.md, the one source that build.py copies into both the Claude CLAUDE.md and the Codex AGENTS.md. Why it worked: one source file, no per-client copy. Rule: put shared behaviour rules in CORE.md only.
 
 - Kind: SUCCESS. Facts: S9-T2 added the /unblock command to both clients with one file, checked by listing the build output of both clients. Rule: check a shared source by listing both outputs.
+
+- Kind: SHORTCOMING. Facts: S9-T3 as planned assumed Codex wiring and prose asks were missing; reading registry.json and out/codex/hooks.json showed both exist. Root cause: the plan was written before reading the gate. Layer that missed it: author. Rule: read the existing code before splitting a task.
