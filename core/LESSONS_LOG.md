@@ -208,3 +208,5 @@
 - Kind: SHORTCOMING. Facts: S9-T4 helper was committed without being run once; only the tester will run it in /verify. Rule: the tester run decides, but read the code path of concurrent create once more before verify.
 
 - Kind: SHORTCOMING. Facts: four S9 commits were made without the ledger post-commit hook installed (core.hooksPath empty in Harness_v2), so verify refused them. Root cause: the harness repo itself is not installed as a project. Layer that missed it: author. Rule: after the first commit of a task run ledger.py status and check the commit was recorded.
+
+- Kind: SUCCESS. Facts: closed the OPERATOR loophole in the ledger by a fixed case list instead of free text. Rule: a gate on a free-text reason is not a gate; require a value from a closed list.

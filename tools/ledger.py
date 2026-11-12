@@ -244,6 +244,9 @@ def c_start(a, d):
     print(f"{a.id} {t['state']}")
 
 
+OPERATOR_CASES = ("prohibition", "money", "personal-secret", "captcha", "account", "irreversible-delete", "force-push", "production-data")
+
+
 def c_block(a, d):
     """Mark a task as blocked for a verified reason. The tasks-left Stop gate ignores blocked tasks (S7-T2)."""
     _, t = find_task(d, a.id)
@@ -252,7 +255,15 @@ def c_block(a, d):
     cause = (a.cause or "").strip()
     if len(cause) < 10:
         sys.exit("ledger: --cause must state the verified cause (at least 10 characters)")
-    t["blocked"] = {"class": a.klass, "cause": cause, "at": now()}
+    case = (getattr(a, "case", None) or "").strip()
+    if a.klass == "OPERATOR":
+        # S9-T6: the operator is the last resort. An OPERATOR block must name one operator-only case; a prohibition also needs the quoted error.
+        if case not in OPERATOR_CASES:
+            sys.exit("ledger: --class OPERATOR needs --case one of: " + ", ".join(OPERATOR_CASES)
+                     + " (anything else the agent decides or does itself, see the self-service ladder)")
+        if case == "prohibition" and not re.search(r"[\"'`“«].{6,}", cause):
+            sys.exit("ledger: --case prohibition needs the tool's error quoted in --cause")
+    t["blocked"] = {"class": a.klass, "cause": cause, "at": now(), **({"case": case} if case else {})}
     event(d, "block", task=a.id, klass=a.klass)
     print(f"{a.id} blocked ({a.klass})")
 
@@ -399,6 +410,7 @@ def main(argv=None) -> int:
     x = sub.add_parser("start"); x.add_argument("id")
     x = sub.add_parser("block"); x.add_argument("id"); x.add_argument("--class", dest="klass", choices=["OPERATOR", "EXTERNAL", "PROHIBITED"], required=True)
     x.add_argument("--cause", required=True, help="the verified cause")
+    x.add_argument("--case", help="OPERATOR only: " + "|".join(OPERATOR_CASES))
     sub.add_parser("commit-hook")
     x = sub.add_parser("verify"); x.add_argument("id"); x.add_argument("--result", choices=["pass", "fail", "NOT_RUN"], required=True); x.add_argument("--evidence", required=True)
     x = sub.add_parser("review"); x.add_argument("id"); x.add_argument("--result", choices=["accepted", "changes"], required=True); x.add_argument("--findings", type=int, default=0)
