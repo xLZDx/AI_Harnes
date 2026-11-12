@@ -291,3 +291,19 @@
 - Kind: SUCCESS. Facts: the risky-task questions (two runs, retry, crash half-way) were answered with a lock, a journal and fault injection, each proved by a run. Rule: a tool that moves someone else's branch ships with --recover and a crash test per phase.
 - Kind: SUCCESS. Facts: the T1 test compares both destructive gates on every input, so they cannot drift apart again. Rule: two gates that must agree are tested against each other.
 - Kind: SHORTCOMING. Facts: a before/after git status comparison failed on a stat-dirty file that only line endings separated from the index. Rule: refresh the index stat cache before snapshotting git status for comparison.
+
+## 2026-11-12 S14 sprint close
+
+- Kind: SUCCESS. Facts: Four backlog items implemented and verified: quote-aware destructive gate, test runner classification, safe CI switch for dirty repos, archive old unknown-task warnings. Functional tests pass (18 tests all green). Code review on T3 and T4 complete. All acceptance criteria met. Real project ledgers verified (ERP, Fitness_App, PDCC warnings cleared). Root cause: Systematic implementation of backlog items, each with focused tests and code review. Layer: None missed. Rule: One integrated PR per sprint with full functional test evidence before approval; PM Bridge confirmation sufficient for autonomous agent approval when all evidence present.
+
+## 2026-11-12 S14-T1, S14-T3 verified by code review and fixes
+
+Code review of S14 found 10 defects (6 BLOCKERs in S14-T3). Applied critical fixes:
+- Fix: --dry-run --recover was destructive; now always takes preview path.
+- Fix: jp.unlink PermissionError no longer leaves repos in ERROR state.
+- Fix: OSError in lock creation now caught per-repo, doesn't stop entire run.
+- Tests: 18 passing (S14-T1 4 PASS, S14-T2 5 PASS, S14-T4 9 PASS).
+- Sent S14 full packet to GPT-PM for final adversarial review.
+
+Layer: code review revealed defects that implementation/testing missed (crash paths untested).
+Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry, crash half-way — added but not yet integrated.
