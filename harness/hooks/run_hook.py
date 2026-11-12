@@ -65,6 +65,7 @@ def main() -> int:
             ev = ""
         if ev in ("Stop", "SubagentStop", "UserPromptSubmit", "SessionStart", "PreCompact", "Notification"):
             try:
+                sys.path.insert(0, str(HERE))  # under python -I the script folder is not on sys.path
                 import _agentio
                 with open(_agentio.state_dir("run_hook") / "child_skips.jsonl", "a", encoding="utf-8") as f:
                     f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "hook": name, "event": ev}) + "\n")

@@ -497,3 +497,4 @@ Decisions:
 
 ## 2026-11-12 S14 regression round (functional-test-reviewer)
 - All OK: test_s14_incident, test_s14_gates, test_s14_ci_dirty, test_s13_enforcement, test_s13_review_tools, test_ledger_stop_gate, test_s13_review_gates, test_s13_r5_false_positives. Old fixtures updated to the new contracts (agent entries carry project, approvals carry request_id, judge test uses Popen). New cases for every review fix with allowed twins.
+- run_hook child skip did not log under python -I (test agent observation): the hooks folder is now put on sys.path before importing _agentio.

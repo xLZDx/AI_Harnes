@@ -327,3 +327,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-12 S14: the test agent found the runaway's dead tests and the S13 fixtures broken by the new approval contract before GPT-PM did.
 - SHORTCOMING 2026-11-12 S14-T6: an older fail-open branch in the push check survived S13 review; fixed with the S14 sweep.
 - SUCCESS 2026-11-12 S14 regression: every accepted review fix has a falsifying test with an allowed twin.
+- SHORTCOMING 2026-11-12 S14-T5: the skip log import relied on the -s launch; found by the test agent.
