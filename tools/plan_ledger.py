@@ -148,7 +148,9 @@ def parse(text: str) -> dict:
         raw = _norm_id(s.group(1).rstrip(":"))
         lead = re.match(r"S[0-9]+", raw)  # "S05-Title" -> S05
         sid = lead.group(0) if lead else raw
-        title = ((raw[lead.end():].lstrip("-—–:_ ") + " ") if lead and raw[lead.end():].strip("-—–:_ ") else "") + s.group(2).strip()
+        orig = s.group(1).rstrip(":").strip().strip("*[] ")  # same text as raw, original case (raw is upper-cased for the id)
+        tail = orig[lead.end():] if lead and len(orig) == len(raw) else (raw[lead.end():] if lead else "")
+        title = ((tail.lstrip("-—–:_ ") + " ") if lead and tail.strip("-—–:_ ") else "") + s.group(2).strip()
         title = title.strip()
         rows, i = _table(lines, i + 1)
         if rows and not ({"task", "id"} & set(rows[0]) and "status" in rows[0]):
