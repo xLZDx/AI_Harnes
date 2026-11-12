@@ -289,3 +289,9 @@
 
 ## 2026-11-12 S11-T2 whole ERP program in the report
 - Decision: a Roadmap row of the form N task placements without a task list becomes N planned tasks (placeholders), a ledger sprint with the same id replaces the placeholder sprint, and S00/S01 come from docs/sdlc ledgers through tools/plan_import_ledger_md.py. Rejected: asking the operator for the data (it was in the repo and in git), and a fallback to ledger-only on a broken plan (brings the 2 of 2 bug back). Evidence: dry run on ERP s01 ledger gave 48 tasks, ACCEPTED 39, PARTIAL 3, SUPERSEDED 6.
+
+## 2026-11-12 CI switched off on GitHub for every repository (operator rule 4)
+- Observed: a Fitness PR made GitHub queue 22 CI jobs; 15 repositories had workflows started by push or pull request, and the no-CI rule existed only as text. Done: gh workflow disable for 28 check workflows in 13 repositories; list before: D:/Backup/ci_workflows_before_20261112.tsv, disabled list: D:/Backup/ci_disabled_20261112.tsv; rollback: gh workflow enable <id> --repo <repo> for each row. Left on: dependabot (built-in), deploy and migrate workflows (preview-deploy, preview, staging-migrate: not checks), and the marketing repository (operator standing rule).
+
+## 2026-11-12 S11-T2 review fixes: canonical sprint sizes
+- Superseded plan rows stay as tasks (state superseded) so a sprint's size is its placement count (ERP S00 60, S01 48, S02 37, 443 in 23 sprints); bounded acceptance maps to ACCEPTED_BOUNDED (verified, never done); a ledger sprint with k tasks keeps N-k UNVERIFIED placeholders of a not-expanded plan sprint; roadmap parsing is strict; the importer counts skipped rows, keeps prose, retries the Windows replace and aborts on a concurrent edit.
