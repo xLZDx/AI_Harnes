@@ -454,3 +454,6 @@ Decisions:
 
 ## 2026-11-12 S14-T6 approve checked against the PM Bridge reply
 - `approve --request-id` reads correlated inbound replies; a reply passes only with a bare APPROVE line, no REVISE/RESEND/REQUEST_CHANGES/MODIFY/REJECT line, the same project, and a HEAD line (reply, else our request) equal to the approved commit. Checked live: request 15a3aabe (S14, RESEND) refused; c3f1b7a2 (S13 round 3 APPROVE) accepted for 5f73c59. Backlog B12 for file forgery.
+
+## 2026-11-12 S14-T7 verify and review need a recorded agent run
+- The code is in the S14-T6 commit (same file tools/ledger.py); this commit updates the verify and harness-flow instructions. verify pass needs --by functional-test-reviewer|tdd-guide|e2e-runner, review accepted needs --by reviewer roles; each needs a finished run of that role, started after the task's last commit, in ~/.harness-hooks/agents/active.json (60 newest runs kept).
