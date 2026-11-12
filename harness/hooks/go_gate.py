@@ -1056,6 +1056,17 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
+def context_unavailable(data: dict, reason: str) -> None:
+    """Codex mutations cannot proceed when the operator authorization context is unreadable."""
+    try:
+        is_codex = agentio.client(data if isinstance(data, dict) else {}) == "codex"
+    except Exception:
+        is_codex = getattr(agentio, "CLIENT", "") == "codex"
+    if is_codex:
+        deny("GO gate: cannot verify Codex authorization context (" + reason + "); failing closed.")
+    allow()
+
+
 def _clean_token(token: str) -> str:
     return token.strip(_PUNCT_STRIP)
 
@@ -1600,7 +1611,7 @@ def main():
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except ValueError:
-        allow()
+        context_unavailable({}, "malformed PreToolUse input")
         return
 
     tool_name = data.get("tool_name") or ""
@@ -1638,8 +1649,8 @@ def main():
                 is_mutation, reason = False, "decision_log_append"
             elif is_mutation and tool_name in _PM_MODE_EXEMPT_TOOLS and pm_mode_active():
                 is_mutation, reason = False, "pm_mode_active"
-    except Exception:
-        allow()
+    except Exception as exc:
+        context_unavailable(data, f"could not classify tool input: {type(exc).__name__}")
         return
 
     if not is_mutation:
@@ -1648,7 +1659,7 @@ def main():
 
     transcript_path = data.get("transcript_path")
     if not transcript_path:
-        allow()
+        context_unavailable(data, "transcript_path is missing")
         return
 
     try:
@@ -1658,17 +1669,16 @@ def main():
             # heavy tool output pushing the last real message past the tail window); fall back to
             # a full scan rather than silently treat "not found in the tail" as "never said".
             last_text = latest_genuine_operator_text(transcript_path, full=True)
-    except Exception:
-        allow()
+    except Exception as exc:
+        context_unavailable(data, f"transcript could not be read: {type(exc).__name__}")
         return
 
     if last_text is None:
         # `_tail_rows` "fails silent (yields nothing) on any missing file, unreadable path, or
-        # parse error" (_report_common.py) and every other caller in this hook set treats that as
-        # allow, never as evidence of a problem. A live Claude Code session always maintains a
-        # real transcript file, so this path is an infra fault (or a not-yet-written transcript),
-        # not "the operator never said GO" -- follow the same fail-open convention here.
-        allow()
+        # parse error" (_report_common.py). Codex now fails closed because authorization cannot be
+        # established from missing transcript evidence; Claude keeps its established fail-open
+        # behavior for this infrastructure fault.
+        context_unavailable(data, "no genuine operator message could be read from the transcript")
         return
 
     if message_opens_with_go(last_text):
