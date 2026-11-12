@@ -215,20 +215,66 @@ def merged_bytes(repo: Path, old: str, new: str, rel: str, cur: bytes | None, tm
     return out.replace(b"\n", b"\r\n") if crlf else out
 
 
-def atomic_write(p: Path, data: bytes) -> None:
-    """Replace a file in one step (temp file in the same folder + os.replace), so it is never half-written."""
-    p.parent.mkdir(parents=True, exist_ok=True)
-    t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
-    t.write_bytes(data)
-    for i in range(20):  # os.replace is briefly refused on Windows
-        try:
-            os.replace(t, p)
-            return
-        except OSError:
-            if i == 19:
-                t.unlink(missing_ok=True)
-                raise
-            time.sleep(0.05)
+def aside_path(p: Path) -> Path:
+    """Where swap_in parks a file's current bytes while it is replaced (same folder, so the move is one rename)."""
+    return p.with_name(f".{p.name}.cioff-aside")
+
+
+def _place_noclobber(src: Path, dst: Path) -> bool:
+    """Move src to dst only if dst does not exist, in one step; never overwrites. False if dst exists."""
+    try:
+        if os.name == "nt":
+            os.rename(src, dst)  # Windows rename refuses an existing target
+        else:
+            os.link(src, dst)  # POSIX link refuses an existing target; rename would overwrite
+            os.unlink(src)
+        return True
+    except FileExistsError:
+        return False
+
+
+def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
+    """Replace p with `data` (None = remove p) only if p holds the bytes with sha256 `expect` (None = p absent), with no
+    window in which another writer's bytes can be overwritten:
+      1. the current file is moved aside in one rename; from that instant any other writer creates a NEW p;
+      2. the moved bytes are hashed: not `expect` -> they are put back (never over a newer p) and the swap is refused;
+      3. the new bytes are placed only where p does not exist (no-clobber); if someone created p meanwhile, theirs stays;
+      4. the parked bytes are removed only if they still hash to `expect`, else they are kept and reported.
+    Returns None on success, else an error; on error no other writer's bytes were lost (they are at p or at the aside)."""
+    a = aside_path(p)
+    if expect is None:
+        if p.exists():
+            return f"{p.name} exists but should not; left as it is"
+        if data is None:
+            return None
+        t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
+        t.write_bytes(data)
+        if not _place_noclobber(t, p):
+            t.unlink(missing_ok=True)
+            return f"{p.name} was created by someone else during the run; theirs kept"
+        return None
+    if a.exists():
+        return f"{a.name} exists from an earlier interrupted swap; resolve it first"
+    try:
+        os.replace(p, a)  # step 1 (a does not exist, so nothing is overwritten)
+    except FileNotFoundError:
+        return f"{p.name} disappeared during the run; nothing written"
+    except OSError as e:
+        return f"{p.name} could not be moved aside ({e}); nothing written"
+    if _sha(a) != expect:  # step 2: someone changed it before we moved it
+        if _place_noclobber(a, p):
+            return f"{p.name} changed during the run; it was not overwritten"
+        return f"{p.name} changed during the run and was recreated meanwhile; both kept ({a.name} holds the earlier edit)"
+    if data is not None:  # step 3
+        t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
+        t.write_bytes(data)
+        if not _place_noclobber(t, p):
+            t.unlink(missing_ok=True)
+            return f"{p.name} was recreated by someone else during the run; theirs kept, the earlier bytes are in {a.name}"
+    if _sha(a) == expect:  # step 4
+        a.unlink()
+        return None
+    return f"{a.name} was written to while parked; kept for a manual check"
 
 
 LOCK_WAIT_SECONDS = 30.0
@@ -341,7 +387,12 @@ def unexpected_edits(repo: Path, j: dict) -> list[str]:
         return sorted(j["files"])
     out = []
     for f in j["files"]:
-        now = _sha(repo / f)
+        p = repo / f
+        a = aside_path(p)
+        if p.exists() and a.exists():
+            out.append(f)  # a swap was interrupted after someone recreated the file: both copies need a person
+            continue
+        now = _sha(p) if p.exists() else _sha(a)  # a crash inside swap_in leaves the bytes parked at the aside
         if now != pre.get(f) and now != merged.get(f):
             out.append(f)
     return out
@@ -370,17 +421,19 @@ def rollback(repo: Path, j: dict) -> list[str]:
         pre, merged = j.get("pre_hash") or {}, j.get("merged_hash") or {}
         for f, name in j["files"].items():
             p = repo / f
+            a = aside_path(p)
             try:
-                now = _sha(p)  # checked again right before the write: an edit since the first check is kept
+                if not p.exists() and a.exists() and not _place_noclobber(a, p):  # crash inside swap_in: unpark
+                    errs.append(f"{f}: could not move {a.name} back; both kept")
+                    continue
+                now = _sha(p)
                 if now == pre.get(f):
                     continue  # already the pre-run bytes
-                if now != merged.get(f):
-                    errs.append(f"{f} changed during the rollback; it was not overwritten (backups in {bdir})")
-                    continue
-                if name is None:
-                    p.unlink()
-                else:
-                    atomic_write(p, (bdir / name).read_bytes())
+                # swap_in refuses (and keeps the other bytes) if p no longer holds our merged bytes at the instant it
+                # is moved aside, so there is no check-then-write window here either
+                err = swap_in(p, None if name is None else (bdir / name).read_bytes(), merged.get(f))
+                if err:
+                    errs.append(f"{f}: {err} (backups in {bdir})")
             except OSError as e:
                 errs.append(f"restore of {f} failed: {e}")
     try:
@@ -511,15 +564,17 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             set_phase(jp, j, "branch-moved")
             for f in files:
                 p = repo / f
-                if _sha(p) != j["pre_hash"][f]:  # edited since we read it: stop, the rollback will refuse to touch it
-                    raise RuntimeError(f"{f} changed during the run; it was not overwritten")
                 out = outs[f]
                 if out is None:
+                    if _sha(p) != j["pre_hash"][f]:
+                        raise RuntimeError(f"{f} changed during the run; it was not overwritten")
                     j["merged_hash"][f] = j["pre_hash"][f]
                     continue
                 j["merged_hash"][f] = hashlib.sha256(out).hexdigest()  # journaled BEFORE the write: both states are ours
                 write_journal(jp, j)
-                atomic_write(p, out)
+                err = swap_in(p, out, j["pre_hash"][f])  # no check-then-write window: see swap_in
+                if err:
+                    raise RuntimeError(f"{f}: {err}")
             set_phase(jp, j, "files-merged")
             refresh_index(repo, ita)
             set_phase(jp, j, "index-refreshed")

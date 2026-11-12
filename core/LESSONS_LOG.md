@@ -337,3 +337,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-12 S14-T3: the temp-file merge with an atomic swap closed both reliability MAJORs in one design change.
 - SUCCESS 2026-11-12 S14-T3: the MAJOR-1 regression test fails on the old blind rollback (reasoned) and passes now.
 - SUCCESS 2026-11-12 S14-T3: the live-race test proves the pre-write hash check keeps a user edit made mid-run.
+- FAILURE 2026-11-12 S14-T3: my second fix still checked then replaced; GPT-PM found the window. Next time: a 'never overwrite' guarantee needs an operation that cannot overwrite (move aside, no-clobber place), not a check before an overwrite.
