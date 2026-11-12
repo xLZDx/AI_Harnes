@@ -309,22 +309,38 @@ def test_stale_lock_older_than_120s_is_taken_over_by_cli():
 
 
 def test_lock_boundary_young_lock_blocks_old_lock_taken_in_process():
+    # a42e102 contract: age never frees a lock; only a provably dead owner does
     d = _import_setup("bound")
     plan = d / "PROJECT_PLAN.md"
     lock = d / "PROJECT_PLAN.md.lock"
-    lock.write_text("1")
-    young = time.time() - 100
-    os.utime(lock, (young, young))
+    sleeper = subprocess.Popen([hv2.PY, "-s", "-c", "import time; time.sleep(300)"])
     try:
-        with pim.plan_lock(plan, timeout=0.4):
-            raise AssertionError("a 100 s old lock must still be respected")
-    except TimeoutError:
-        pass
-    assert lock.exists(), "a live lock must not be deleted by a waiter"
-    old = time.time() - 130
-    os.utime(lock, (old, old))
-    with pim.plan_lock(plan, timeout=2):
-        assert lock.exists() and lock.read_text() == str(os.getpid())
+        start = pim._proc_start(sleeper.pid)
+        assert start, "cannot read the process creation time"
+        body = json.dumps({"token": "live-owner", "pid": sleeper.pid, "start": start})
+        lock.write_text(body)
+        young = time.time() - 100
+        os.utime(lock, (young, young))
+        try:
+            with pim.plan_lock(plan, timeout=0.4):
+                raise AssertionError("a lock of a live owner must be respected")
+        except TimeoutError:
+            pass
+        assert lock.exists() and lock.read_text() == body, "a live lock must not be deleted by a waiter"
+        old = time.time() - 1000
+        os.utime(lock, (old, old))
+        try:
+            with pim.plan_lock(plan, timeout=0.4):
+                raise AssertionError("a live owner's lock must stay respected however old the file is")
+        except TimeoutError:
+            pass
+        assert lock.exists() and lock.read_text() == body
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=20)
+    # the owner is now dead: the same lock is taken over and released
+    with pim.plan_lock(plan, timeout=5):
+        assert json.loads(lock.read_text())["pid"] == os.getpid()
     assert not lock.exists()
 
 
