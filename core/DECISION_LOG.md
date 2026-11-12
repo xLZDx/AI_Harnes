@@ -344,3 +344,6 @@
 
 ## 2026-11-12 S13 audit tests
 - tests/test_s13_audit.py 24 passed (functional-test-reviewer): stale/current cells, gates_live through the real rules_gate, read-only proof, --json and --project; the args-format defect it found is fixed in 25b17be.
+
+## 2026-11-12 S13 tool regression tests
+- tests/test_s13_review_tools.py 25 passed (functional-test-reviewer): ledger evidence kept, shrink refused, distinct backups, concurrent create/change refused, plan import lock (6 rounds of two real processes, stale takeover, dry run lock-free), audit args format and ledger_whole, install_claude CLAUDE.md replace and restore. Re-run green: test_s13_ledger_sync 9, test_s11_plan_import 30, test_s10_report 14.

@@ -267,3 +267,4 @@
 - Kind: SUCCESS. Facts: the dry run of ci_triggers_off listed the marketing project's VMC_* folders and stale worktrees; limiting the real run to the audit's project list kept them untouched. Rule: every cross-repo write tool runs a dry run first and the real run is limited to the harness project list.
 - Kind: SUCCESS. Facts: the regression tests for the review fixes check each deny case next to an allowed twin, and the push cases require the ledger reason, so a gate that silently fails open would fail them. Rule: every deny test has an allow twin.
 - Kind: SUCCESS. Facts: the audit test built from the real settings format caught the args defect independently of the live audit run. Rule: tool tests use fixtures copied from the real installed files.
+- Kind: SUCCESS. Facts: the restore script of install_claude was run for real in a temp home and put the old CLAUDE.md back. Rule: every installer's rollback path is executed in a test, not only written.
