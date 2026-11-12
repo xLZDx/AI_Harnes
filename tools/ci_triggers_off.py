@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -310,10 +311,39 @@ def set_phase(jp: Path, j: dict, phase: str) -> None:
         os._exit(70)
 
 
+def _sha(p: Path) -> str | None:
+    """sha256 of a file's bytes, None when it does not exist."""
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def unexpected_edits(repo: Path, j: dict) -> list[str]:
+    """Touched files whose current bytes are neither their pre-run bytes nor the bytes our merge wrote, i.e. someone
+    edited them after the snapshot. A journal without hashes (older format) is treated as unsafe for every file."""
+    pre, merged = j.get("pre_hash"), j.get("merged_hash") or {}
+    if pre is None:
+        return sorted(j["files"])
+    out = []
+    for f in j["files"]:
+        now = _sha(repo / f)
+        if now != pre.get(f) and now != merged.get(f):
+            out.append(f)
+    return out
+
+
 def rollback(repo: Path, j: dict) -> list[str]:
-    """Undo a (partial) dirty run from its journal. Returns errors; empty means the pre-run state is back."""
+    """Undo a (partial) dirty run from its journal. Returns errors; empty means the pre-run state is back.
+    Nothing is changed (branch or files) when a touched file was edited after the snapshot: the journal and the byte
+    backups are then kept for a manual merge, so newer work is never overwritten."""
     branch, old, new = j["branch"], j["old"], j["new"]
     ref = f"refs/heads/{branch}"
+    if j["phase"] != "prepared":  # before the branch move nothing in the working tree was touched
+        changed = unexpected_edits(repo, j)
+        if changed:
+            return [f"{f} changed after the interrupted run (neither its pre-run nor its merged bytes); nothing "
+                    f"restored, journal and backups kept in {j['backup_dir']} for a manual merge" for f in changed]
     cur = git(repo, "rev-parse", "-q", "--verify", ref).stdout.strip()
     if cur == new and new != old:
         if git(repo, "update-ref", ref, old, new).returncode != 0:  # compare-and-swap
@@ -321,7 +351,7 @@ def rollback(repo: Path, j: dict) -> list[str]:
     elif cur != old:
         return [f"branch {branch} is at {cur[:7]}, expected {new[:7]} or {old[:7]}; left alone"]
     errs: list[str] = []
-    if j["phase"] != "prepared":  # before the branch move nothing in the working tree was touched
+    if j["phase"] != "prepared":
         bdir = Path(j["backup_dir"])
         for f, name in j["files"].items():
             p = repo / f
@@ -436,6 +466,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             files = [f for f in git(repo, "diff", "--name-only", "-z", old, new).stdout.split("\0") if f]
             bdir = Path(j["backup_dir"])
             bdir.mkdir(parents=True, exist_ok=True)
+            j["pre_hash"], j["merged_hash"] = {}, {}
             for n, f in enumerate(files):  # byte backups outside the repo, before anything is touched
                 p = repo / f
                 if p.is_file():
@@ -443,6 +474,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                     j["files"][f] = str(n)
                 else:
                     j["files"][f] = None
+                j["pre_hash"][f] = _sha(p)
             j["new"] = new
             write_journal(jp, j)
             journaled = True
@@ -455,6 +487,8 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             set_phase(jp, j, "branch-moved")
             for f in files:
                 merge_into_working(repo, old, new, f, tmpdir, {})
+                j["merged_hash"][f] = _sha(repo / f)  # this state is ours too: recovery may undo it
+                write_journal(jp, j)
             set_phase(jp, j, "files-merged")
             refresh_index(repo, ita)
             set_phase(jp, j, "index-refreshed")
