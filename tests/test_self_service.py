@@ -272,3 +272,49 @@ def test_e_other_classes_work_without_case(ledger_env, klass):
     assert r.returncode == 0, r.stderr
     b = blocked()
     assert b["class"] == klass and "case" not in b
+
+
+# ---------- F: put leaves no temp file; device names; ledger case rules ----------
+def _race(sdir, name, n=6):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    env["HARNESS_SECRET_DIR"] = str(sdir)
+    procs = [subprocess.Popen([PY, "-I", str(STORE), "put", name], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env) for _ in range(n)]
+    return [p.communicate("dummy-race-value-%d" % i, timeout=120)[0].strip() for i, p in enumerate(procs)]
+
+
+def test_f_no_temp_file_left_after_put_and_second_batch_one_created(sdir):
+    r = run_store(["put", "TMP_KEY"], DUMMY1, sdir)
+    assert r.stdout.strip() == "created"
+    assert sorted(os.listdir(sdir)) == ["TMP_KEY"]
+    first = _race(sdir, "BATCH_ONE")
+    second = _race(sdir, "BATCH_TWO")
+    assert first.count("created") == 1 and first.count("exists") == 5, first
+    assert second.count("created") == 1 and second.count("exists") == 5, second
+    assert _race(sdir, "BATCH_ONE").count("created") == 0
+    assert sorted(os.listdir(sdir)) == ["BATCH_ONE", "BATCH_TWO", "TMP_KEY"]
+    assert not [n for n in os.listdir(sdir) if n.startswith(".put-")]
+
+
+@pytest.mark.parametrize("bad", ["NUL", "nul", "CON", "COM1", "KEY\n", "KEY\r\n", " KEY"])
+def test_f_device_and_newline_names_refused_create_nothing(sdir, bad):
+    r = run_store(["put", bad], DUMMY1, sdir)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert DUMMY1 not in r.stdout + r.stderr
+    assert not sdir.exists() or os.listdir(sdir) == []
+    assert not (sdir.parent / "NUL.txt").exists()
+
+
+def test_f_operator_prohibition_lone_apostrophe_refused(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "OPERATOR", "--case", "prohibition", "--cause", "operator's approval needed here")
+    assert r.returncode != 0
+    assert blocked() is None
+
+
+def test_f_external_with_case_refused(ledger_env):
+    run, blocked = ledger_env
+    r = run("block", "ST-T1", "--class", "EXTERNAL", "--case", "money", "--cause", "service returned HTTP 503 twice")
+    assert r.returncode != 0
+    assert blocked() is None

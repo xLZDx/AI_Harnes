@@ -214,3 +214,5 @@
 - Kind: SUCCESS. Facts: tester wrote 18 cases from the criteria and all passed first run with an isolated ledger. Rule: tests for a state file always point it at a temp path.
 
 - Kind: FAILURE. Facts: secret_store and the ledger quote check shipped with a crash window and a one-apostrophe loophole. Root cause: I wrote them without running them once and without a failure-half-way thought. Layer that missed it: author and tests; python-reviewer found it. Rule: for any create-then-write step, answer "what if it dies in between" before commit.
+
+- Kind: SUCCESS. Facts: three independent reviewers found the same two defects and the fix was confirmed by 48 tests. Rule: run reviewers on risky create-then-write code before the tester, not after.

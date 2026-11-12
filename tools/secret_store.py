@@ -50,7 +50,7 @@ def put(name: str, value: str) -> str:
     d = store_dir()
     if inside_git(d):
         raise SystemExit("refused: the secret folder is inside a git work tree")
-    if not value:
+    if not value.strip():
         raise SystemExit("refused: empty value")
     if d.exists() and not d.is_dir():
         raise SystemExit("refused: the secret path is not a folder")
@@ -85,8 +85,11 @@ def log_line(name: str, repo: Path) -> None:
     if not f.is_file():
         raise SystemExit("refused: core/DECISION_LOG.md not found in the current folder")
     day = datetime.date.today().isoformat()
+    line = f"- {day} secret stored: name {name}, in the user secret store outside git (value not logged)."
+    if line in f.read_text(encoding="utf-8").splitlines():
+        return  # the same name on the same day is logged once; a retry adds nothing
     with open(f, "a", encoding="utf-8", newline="\n") as fh:
-        fh.write(f"\n- {day} secret stored: name {name}, in the user secret store outside git (value not logged).\n")
+        fh.write("\n" + line + "\n")
 
 
 def main(argv: list[str]) -> int:
