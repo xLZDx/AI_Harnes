@@ -171,3 +171,6 @@
 
 ## 2026-11-12 S7-T5 committed
 - secret_guard: secret values are never printed (files, env, tokens, inline scripts, terraform output without a name), money CLIs are refused, credential changes need a fresh credential-invalid record for the SAME credential/service/project or an operator message naming the action or a confirmed exposure under the standing order; deleting the old credential needs a verified replacement. Exposure states detected/confirmed (authorized is derived at decision time from confirmed plus the standing order). Limit: only known formats become confirmed; unknown channels cannot be prevented.
+
+## 2026-11-12 S7-T4 committed
+- ask_last_gate: an ask for credentials, state or access passes only when the turn tool results show relevant env-name, config/file and CLI-status probes plus a non-transient failed try-action (or all probes not found); money and operator-only classes are exempt. A call without a result proves nothing. Limit: evidence is taken from the current turn only; the 60-minute cross-turn allowance of the plan is not implemented.

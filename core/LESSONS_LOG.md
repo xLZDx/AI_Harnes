@@ -166,3 +166,5 @@
 - Kind: SUCCESS. Facts: the runner output is byte-identical to a direct hook run for deny, allow and exit-2 cases (tests), found one real bug first (a dropped TextIOWrapper closed its buffer). Rule: keep references to wrapped streams.
 
 - Kind: FAILURE. Facts: a literal backspace in the money regex (a  typed in a normal string) made every English money word unmatched; found by a test agent, not by me. Rule: scan new files for control characters.
+
+- Kind: SUCCESS. Facts: the test agent drove 3 real defects out of the gate (English money words, a file listing counted as a failed try, a call without result counted as proof) by running the incident asks. Rule: test a gate with the incident text itself.
