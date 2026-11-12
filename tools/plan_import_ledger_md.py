@@ -21,7 +21,6 @@ import shutil
 import sys
 import tempfile
 import time
-import uuid
 from collections import Counter
 from pathlib import Path
 
@@ -254,7 +253,7 @@ def atomic_write(path: Path, text: str, expected: bytes | None = None, retries: 
 
 
 def _proc_start(pid: int) -> str:
-    """Process creation time as a string, '' when it cannot be read (used to tell a reused pid from the owner)."""
+    """Process creation time as a string, '' when it cannot be read (diagnostic record only, never used for decisions)."""
     if os.name == "nt":
         try:
             import ctypes
@@ -280,129 +279,88 @@ def _proc_start(pid: int) -> str:
         return ""
 
 
-def _pid_state(pid: int, start: str) -> bool | None:
-    """True = the owner is alive, False = provably dead (gone, or the pid now belongs to another process), None = unknown."""
-    if pid <= 0:
-        return None
+def _try_lock(fd: int) -> bool:
+    """One non-blocking exclusive OS lock attempt on byte 0 of fd. The kernel drops the lock when the holder dies."""
     if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, 0)
         try:
-            import ctypes
-            from ctypes import wintypes
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.OpenProcess.restype = wintypes.HANDLE
-            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if not h:
-                return False if ctypes.get_last_error() == 87 else None  # ERROR_INVALID_PARAMETER = no such pid
-            try:
-                code = wintypes.DWORD()
-                if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
-                    return None
-                if code.value != 259:  # STILL_ACTIVE
-                    return False
-            finally:
-                k32.CloseHandle(h)
-        except Exception:  # noqa: BLE001
-            return None
-    else:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
             return False
-        except PermissionError:
-            pass  # exists, owned by someone else
-        except OSError:
-            return None
-    now = _proc_start(pid)
-    if start and now and start != now:
-        return False  # pid reused by a different process
-    return True
-
-
-def _read_owner(lock: Path):
-    """(token, pid, start) from the lock file, or None when it is empty/unreadable/not ours to parse."""
+    import fcntl
     try:
-        raw = lock.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, 0)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass  # closing the descriptor releases the lock anyway
+
+
+def _owner_pid(owner_file: Path):
+    """Diagnostic owner pid from the sidecar, or None. Never used to decide anything."""
+    try:
+        return int(json.loads(owner_file.read_text(encoding="utf-8"))["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
         return None
-    try:
-        d = json.loads(raw)
-        return str(d["token"]), int(d["pid"]), str(d.get("start", ""))
-    except (ValueError, KeyError, TypeError):
-        pass
-    if raw.isdigit():  # legacy lock: the bare pid
-        return "", int(raw), ""
-    return None
-
-
-def _take_over(lock: Path, owner) -> None:
-    """Move the dead owner's lock aside atomically. If the file moved is not the lock we judged (a live new owner won a race
-    between our check and the move), put it back and leave it alone."""
-    aside = lock.with_name(f"{lock.name}.dead.{os.getpid()}.{uuid.uuid4().hex[:8]}")
-    try:
-        os.replace(lock, aside)
-    except OSError:
-        return
-    now = _read_owner(aside)
-    if now is None or now[0] != owner[0] or now[1] != owner[1]:
-        try:
-            os.link(aside, lock)  # fails if another lock exists already; then that one stands
-        except OSError:
-            pass
-    try:
-        os.unlink(aside)
-    except OSError:
-        pass
 
 
 @contextlib.contextmanager
 def plan_lock(path: Path, timeout: float = 30.0, stale_after: float = 120.0):
-    """Exclusive lock file `<plan>.lock` (O_EXCL create) held from the read of the plan to the replace, like ledger.locked().
-    The file records the owner pid, its process start time and a random token. A held lock is taken over only when the owner
-    is provably dead (process gone, or its pid reused by a process with another start time); age alone never frees it
-    (`stale_after` is kept for compatibility and ignored). If liveness cannot be decided the lock is not taken over.
-    Release deletes the file only when it still holds our token. Also removes orphaned `<plan>.*.tmp` files older than
-    10 minutes. Raises TimeoutError (an OSError) naming the lock path and the owner pid when the lock stays held."""
+    """Exclusive OS lock on byte 0 of `<plan>.lock`, held from the read of the plan to the replace. The kernel releases it when
+    the holder exits or is killed, so there is no ownership record to judge and no takeover. The lock file is never deleted
+    (it stays as a marker; any old content, such as a JSON record of the former scheme, is ignored). The holder writes a
+    best-effort diagnostic record (pid, process start, time) to `<plan>.lock.owner`; it is only used in the timeout message.
+    `stale_after` is kept for compatibility and ignored. Also removes orphaned `<plan>.*.tmp` files older than 10 minutes.
+    Raises TimeoutError (an OSError) naming the lock path and the diagnostic owner pid when the lock stays held."""
     lock = path.with_name(path.name + ".lock")
+    owner_file = path.with_name(path.name + ".lock.owner")
     deadline = time.monotonic() + timeout
-    token = uuid.uuid4().hex
-    info = json.dumps({"token": token, "pid": os.getpid(), "start": _proc_start(os.getpid())})
-    owner = None
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(fd, info.encode())
-            finally:
-                os.close(fd)
-            break
-        except (FileExistsError, PermissionError):  # Windows: PermissionError while the holder deletes it
-            owner = _read_owner(lock)
-            if owner is not None and _pid_state(owner[1], owner[2]) is False:
-                _take_over(lock, owner)
-                continue
-            if time.monotonic() > deadline:
-                who = f"owner pid {owner[1]}" if owner else "owner unknown (lock file empty or unreadable)"
-                raise TimeoutError(f"plan lock {lock} held for more than {int(timeout)} s by {who}; "
-                                   "it is taken over only when that process is dead")
-            time.sleep(0.05)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT)
     try:
-        cutoff = time.time() - 600
-        for orphan in path.parent.glob(path.name + ".*.tmp"):
-            try:
-                if orphan.stat().st_mtime < cutoff:
-                    orphan.unlink()
-            except OSError:
-                pass
-        yield
+        try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\n")  # byte 0 must exist; best effort (a racing writer writes the same byte)
+        except OSError:
+            pass
+        while not _try_lock(fd):
+            if time.monotonic() > deadline:
+                pid = _owner_pid(owner_file)
+                who = f"diagnostic owner pid {pid}" if pid else "diagnostic owner unknown"
+                raise TimeoutError(f"plan lock {lock} held for more than {int(timeout)} s ({who}); "
+                                   "the OS releases it when the holder exits")
+            time.sleep(0.05)
+        try:
+            rec = {"pid": os.getpid(), "start": _proc_start(os.getpid()), "time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+            owner_file.write_text(json.dumps(rec), encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            cutoff = time.time() - 600
+            for orphan in path.parent.glob(path.name + ".*.tmp"):
+                try:
+                    if orphan.stat().st_mtime < cutoff:
+                        orphan.unlink()
+                except OSError:
+                    pass
+            yield
+        finally:
+            _unlock(fd)
     finally:
-        for _ in range(20):
-            try:
-                cur = _read_owner(lock)
-                if cur is not None and cur[0] == token:
-                    lock.unlink(missing_ok=True)
-                break
-            except PermissionError:
-                time.sleep(0.05)
+        os.close(fd)
 
 
 def main(argv: list[str] | None = None) -> int:
