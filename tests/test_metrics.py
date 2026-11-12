@@ -257,14 +257,31 @@ def test_purge_via_cli_empties_a_small_log_of_old_rows():
 
 
 def test_record_purges_old_rows_when_stamp_is_older_than_an_hour():
+    """record() never purges inline: with a stale stamp it claims the stamp and starts a detached `--purge` process."""
     sb = sandbox("m8b")
     f = sb["metrics"] / "events.jsonl"
     write_rows(f, [row(NOW - timedelta(days=31), hook="ancient.py")])
-    (sb["metrics"] / "purge.stamp").write_text(str(time.time() - 4000), encoding="utf-8")
+    stamp = sb["metrics"] / "purge.stamp"
+    stamp.write_text(str(time.time() - 4000), encoding="utf-8")
     with use_dir(sb):
+        t0 = time.monotonic()
         assert hm.record("fresh.py", "PreToolUse", "allow") is True
-    hooks = [r["hook"] for r in rows_of(sb)]
-    assert hooks == ["fresh.py"], hooks
+        assert time.monotonic() - t0 < 3, "record() must not wait for the purge"
+    assert float(stamp.read_text(encoding="utf-8")) > time.time() - 120, "the stamp must be claimed (refreshed) by record()"
+    assert "fresh.py" in [r["hook"] for r in rows_of(sb)], "the new row is appended first"
+    deadline = time.time() + 10  # let the detached process finish so it does not touch the sandbox after the test
+    while time.time() < deadline and "ancient.py" in [r["hook"] for r in rows_of(sb)]:
+        time.sleep(0.2)
+
+
+def test_purge_function_removes_old_rows_and_keeps_fresh_ones():
+    sb = sandbox("m8b2")
+    f = sb["metrics"] / "events.jsonl"
+    write_rows(f, [row(NOW - timedelta(days=31), hook="ancient.py"), row(NOW - timedelta(days=1), hook="fresh.py")])
+    with use_dir(sb):
+        assert hm.purge() >= 1
+    assert [r["hook"] for r in rows_of(sb)] == ["fresh.py"]
+    assert (sb["metrics"] / "purge.stamp").exists()
 
 
 def test_record_does_not_purge_when_stamp_is_recent():

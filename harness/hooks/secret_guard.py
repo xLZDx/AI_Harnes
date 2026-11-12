@@ -34,7 +34,8 @@ from _turn import read_turn  # noqa: E402
 
 READER_RE = re.compile(r"(?:^|[;&|(`]\s*|&&\s*)(?:cat|type|more|less|head|tail|bat|gc|Get-Content|Select-String|sls|grep|egrep|rg|awk|sed|"
                        r"cut|sort|strings|xxd|base64|jq|python[\d.]*\s+-m\s+json\.tool)\b", re.I)
-MASK_RE = re.compile(r"\s-[a-zA-Z]*[clqL]\b|--count|--quiet|--files-with-matches|\|\s*(?:wc|measure|Measure-Object)\b|cut\s+-d\s*['\"]?=['\"]?\s+-f\s*1\b|"
+GREP_COUNT_RE = re.compile(r"\b(?:grep|egrep|rg|Select-String|sls)\b[^|]*\s-[a-zA-Z]*[clqL]\b|--count|--quiet|--files-with-matches|--files-without-match", re.I)
+MASK_RE = re.compile(r"\|\s*(?:wc|measure|Measure-Object)\b|cut\s+-d\s*['\"]?=['\"]?\s+-f\s*1\b|"
                      r"sed\s+(?:-[Ee]\s+)?['\"]s[/|#].*=\s*\.\*[/|#].*\*{3}|awk\s+-F\s*['\"]?=['\"]?\s+['\"]\{\s*print\s+\$1\s*\}|"
                      r"Select-Object\s+-ExpandProperty\s+Name|\.Name\b|\[\s*-[nz]\s|test\s+-[nz]\s|\$\{#\w+\}|\$\{\w+:\+", re.I)
 ENV_DUMP_RE = re.compile(r"(?:^|[;&|(]\s*|&&\s*)(?:printenv|env|set|export\s+-p|declare\s+-x|(?:Get-ChildItem|gci|ls|dir)\s+env:)\s*(?:$|[|;&>])", re.I)
@@ -76,43 +77,89 @@ def log(rec: dict) -> None:
         pass
 
 
+QUOTED_RE = re.compile(r"\"([^\"]*)\"|'([^']*)'")
+SEG_SPLIT_RE = re.compile(r"\n|;|&&|\|\|")
+
+
+def _masked(seg: str) -> bool:
+    return bool(MASK_RE.search(seg) or GREP_COUNT_RE.search(seg))
+
+
+def _operand_tokens(seg: str) -> list[str]:
+    """Words of a segment that can be file operands. A quoted string that looks like a regex or a sentence (a search pattern, a
+    commit message) is not an operand."""
+    def unquote(m):
+        inner = m.group(1) if m.group(1) is not None else m.group(2)
+        return " " + inner + " " if not re.search(r"[\\^$|()\s*+?\[\]{}]", inner) else " "
+    return re.findall(r"[^\s'\"|;&<>()]+", QUOTED_RE.sub(unquote, seg))
+
+
 def printing_problem(cmd: str) -> str:
-    """Reason when the command would print secret values, else ''."""
-    tokens = re.findall(r"[^\s'\"|;&<>()]+", cmd)
-    sens = [t for t in tokens if sp.SENSITIVE_FILE_RE.search(t.replace("\\", "/"))]
-    if sens and READER_RE.search(cmd) and not MASK_RE.search(cmd):
-        return f"it prints the content of a secret file ({os.path.basename(sens[0])}); check names only, for example grep -c, grep -l or cut -d= -f1"
-    if ENV_DUMP_RE.search(cmd) and not MASK_RE.search(cmd):
-        return "it dumps the whole environment; use a filtered name list (cut -d= -f1) or test one variable with [ -n \"$NAME\" ]"
-    m = PRINTENV_NAME_RE.search(cmd)
-    if m and sp.SECRET_NAME_RE.search(m.group(1)) and not MASK_RE.search(cmd):
-        return f"it prints the value of {m.group(1)}; test it with [ -n \"${m.group(1)}\" ] or print its length"
-    mo = re.search(r"terraform\s+output\b([^\n;&|]*)", cmd, re.I)
-    if mo and not [a for a in mo.group(1).split() if not a.startswith("-")] and not MASK_RE.search(cmd):
-        return "terraform output without an output name prints every value, sensitive ones included; ask for one named output"
-    if ECHO_SECRET_RE.search(cmd) and not MASK_RE.search(cmd):
-        return "it echoes a secret variable; test it with [ -n \"$NAME\" ] or print its length instead"
+    """Reason when the command would print secret values, else ''. Each command segment is judged on its own: a mask in
+    another segment (`cat .env; ls -l`) does not excuse it."""
+    if INLINE_RE.search(cmd) and INLINE_PRINT_RE.search(cmd) and not INLINE_SAFE_RE.search(cmd):
+        # an inline script holds `;` inside its code, so it is judged as a whole, before the split into segments
+        if INLINE_SECRET_RE.search(cmd) or any(sp.SENSITIVE_FILE_RE.search(t.replace("\\", "/")) for t in _operand_tokens(cmd)):
+            return "an inline script prints a secret; print only presence or length"
+    for seg in SEG_SPLIT_RE.split(cmd):
+        if not seg.strip():
+            continue
+        why = _segment_problem(seg)
+        if why:
+            return why
     for mt in TOKEN_PRINT_RE.finditer(cmd):
         before, after = cmd[:mt.start()], cmd[mt.end():]
         if not (CAPTURED_RE.search(before[-40:] + "") or re.match(r"\s*(?:\)|`)?\s*\|\s*(?:curl|xargs|clip|docker|gh|wrangler|jq)", after)):
             return "it prints an access token into the transcript; capture it in a variable or pipe it straight into the tool that needs it"
-    if INLINE_RE.search(cmd) and INLINE_PRINT_RE.search(cmd) and not INLINE_SAFE_RE.search(cmd):
-        if sens or INLINE_SECRET_RE.search(cmd):
+    return ""
+
+
+def _segment_problem(seg: str) -> str:
+    sens = [t for t in _operand_tokens(seg) if sp.SENSITIVE_FILE_RE.search(t.replace("\\", "/"))]
+    masked = _masked(seg)
+    if sens and READER_RE.search(seg) and not masked:
+        return f"it prints the content of a secret file ({os.path.basename(sens[0])}); check names only, for example grep -c, grep -l or cut -d= -f1"
+    if ENV_DUMP_RE.search(seg) and not masked:
+        return "it dumps the whole environment; use a filtered name list (cut -d= -f1) or test one variable with [ -n \"$NAME\" ]"
+    m = PRINTENV_NAME_RE.search(seg)
+    if m and sp.SECRET_NAME_RE.search(m.group(1)) and not masked:
+        return f"it prints the value of {m.group(1)}; test it with [ -n \"${m.group(1)}\" ] or print its length"
+    mo = re.search(r"terraform\s+output\b([^\n;&|]*)", seg, re.I)
+    if mo and not [a for a in mo.group(1).split() if not a.startswith("-")] and not masked:
+        return "terraform output without an output name prints every value, sensitive ones included; ask for one named output"
+    if ECHO_SECRET_RE.search(seg) and not masked:
+        return "it echoes a secret variable; test it with [ -n \"$NAME\" ] or print its length instead"
+    if INLINE_RE.search(seg) and INLINE_PRINT_RE.search(seg) and not INLINE_SAFE_RE.search(seg):
+        if sens or INLINE_SECRET_RE.search(seg):
             return "an inline script prints a secret; print only presence or length"
     return ""
+
+
+NEGATION_RE = re.compile(r"(?i)(?:\bnot\b|\bn't\b|\bnever\b|\bno\b|\bwithout\b|\bне\b|\bнельзя\b|\bбез\b|\bни в коем\b)\W+(?:\w+\W+){0,3}$")
+
+
+def operator_named(text: str) -> bool:
+    """The operator's message names the action in an affirmative sentence: a match counts when it is not negated just before it and
+    the message is not a question."""
+    if not text or text.strip().endswith("?"):
+        return False
+    for m in OPERATOR_NAMED_RE.finditer(text):
+        if not NEGATION_RE.search(text[max(0, m.start() - 40):m.start()]):
+            return True
+    return False
 
 
 def change_problem(cmd: str, kind: str, data: dict) -> str:
     """Reason when a credential-changing command is not allowed yet, else ''."""
     turn = read_turn(data.get("transcript_path") or "")
-    if OPERATOR_NAMED_RE.search(turn["human_text"] or ""):
+    if operator_named(turn["human_text"] or ""):
         return ""  # the operator's current message names the action
     if kind == "state":
         return ("terraform destroy / state rm change infrastructure or its record; the operator's message must name this action. "
                 "If the state file is missing, recreate it with terraform init / import instead")
     rows = sp.load_records(state())
     cred, svc, proj = sp.credential_id_of(cmd), sp.service_of(cmd), sp.project_of(cmd)
-    ok, note = sp.auth_evidence_ok(rows, cred, svc, proj)
+    ok, note = sp.auth_evidence_ok(rows, cred, svc, proj, strict=True)
     exposure = sp.exposure_state(rows, cred) if cred and not cred.startswith("default:") else ""
     standing = os.environ.get("HARNESS_ROTATION_STANDING_ORDER", "1") != "0"
     allowed_by_exposure = exposure in ("confirmed", "authorized") and standing
@@ -139,12 +186,19 @@ def on_pre(data: dict) -> None:
             deny(f"Secret guard: reading {os.path.basename(path)} would put secret values into the transcript. Check key NAMES with grep -c / "
                  "cut -d= -f1, or use the value inside a command without printing it.")
         return
+    if name == "Grep":
+        ti = _agentio.tool_input(data)
+        target = str(ti.get("path") or "") + " " + str(ti.get("glob") or "")
+        if str(ti.get("output_mode") or "") == "content" and any(sp.SENSITIVE_FILE_RE.search(t.replace("\\", "/").replace("*", fill).replace("?", fill)) for t in target.split() for fill in ("", "x")):
+            log({"event": "deny-grep"})
+            deny("Secret guard: Grep with output_mode=content on a secret file would print its values; use output_mode=count or files_with_matches.")
+        return
     if not _agentio.is_shell(data):
         return
     cmd = _agentio.shell_command(data) or ""
     if not cmd.strip():
         return
-    if sp.MONEY_CMD_RE.search(cmd):
+    if sp.money_command(cmd):
         log({"event": "deny-money"})
         deny("Secret guard (money): this command spends or commits money (billing, purchase or a billable resource). Only the operator decides "
              "about money; ask with the cost and the reason.")
@@ -166,6 +220,8 @@ def response_text(data: dict) -> str:
     r = data.get("tool_response")
     if r is None:
         r = data.get("tool_output")
+    if r is None:
+        r = data.get("error")  # PostToolUseFailure carries the failure text here (first line "Exit code N")
     if isinstance(r, str):
         return r[:200000]
     try:
@@ -174,39 +230,52 @@ def response_text(data: dict) -> str:
         return str(r)[:200000]
 
 
-def on_post(data: dict) -> None:
+def _add(d: Path, rec: dict) -> None:
+    if not sp.add_record(d, rec):
+        log({"event": "evidence-not-written", "kind": rec.get("kind")})  # lock timeout: the proof is lost, say so
+
+
+def on_post(data: dict, failure: bool = False) -> None:
+    """PostToolUse (success) and PostToolUseFailure (a command that exited non-zero never reaches PostToolUse)."""
     if not _agentio.is_shell(data):
         return
     cmd = _agentio.shell_command(data) or ""
     text = response_text(data)
     svc = sp.service_of(cmd)
     cred, proj = sp.credential_id_of(cmd), sp.project_of(cmd)
-    ok = _agentio.command_succeeded(data)
+    ok = False if failure else _agentio.command_succeeded(data)  # None = unknown: records nothing (never counted as a failure)
     kind = sp.change_kind(cmd)
     d = state()
     if svc and cred:
-        if ok is False or (ok is None and sp.classify_auth(text) != "unknown"):
+        if ok is False:
             cls = sp.classify_auth(text)
             if cls != "unknown":
-                sp.add_record(d, {"kind": "auth", "credential_id": cred, "service": svc, "project": proj,
-                                  "operation": kind or "call", "class": cls})
+                _add(d, {"kind": "auth", "credential_id": cred, "service": svc, "project": proj, "operation": kind or "call", "class": cls})
         elif ok is True:
-            sp.add_record(d, {"kind": "auth", "credential_id": cred, "service": svc, "project": proj, "operation": kind or "call", "class": "ok"})
+            _add(d, {"kind": "auth", "credential_id": cred, "service": svc, "project": proj, "operation": kind or "call", "class": "ok"})
             rows = sp.load_records(d)
             if kind in ("create", "roll"):
-                sp.add_record(d, {"kind": "rotation", "credential_id": cred, "service": svc, "step": "created"})
-            elif not kind and any(r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "created" for r in rows) \
-                    and not any(r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "verified" and r.get("at", 0) >
-                                max(x.get("at", 0) for x in rows if x.get("kind") == "rotation" and x.get("step") == "created") for r in rows):
-                sp.add_record(d, {"kind": "rotation", "credential_id": cred, "service": svc, "step": "verified"})
+                _add(d, {"kind": "rotation", "credential_id": cred, "old_credential_id": cred, "service": svc, "step": "created"})
+            elif not kind and not cred.startswith("default:"):
+                # verified = a successful call with an EXPLICIT credential other than the one that was replaced (R3-2)
+                created = [r for r in rows if r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "created"
+                           and r.get("old_credential_id") != cred]
+                last_created = max((r.get("at", 0) for r in created), default=0)
+                if created and not any(r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "verified"
+                                       and r.get("at", 0) > last_created for r in rows):
+                    _add(d, {"kind": "rotation", "credential_id": cred, "service": svc, "step": "verified"})
     hits = sp.find_secrets(text)
     if not hits:
         return
     notes = []
     for h in hits[:3]:
-        ref = cred if cred and not cred.startswith("default:") else "value:" + h["fp"]
-        sp.add_record(d, {"kind": "exposure", "credential_id": ref, "state": "confirmed" if h["known"] else "detected",
-                          "type": h["type"], "fp": h["fp"], "service": svc})
+        ref = "value:" + h["fp"]
+        if cred.startswith("env:"):  # link the leak to a credential only when the live value of that variable has the same fingerprint
+            live = os.environ.get(cred[4:])
+            if live and sp.fingerprint(live) == h["fp"]:
+                ref = cred
+        _add(d, {"kind": "exposure", "credential_id": ref, "state": "confirmed" if h["known"] else "detected",
+                 "type": h["type"], "fp": h["fp"], "service": svc})
         log({"event": "exposure", "type": h["type"], "fp": h["fp"], "state": "confirmed" if h["known"] else "detected"})
         notes.append(CONTAINMENT % (h["type"], ref, h["fp"]))
     msg = " | ".join(notes[:1]) + (f" (+{len(notes) - 1} more)" if len(notes) > 1 else "")
@@ -226,6 +295,8 @@ def main() -> int:
             on_pre(data)
         elif ev == "PostToolUse":
             on_post(data)
+        elif ev == "PostToolUseFailure":
+            on_post(data, failure=True)
     except SystemExit:
         raise
     except Exception as exc:  # fail open on internal errors

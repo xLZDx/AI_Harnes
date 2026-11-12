@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,26 +54,46 @@ def _restrict(d: Path) -> None:
     if mark.exists():
         return
     try:
+        mark.write_text("1", encoding="utf-8")  # first: a failing or slow icacls must not be retried on every hook call
+    except Exception:
+        pass
+    try:
         if os.name == "nt":
             import subprocess
             user = os.environ.get("USERNAME") or ""
             if user:
                 subprocess.run(["icacls", str(d), "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)F"],
-                               capture_output=True, timeout=5)
+                               capture_output=True, timeout=2)
         else:
             os.chmod(d, 0o700)
-        mark.write_text("1", encoding="utf-8")
+    except Exception:
+        _bump(d, "errors")
+
+
+def _bump(d: Path, name: str) -> None:
+    """Separate counters: dropped = row lost on lock timeout, errors = rotation/purge/permission failure, refused = metrics folder
+    inside a git work tree. metrics.py shows all three."""
+    try:
+        f = d / f"{name}.count"
+        n = int(f.read_text(encoding="utf-8")) if f.exists() else 0
+        f.write_text(str(n + 1), encoding="utf-8")
     except Exception:
         pass
 
 
 def _bump_drop(d: Path) -> None:
-    try:
-        f = d / "dropped.count"
-        n = int(f.read_text(encoding="utf-8")) if f.exists() else 0
-        f.write_text(str(n + 1), encoding="utf-8")
-    except Exception:
-        pass
+    _bump(d, "dropped")
+
+
+def counters() -> dict:
+    d = metrics_dir()
+    out = {}
+    for name in ("dropped", "errors", "refused"):
+        try:
+            out[name] = int((d / f"{name}.count").read_text(encoding="utf-8"))
+        except Exception:
+            out[name] = 0
+    return out
 
 
 def _row_time(line: str):
@@ -117,7 +138,7 @@ def purge(now: datetime | None = None, locked: bool = False) -> int:
                 if not f.exists() or f.stat().st_size != before:
                     work += 1
             except Exception:
-                _bump_drop(d)
+                _bump(d, "errors")
         try:
             (d / "purge.stamp").write_text(str(time.time()), encoding="utf-8")
         except Exception:
@@ -161,6 +182,8 @@ def record(hook: str, event: str, decision: str, reason: str = "", ms: int = 0, 
     try:
         d = metrics_dir()
         if inside_git_work_tree(d):
+            if d.is_dir():  # count the refusal only where the folder already exists: nothing is created inside a work tree
+                _bump(d, "refused")
             return False
         d.mkdir(parents=True, exist_ok=True)
         _restrict(d)
@@ -177,14 +200,38 @@ def record(hook: str, event: str, decision: str, reason: str = "", ms: int = 0, 
                 _bump_drop(d)
                 return False
             if active.exists() and active.stat().st_size >= ROTATE_BYTES:
-                _rotate(d, active)
+                try:
+                    _rotate(d, active)
+                except Exception:
+                    _bump(d, "errors")  # rotation failed: keep appending to the active file, say so
             with open(active, "a", encoding="utf-8", newline="\n") as fh:
                 fh.write(line)
-            if _purge_due(d):
-                purge(locked=True)
+        if _purge_due(d):
+            _spawn_purge(d)  # never on the hook path: a detached process does the rewrite
         return True
     except Exception:
+        try:
+            _bump(metrics_dir(), "errors")
+        except Exception:
+            pass
         return False
+
+
+def _spawn_purge(d: Path) -> None:
+    try:
+        (d / "purge.stamp").write_text(str(time.time()), encoding="utf-8")  # claim the slot first: no start storm
+        import subprocess
+        flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen([sys.executable, "-s", "-X", "utf8", str(Path(__file__).resolve()), "--purge"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=flags, close_fds=True)
+    except Exception:
+        _bump(d, "errors")
+
+
+if __name__ == "__main__":
+    if "--purge" in sys.argv:
+        purge()
 
 
 def read_rows(since: datetime | None = None):

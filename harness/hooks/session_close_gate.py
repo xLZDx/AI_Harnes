@@ -206,6 +206,7 @@ def no_progress(state: dict, key: str, sig: str) -> int:
 
 LEDGER_MAX_BLOCKS = 5          # no-progress blocks before the release
 LEDGER_MAX_SECONDS = 30 * 60   # or this long since the first block of the streak
+LEDGER_GAP_SECONDS = 5 * 60    # a pause longer than this between two stops starts a new streak
 MINE_RE = re.compile(r"ledger\.py\s+(?:start|verify|review|tokens|block)\s+['\"]?([A-Za-z0-9_.-]+)|Task:\s*([A-Za-z0-9_.-]+)")
 OPEN_STATES_SKIP = ("done",)
 
@@ -285,6 +286,9 @@ def ledger_stop(data: dict, msg: str) -> bool:
             log({"event": "stop", "verdict": "ledger-unreadable", "project": key})
             warn(f"the ledger of {root} cannot be read; the tasks-left check is skipped (fix .harness/ledger.json)")
             continue
+        key = f"{data.get('session_id') or 'nosession'}|{key}"  # a streak belongs to ONE session in ONE project
+        for k in [k for k, v in streaks.items() if time.time() - float((v or {}).get("last", 0)) > 24 * 3600]:
+            streaks.pop(k, None)  # old streaks of other sessions do not pile up
         if not tasks:
             streaks.pop(key, None)
             continue
@@ -294,10 +298,11 @@ def ledger_stop(data: dict, msg: str) -> bool:
         sig = "|".join(f"{i}:{s}" for i, s in sorted(tasks))
         rec = streaks.get(key) or {}
         now_ts = time.time()
-        if rec.get("sig") == sig:
+        if rec.get("sig") == sig and now_ts - float(rec.get("last", now_ts)) <= LEDGER_GAP_SECONDS:
             rec["n"] = rec.get("n", 0) + 1
-        else:
+        else:  # progress (signature changed) or a long pause (the operator came back): a fresh streak
             rec = {"sig": sig, "n": 1, "first": now_ts}
+        rec["last"] = now_ts
         streaks[key] = rec
         if not save_state(state):
             warn("state file not writable; not blocking on open ledger tasks")
@@ -306,6 +311,12 @@ def ledger_stop(data: dict, msg: str) -> bool:
         if rec["n"] > LEDGER_MAX_BLOCKS or now_ts - rec["first"] > LEDGER_MAX_SECONDS:
             reason = "no-progress-blocks" if rec["n"] > LEDGER_MAX_BLOCKS else "30-minutes"
             log({"event": "stop", "verdict": "ESCALATE", "why": "ledger-release", "release_reason": reason, "project": key, "open": listing})
+            try:
+                import hook_metrics
+                hook_metrics.record("session_close_gate.py", "Stop", "release", "ledger-" + reason, 0, str(data.get("session_id") or ""),
+                                    _agentio.client(data), str(root))
+            except Exception:
+                pass
             warn(f"{len(tasks)} open task(s) in {root} and no progress ({reason}); releasing the session: {listing}")
             continue
         log({"event": "stop", "verdict": "block" if mode() == "live" else "would-block", "why": "ledger-open-tasks",

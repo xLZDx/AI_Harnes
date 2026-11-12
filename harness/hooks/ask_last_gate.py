@@ -27,11 +27,17 @@ import _agentio  # noqa: E402
 import secret_policy as sp  # noqa: E402
 from _turn import read_turn  # noqa: E402
 
-ACTION_RE = re.compile(
-    r"\b(?:provide|give|send|paste|share|create|generate|set\s*up|configure|run|rotate|log\s*in|authori[sz]e|enable|upload|grant|add|install|"
-    r"export|reissue|change|update)\b|"
-    r"(?:дай(?:те)?|предостав\w+|пришл\w+|вставь\w*|созда\w+|сдела\w+|настро\w+|ротиру\w+|залогин\w*|авториз\w+|включ\w+|загруз\w+|выда\w+|"
-    r"добав\w+|установ\w+|экспорт\w+|пересозда\w+|смени\w*|измени\w*|поменя\w+|запусти\w*)", re.I)
+_VERBS_EN = (r"provide|give|send|paste|share|create|generate|set\s*up|configure|run|rotate|log\s*in|authori[sz]e|enable|upload|grant|add|"
+             r"install|export|reissue|change|update")
+_VERBS_RU = (r"дай(?:те)?|предостав\w+|пришл\w+|вставь\w*|созда\w+|сдела\w+|настро\w+|ротиру\w+|залогин\w*|авториз\w+|включ\w+|загруз\w+|"
+             r"выда\w+|добав\w+|установ\w+|экспорт\w+|пересозда\w+|смени\w*|измени\w*|поменя\w+|запусти\w*")
+ACTION_RE = re.compile(rf"\b(?:{_VERBS_EN})\b|(?:{_VERBS_RU})", re.I)
+# The ask must REQUEST the action from the operator: a polite request, "you need to", or an option/line that starts with the imperative.
+# A question that only mentions a verb ("Should I rotate the key?") is a decision, not a request, and is left alone.
+REQUEST_RE = re.compile(
+    r"(?i)\b(?:please|could you|can you|would you|will you|i need you to|you(?:'ll| will)? need to|you (?:have|must|should) to?|need your|"
+    r"give me|send me|let me know the)\b|пожалуйста|не могли бы|нужно,? чтобы вы|вам (?:нужно|надо)|вы должны|дайте|пришлите|"
+    r"^\s*(?:[-*•]|\d+[.)])?\s*(?:" + _VERBS_EN + r"|" + _VERBS_RU + r")\b", re.M)
 CRED_TOPIC_RE = re.compile(r"\b(?:key|keys|token|tokens|secret|secrets|credential|credentials|password|api|access|login|auth|iam|service account)\b|"
                            r"ключ|токен|секрет|доступ|парол|учётн|учетн|авториз|логин", re.I)
 STATE_TOPIC_RE = re.compile(r"\b(?:state|tfstate|terraform|bucket|backend|resource|config|configuration|settings|gcloud|aws|cloudflare|wrangler)\b|"
@@ -44,7 +50,7 @@ FILES_RE = re.compile(r"\b(?:ls|dir|find|Get-ChildItem|gci|grep|egrep|rg|cat|typ
 STATUS_RE = re.compile(r"gcloud\s+(?:auth\s+list|config\s+list|projects\s+list|auth\s+application-default)|gh\s+auth\s+status|aws\s+sts\s+get-caller-identity|"
                        r"az\s+account\s+show|wrangler\s+whoami|firebase\s+(?:login:list|projects:list)|terraform\s+(?:state\s+list|show|version|validate|workspace)|"
                        r"kubectl\s+config|vault\s+status|docker\s+(?:info|context)", re.I)
-TRY_RE = re.compile(r"(?:^|[;&|(]\s*|&&\s*)(?:cd\s+\S+\s*&&\s*)?(?:terraform|tofu|gcloud|aws|az|gh|wrangler|kubectl|firebase|curl|npm|docker|helm|gsutil)\b", re.I)
+TRY_RE = re.compile(r"(?:^|[;&|(]\s*|&&\s*)(?:cd\s+\S+\s*&&\s*)?(?:terraform|tofu|gcloud|aws|az|gh|wrangler|kubectl|firebase|curl|npm|docker|helm|gsutil)\b", re.I | re.M)
 NOTFOUND_RE = re.compile(r"(?i)no credentialed|no active account|no accounts|no such file|not found|не найден|cannot find|does not exist|is not set|not set|empty|no matches|^\s*$|нет такого|unset|not logged in|no credentials")
 SHELL_NAMES = ("Bash", "PowerShell", "shell", "shell_command")
 SEARCH_NAMES = ("Grep", "Glob", "Read", "LS")
@@ -78,17 +84,28 @@ def categories(calls: list[dict], topic_words: set[str]) -> dict[str, list[dict]
     return out
 
 
+HOOK_DENIED_RE = re.compile(r"(?i)hook|PreToolUse|permission (?:to use|was denied|denied by)|doesn't want to proceed|was rejected|user rejected|"
+                            r"tool use was rejected|blocked by|ASK LAST|PLAN FIRST|Secret guard")
+
+
 def failed(c: dict) -> bool:
-    return c.get("is_error") is True or sp.classify_auth(str(c.get("result") or "")) not in ("unknown",) or \
-        bool(re.search(r"(?i)\berror\b|failed|exception|denied|no such|not found", str(c.get("result") or "")[:3000]))
+    """A real attempt that failed with a classified error. A call the hooks or the operator refused never ran, so it proves
+    nothing; plain words like "error" or "denied" in output are not a classification."""
+    text = str(c.get("result") or "")
+    if HOOK_DENIED_RE.search(text[:600]):
+        return False
+    cls = sp.classify_auth(text)
+    if cls == "transient":
+        return False
+    return c.get("is_error") is True or cls != "unknown"  # a non-zero exit of a real command, or a classified failure
 
 
 def evidence_problem(ask_text: str, turn: dict) -> str:
     """'' when the ask may go to the operator, else the missing-proof description."""
     if EXEMPT_RE.search(ask_text) or sp.MONEY_TEXT_RE.search(ask_text):
         return ""
-    if not ACTION_RE.search(ask_text):
-        return ""
+    if not (ACTION_RE.search(ask_text) and REQUEST_RE.search(ask_text)):
+        return ""  # no request that the operator DO something: a plain decision question is not this gate's business
     cred, state = bool(CRED_TOPIC_RE.search(ask_text)), bool(STATE_TOPIC_RE.search(ask_text))
     if not (cred or state):
         return ""
@@ -139,11 +156,50 @@ def on_pre(data: dict) -> None:
         return
     turn = read_turn(data.get("transcript_path") or "")
     if not turn["calls"] and not turn["human_text"]:
+        _release(data, "fail-open-empty-turn")
         return
     why = evidence_problem(ask_text_of(data), turn)
-    if why:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                 "permissionDecisionReason": MSG % why}}, ensure_ascii=False))
+    if not why:
+        return
+    # per-turn cap: after MAX_DENIES denials in one turn the ask goes through and the exception is recorded
+    key = f"{data.get('session_id')}|{turn['marker']}"
+    f = _agentio.state_dir("ask_last") / "denies.json"
+    n = None
+    with _agentio.file_lock(f, wait=1.0, stale=10.0) as got:
+        if got:
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                d = d if isinstance(d, dict) else {}
+            except (OSError, ValueError):
+                d = {}
+            n = int(d.get(key, 0)) + 1
+            d = {k: v for k, v in list(d.items())[-40:]}
+            d[key] = n
+            try:
+                _agentio.atomic_write_text(f, json.dumps(d))
+            except OSError:
+                n = None
+    if n is None:
+        _release(data, "release-counter-unavailable")
+        return
+    if n > MAX_DENIES:
+        sys.stderr.write("ask_last_gate: released after %d denies (ask-last-exception)\n" % (n - 1))
+        _release(data, "ask-last-exception")
+        return
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                             "permissionDecisionReason": MSG % why}}, ensure_ascii=False))
+
+
+MAX_DENIES = 2
+
+
+def _release(data: dict, reason: str) -> None:
+    try:
+        import hook_metrics
+        hook_metrics.record("ask_last_gate.py", str(data.get("hook_event_name") or "PreToolUse"), "release", reason, 0,
+                            str(data.get("session_id") or ""), _agentio.client(data), str(data.get("cwd") or ""))
+    except Exception:
+        pass
 
 
 def on_stop(data: dict) -> None:
@@ -191,8 +247,9 @@ def main() -> int:
             on_stop(data)
     except SystemExit:
         raise
-    except Exception:
-        pass  # fail open
+    except Exception as e:
+        sys.stderr.write(f"ask_last_gate: exception {type(e).__name__}, failing open\n")
+        _release(data, "exception")  # fail open, but counted
     return 0
 
 

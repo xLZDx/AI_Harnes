@@ -174,3 +174,9 @@
 - Kind: SUCCESS. Facts: the first render of the AEVE plan matched the plan counts exactly (14 accepted rows of 34 tasks). Rule: compare an adapter output with an independent count before wiring it in.
 
 - Kind: FAILURE. Facts: two production hooks carried literal backspace characters in word-boundary regexes for weeks (English done/committed/pushed never matched), so the keep-going release in English never worked. Root cause: a non-raw string with backslash-b; no test used an English closing message. Layer that missed it: tests. Rule: every regex gets one positive test per alternative group.
+
+- Kind: FAILURE. Facts: the S7 gates shipped with unlocked read-modify-write counters, a metrics call that could run icacls and a purge on every hook path, and a client flag read after the hook had removed it from argv; three independent reviewers found them, my own tests did not. Root cause: tests covered single calls, not two concurrent hooks or the time cost of bookkeeping. Layer that missed it: author and tests. Rule: every shared state file gets a lock test, and every bookkeeping step on the hook path gets a time budget.
+
+- Kind: SHORTCOMING. Facts: secret_guard recorded evidence only for PostToolUse, but Claude Code sends a non-zero Bash exit to PostToolUseFailure, so failed credential checks were never recorded. Rule: read the event table of the host before wiring a hook to success only.
+
+- Kind: SUCCESS. Facts: running the strict plan parser on all nine real PROJECT_PLAN.md files before committing showed ERP_MCP uses about a dozen own statuses; they were mapped explicitly instead of defaulting to todo. Rule: run a stricter parser on every real input before it ships.

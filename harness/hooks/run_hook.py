@@ -16,11 +16,13 @@ import json
 import os
 import runpy
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+BUDGET_S = 1.0  # hard limit for the runner's own bookkeeping after the hook result is already forwarded
 
 
 def classify(code: int, out: str, crashed: bool) -> str:
@@ -58,6 +60,7 @@ def main() -> int:
     out_w = io.TextIOWrapper(out_buf, encoding="utf-8", write_through=True)  # keep references: a dropped wrapper closes its buffer
     err_w = io.TextIOWrapper(err_buf, encoding="utf-8", write_through=True)
     sys.stdout, sys.stderr = out_w, err_w
+    client = "codex" if any(a == "--harness-client=codex" for a in sys.argv[2:]) else "claude"  # before a hook strips its own argv
     sys.argv = [str(script), *sys.argv[2:]]
     code, crashed = 0, False
     t0 = time.monotonic()
@@ -89,27 +92,33 @@ def main() -> int:
         real_err.buffer.flush()
     except Exception:
         pass
-    try:  # bookkeeping last; never changes the result
-        sys.path.insert(0, str(HERE))
-        import hook_metrics
+    decision = classify(code, out_bytes.decode("utf-8", "replace"), crashed)
+
+    def bookkeeping() -> None:
         try:
-            data = json.loads(raw.decode("utf-8-sig", "replace") or "{}")
-            data = data if isinstance(data, dict) else {}
-        except Exception:
-            data = {}
-        client = "codex" if any(a == "--harness-client=codex" for a in sys.argv) else "claude"
-        if data.get("agent_type") and name != "agent_visibility.py":
+            sys.path.insert(0, str(HERE))
+            import hook_metrics
             try:
-                import agent_visibility
-                agent_visibility.touch(data)  # a subagent's own tool call: proof the agent is active
+                data = json.loads(raw.decode("utf-8-sig", "replace") or "{}")
+                data = data if isinstance(data, dict) else {}
             except Exception:
-                pass
-        event = str(data.get("hook_event_name") or ("PreToolUse" if "tool_input" in data else "Stop"))
-        hook_metrics.record(name, event, classify(code, out_bytes.decode("utf-8", "replace"), crashed),
-                            "exit" + str(code), ms, str(data.get("session_id") or ""), client,
-                            str(data.get("cwd") or ""), str(data.get("agent_type") or ""))
-    except Exception:
-        pass
+                data = {}
+            if data.get("agent_type") and name != "agent_visibility.py":
+                try:
+                    import agent_visibility
+                    agent_visibility.touch(data)  # a subagent's own tool call: proof the agent is active
+                except Exception:
+                    pass
+            event = str(data.get("hook_event_name") or ("PreToolUse" if "tool_input" in data else "Stop"))
+            hook_metrics.record(name, event, decision, "exit" + str(code), ms, str(data.get("session_id") or ""), client,
+                                str(data.get("cwd") or ""), str(data.get("agent_type") or ""))
+        except Exception:
+            pass
+
+    # bookkeeping last, with a hard time budget: it never changes the result and never delays it by more than BUDGET_S
+    th = threading.Thread(target=bookkeeping, daemon=True)
+    th.start()
+    th.join(BUDGET_S)
     return code
 
 

@@ -14,6 +14,12 @@ import re
 from pathlib import Path
 
 MAP = {"ACCEPTED": "done", "IN_REVIEW": "verified", "IN_PROGRESS": "in_progress", "PARTIAL": "implemented", "NOT_STARTED": "todo",
+       # ERP_MCP's own statuses (checked in its PROJECT_PLAN.md 2026-11-12): approved for a bounded scope with product cases still
+       # NOT_RUN is "verified", never "done"; git activity or a hand-off without approval is work in progress; the rest is not started
+       "BOUNDED_SCOPE_COMPLETE": "verified", "CLOSED_BOUNDED_SPRINT": "verified", "ACCEPTED_BOUNDED": "verified",
+       "APPROVED_PUSHED": "verified", "DONE_SPRINT_LEVEL": "verified",
+       "GIT_ACTIVITY_NOT_CLOSED": "in_progress", "HANDOFF_NO_APPROVE": "in_progress", "ACTIVE": "in_progress",
+       "QUEUED": "todo", "UNCONFIRMED": "todo", "NOT_RUN": "todo", "FOLLOW_ON": "todo",
        "BLOCKED_OPERATOR": "todo", "BLOCKED_EXTERNAL": "todo", "PARKED": "todo"}
 HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 
@@ -57,11 +63,21 @@ def parse(text: str) -> dict:
             continue
         sid, title = s.group(1).rstrip(":"), s.group(2).strip()
         rows, i = _table(lines, i + 1)
+        if rows and not ({"task", "id"} & set(rows[0]) and "status" in rows[0]):
+            raise ValueError(f"Sprint {sid}: the task table needs a Task (or ID) column and a Status column, found {sorted(rows[0])}")
         tasks = []
         for r in rows:
-            status = re.sub(r"[^A-Z_]", "", (r.get("status") or "").upper()) or "NOT_STARTED"
+            raw = re.split(r"[;(,/—–]", (r.get("status") or "").strip(), maxsplit=1)[0]  # "CLOSED_BOUNDED_SPRINT; PR #43 merged" -> first part
+            status = re.sub(r"[^A-Z_]", "", re.sub(r"[\s-]+", "_", raw.strip().upper())) or "NOT_STARTED"
             if status == "SUPERSEDED":
                 continue
+            if status not in MAP:  # a qualified form of a known compound status ("ACCEPTED BOUNDED TEST DELTA"); never a prefix of plain ACCEPTED
+                base = next((k for k in sorted(MAP, key=len, reverse=True) if k != "ACCEPTED" and status.startswith(k + "_")), None)
+                if base:
+                    status = base
+            if status not in MAP:
+                raise ValueError(f"Sprint {sid}, task {r.get('task') or r.get('id') or '?'}: unknown status {r.get('status')!r}; "
+                                 f"allowed: {', '.join(sorted(MAP))}, SUPERSEDED")
             commits = HEX_RE.findall(r.get("commit", "") or "")
             t = {"id": r.get("task") or r.get("id") or "?", "title": r.get("title", ""),
                  "criteria": [c for c in [r.get("acceptance") or r.get("acceptance criteria") or ""] if c],
@@ -69,15 +85,14 @@ def parse(text: str) -> dict:
                  "verify": None, "review": None, "routing": None, "tokens": None}
             if status.startswith("BLOCKED") or status == "PARKED":
                 t["blocked"] = {"class": status, "cause": r.get("owner", "") or status, "at": None}
-            if status == "ACCEPTED":
-                ev = r.get("evidence", "") or "accepted in PROJECT_PLAN.md"
-                last = commits[-1] if commits else None
-                t["verify"] = {"result": "pass", "evidence": ev, "at": None, "task_commit": last}
-                t["review"] = {"result": "accepted", "findings": 0, "at": None, "task_commit": last}
+            # no synthesized verify/review: the plan only says ACCEPTED, so the report must not show a test run or a review that
+            # nobody recorded (the formula text names the plan as the source)
             tasks.append(t)
         done = bool(tasks) and all(t["state"] == "done" for t in tasks)
         sprints.append({"id": sid, "title": title, "branch": "", "state": "closed" if done else "open",
                         "opened": None, "closed": None, "tasks": tasks})
+    if not sprints:
+        raise ValueError("no '## Sprint <id>' sections found in the plan")
     return {"version": 1, "project": meta.get("project") or "", "sprints": sprints, "approval": None, "events": [],
             "source": "PROJECT_PLAN.md"}
 

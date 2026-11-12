@@ -63,13 +63,13 @@ def repeat_blocks(rows: list[dict]) -> list[dict]:
 def summarize(rows: list[dict], project: str = "") -> dict:
     if project:
         rows = [r for r in rows if r.get("project") == project]
-    hooks = defaultdict(lambda: {"fired": 0, "allow": 0, "deny": 0, "block": 0, "error": 0, "release": 0, "exception": 0, "ms": []})
+    hooks = defaultdict(lambda: {"fired": 0, "allow": 0, "deny": 0, "block": 0, "error": 0, "release": 0, "exception": 0, "other": 0, "ms": []})
     agents = defaultdict(lambda: {"starts": 0, "stops": 0, "seconds": 0})
     for r in rows:
         h = hooks[r.get("hook", "?")]
         h["fired"] += 1
         d = r.get("decision", "allow")
-        h[d if d in h else "allow"] += 1
+        h[d if d in h and d not in ("fired", "ms") else "other"] += 1  # an unknown decision is shown as `other`, never as allow
         try:
             h["ms"].append(int(r.get("ms", 0)))
         except Exception:
@@ -112,9 +112,17 @@ def ledger_progress(path: Path) -> dict:
 
 
 def render(res: dict) -> str:
+    c = res.get("counters") or {}
     out = [f"Harness metrics, last {res['days']} day(s): {res['rows']} hook runs "
-           f"(corrupt lines skipped: {res['corrupt']}, rows dropped by lock timeout: {res['dropped']})",
-           "Shows activity and friction, not code quality. Tokens are not logged.", "",
+           f"(corrupt lines skipped: {res['corrupt']}, rows dropped by lock timeout: {res['dropped']}, "
+           f"recording errors: {c.get('errors', 0)}, refused (folder inside git): {c.get('refused', 0)})",
+           "Shows activity and friction, not code quality. Tokens are not logged."]
+    if res.get("newest_age_h") is None:
+        out.append("WARNING: no metrics rows in this window - hooks may not be recording (check the install and the metrics folder).")
+    elif res["newest_age_h"] > 24:
+        out.append(f"WARNING: the newest row is {res['newest_age_h']} h old - recording may have stopped.")
+    out += [""]
+    out += [
            f"{'hook':32} {'fired':>6} {'allow':>6} {'deny':>5} {'block':>5} {'error':>5} {'p50ms':>6} {'p95ms':>6}"]
     for name, h in res["hooks"].items():
         out.append(f"{name:32} {h['fired']:>6} {h['allow']:>6} {h['deny']:>5} {h['block']:>5} {h['error']:>5} {h['p50_ms']:>6} {h['p95_ms']:>6}")
@@ -145,7 +153,16 @@ def main(argv=None) -> int:
     since = datetime.now(timezone.utc) - timedelta(days=a.days)
     rows, bad, dropped = hm.read_rows(since)
     res = summarize(rows, a.project)
-    res.update({"days": a.days, "corrupt": bad, "dropped": dropped, "auto_answers": auto_answers(since),
+    newest = None
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(r["ts"])
+            newest = t if newest is None or t > newest else newest
+        except Exception:
+            pass
+    age = None if newest is None else round((datetime.now(timezone.utc) - newest).total_seconds() / 3600, 1)
+    res.update({"days": a.days, "corrupt": bad, "dropped": dropped, "counters": hm.counters(), "newest_age_h": age,
+                "auto_answers": auto_answers(since),
                 "ledger": ledger_progress(Path(a.ledger) if a.ledger else Path(".harness") / "ledger.json")})
     print(json.dumps(res, indent=1, ensure_ascii=False) if a.json else render(res))
     return 0

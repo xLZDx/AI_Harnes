@@ -605,7 +605,9 @@ def run(a) -> int:
         if plan_file.is_file() and not d.get("sprints"):  # plan-based project (no real ledger): same format, source is the plan
             import plan_ledger
             d = plan_ledger.load(plan_file)
-    except (OSError, ValueError) as e:
+            if not any(sp.get("tasks") for sp in d.get("sprints", [])):
+                raise ValueError("PROJECT_PLAN.md parses to 0 tasks")  # a plan that yields nothing is a read error, never an empty report
+    except (OSError, ValueError, ImportError) as e:
         ledger_error = str(e)
         d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}
     out = Path(a.out) if a.out else default_out(d, root)

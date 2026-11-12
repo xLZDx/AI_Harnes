@@ -220,18 +220,34 @@ rows.append({"kind": "rotation", "service": "gcp", "step": "verified", "at": tim
 save_records(st, rows)
 expect("c) created then verified allows delete", "", st, DEL_D)
 
-# c2) full flow via PostToolUse on cloudflare with confirmed exposure
+# c2) full flow via PostToolUse on cloudflare with confirmed exposure. The leak is attributed to env:CF_API_TOKEN only when the live
+# variable in the hook's environment has the same fingerprint as the leaked value, so the hook subprocess gets CF_API_TOKEN=<leaked value>.
+# Verification = a successful read-only call with an EXPLICIT credential different from the one that was created (CF_READ_NEW).
+LEAK_ENV = {"CF_API_TOKEN": AWS}
+CF_READ_NEW = "curl -s -H \"Authorization: Bearer $CF_NEW_API_TOKEN\" https://api.cloudflare.com/client/v4/user/tokens/verify"
+st = new_state()
+post(st, CF_READ, "Exit code: 0\nleak " + AWS, env=LEAK_ENV)
+check("c2) exposure attributed to env:CF_API_TOKEN when live value matches", any(
+    r.get("kind") == "exposure" and r.get("credential_id") == "env:CF_API_TOKEN" and r.get("state") == "confirmed" for r in load_records(st)), str(load_records(st)))
+expect("c2) confirmed exposure: delete denied before verification", "deny", st, CF_DELETE, env=LEAK_ENV)
+expect("c2) confirmed exposure: create allowed", "", st, CF_CREATE, env=LEAK_ENV)
+post(st, CF_CREATE, OK_RESP, env=LEAK_ENV)
+check("c2) create success writes rotation created", any(r.get("step") == "created" for r in load_records(st)), str(load_records(st)))
+expect("c2) created without verification still denies delete", "deny", st, CF_DELETE, env=LEAK_ENV)
+time.sleep(0.05)
+post(st, CF_READ, OK_RESP, env=LEAK_ENV)
+check("c2) read-only success with the SAME credential does not write verified", not any(r.get("step") == "verified" for r in load_records(st)), str(load_records(st)))
+expect("c2) same-credential success still denies delete", "deny", st, CF_DELETE, env=LEAK_ENV)
+post(st, CF_READ_NEW, OK_RESP, env=LEAK_ENV)
+check("c2) read-only success with a DIFFERENT explicit credential writes verified", any(r.get("step") == "verified" for r in load_records(st)), str(load_records(st)))
+expect("c2) after verification delete is allowed", "", st, CF_DELETE, env=LEAK_ENV)
+
+# c3) without the matching live variable the leak is recorded as value:<fp>, not as the credential, so it unlocks nothing
 st = new_state()
 post(st, CF_READ, "Exit code: 0\nleak " + AWS)
-expect("c2) confirmed exposure: delete denied before verification", "deny", st, CF_DELETE)
-expect("c2) confirmed exposure: create allowed", "", st, CF_CREATE)
-post(st, CF_CREATE, OK_RESP)
-check("c2) create success writes rotation created", any(r.get("step") == "created" for r in load_records(st)), str(load_records(st)))
-expect("c2) created without verification still denies delete", "deny", st, CF_DELETE)
-time.sleep(0.05)
-post(st, CF_READ, OK_RESP)
-check("c2) later read-only success writes verified", any(r.get("step") == "verified" for r in load_records(st)), str(load_records(st)))
-expect("c2) after verification delete is allowed", "", st, CF_DELETE)
+check("c3) leak without matching live env is recorded as value:<fp>", any(
+    r.get("kind") == "exposure" and str(r.get("credential_id", "")).startswith("value:") for r in load_records(st)), str(load_records(st)))
+expect("c3) value:<fp> exposure does not unlock a change of env:CF_API_TOKEN", "deny", st, CF_CREATE)
 
 # d) operator message
 for human in ["please rotate the Cloudflare token", "Rotate the key, and revoke the old one"]:
@@ -242,21 +258,21 @@ expect("d) unrelated operator message does not allow", "deny", st, CREATE, human
 
 # e) exposure
 st = new_state()
-out_rc = post(st, CF_READ, "Exit code: 0\nresponse " + AWS)
+out_rc = post(st, CF_READ, "Exit code: 0\nresponse " + AWS, env=LEAK_ENV)
 rows = load_records(st)
 check("e) known-format secret recorded as confirmed", any(r.get("kind") == "exposure" and r.get("state") == "confirmed" for r in rows), str(rows))
-expect("e) confirmed + standing order allows create", "", st, CF_CREATE)
-expect("e) confirmed: delete still needs verification", "deny", st, CF_DELETE)
-expect("e) standing order 0 -> confirmed no longer allows", "deny", st, CF_CREATE, env={"HARNESS_ROTATION_STANDING_ORDER": "0"})
+expect("e) confirmed + standing order allows create", "", st, CF_CREATE, env=LEAK_ENV)
+expect("e) confirmed: delete still needs verification", "deny", st, CF_DELETE, env=LEAK_ENV)
+expect("e) standing order 0 -> confirmed no longer allows", "deny", st, CF_CREATE, env={**LEAK_ENV, "HARNESS_ROTATION_STANDING_ORDER": "0"})
 
 st = new_state()
-post(st, CF_READ, "Exit code: 0\nconfig api_token=" + GENERIC)
+post(st, CF_READ, "Exit code: 0\nconfig api_token=" + GENERIC, env={"CF_API_TOKEN": GENERIC})
 rows = load_records(st)
 check("e) generic labelled value recorded as detected", any(r.get("kind") == "exposure" and r.get("state") == "detected" for r in rows), str(rows))
 rows.append({"kind": "auth", "credential_id": "env:CF_API_TOKEN", "service": "cloudflare", "project": "",
              "operation": "call", "class": "permission-insufficient", "at": time.time()})
 save_records(st, rows)
-out = expect("e) detected + technical rights: change denied", "deny", st, CF_CREATE)
+out = expect("e) detected + technical rights: change denied", "deny", st, CF_CREATE, env={"CF_API_TOKEN": GENERIC})
 check("e) reason says detected never unlocks", "detected" in reason(out), reason(out))
 
 # f) terraform

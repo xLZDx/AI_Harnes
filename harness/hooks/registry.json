@@ -67,7 +67,7 @@
    "script": "secret_guard.py",
    "timeout": 15,
    "status": "secret guard",
-   "claude": "Bash|PowerShell|Read",
+   "claude": "Bash|PowerShell|Read|Grep",
    "codex": "Bash"
   },
   {
@@ -77,6 +77,13 @@
    "status": "secret scan",
    "claude": "Bash|PowerShell",
    "codex": "Bash"
+  },
+  {
+   "event": "PostToolUseFailure",
+   "script": "secret_guard.py",
+   "timeout": 15,
+   "status": "secret scan (failed call)",
+   "claude": "Bash|PowerShell"
   },
   {
    "event": "Stop",

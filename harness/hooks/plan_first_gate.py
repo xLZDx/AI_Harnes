@@ -38,7 +38,7 @@ MUTATING_SHELL_RE = re.compile(
     r"(?:npm|pnpm|yarn|pip|pip3|uv|cargo|go)\s+(?:install|add|remove|uninstall|build|publish)\b|"
     r"gh\s+pr\s+(?:create|merge)\b|docker\s+(?:run|build|compose)\b|terraform\s+(?:apply|destroy|import)\b)|"
     r"python[\w.]*\s+(?:-\S+\s+)*\S*(?:ledger|build|install_\w+)\.py\s+(?:start|verify|review|approve|sprint|task-add|block|commit-hook|--install|--force)|"
-    r"(?<![<>0-9&])>{1,2}\s*(?!/dev/null|&|NUL\b)\S", re.I)
+    r"(?<![<>0-9&])>{1,2}\s*(?!/dev/null|&|NUL\b)\S", re.I | re.M)
 SAFE_PATH_RE = re.compile(r"[\\/](?:scratchpad|AppData[\\/]Local[\\/]Temp|tmp|temp)[\\/]", re.I)
 
 
@@ -144,27 +144,49 @@ def on_pre(data: dict) -> None:
         return
     turn = read_turn(data.get("transcript_path") or "")
     if not turn["calls"] and not turn["human_text"]:
-        return  # transcript unreadable: fail open
+        _release(data, "fail-open-empty-turn")  # transcript unreadable: fail open, but visibly
+        return
     if turn["human_text"].strip().endswith("?"):
         return
     ok, how = plan_presented(turn)
     if ok:
         return
     key = f"{data.get('session_id')}|{turn['marker']}"
-    f, d = counters(str(data.get("session_id")), turn["marker"])
-    n = int(d.get(key, 0)) + 1
-    d = {k: v for k, v in list(d.items())[-40:]}
-    d[key] = n
-    try:
-        _agentio.atomic_write_text(f, json.dumps(d))
-    except OSError:
-        pass
+    f = _agentio.state_dir("plan_first") / "denies.json"
+    n = None
+    with _agentio.file_lock(f, wait=1.0, stale=10.0) as got:  # two parallel tool calls must not both read the same count
+        if got:
+            f, d = counters(str(data.get("session_id")), turn["marker"])
+            n = int(d.get(key, 0)) + 1
+            d = {k: v for k, v in list(d.items())[-40:]}
+            d[key] = n
+            try:
+                _agentio.atomic_write_text(f, json.dumps(d))
+            except OSError as e:
+                log({"event": "counter-write-failed", "error": type(e).__name__})
+                n = None
+    if n is None:  # the counter cannot be kept: a gate that cannot count would deny for ever, so release it and say so
+        _release(data, "release-counter-unavailable")
+        return
     if n > MAX_DENIES:
         log({"event": "plan-first-exception", "session": str(data.get("session_id"))[:8], "denies": n - 1})
         sys.stderr.write("plan_first_gate: released after %d denies (plan-first-exception, logged)\n" % (n - 1))
+        _release(data, "plan-first-exception", write_log=False)
         return
     log({"event": "deny", "session": str(data.get("session_id"))[:8], "n": n})
     deny(DENY_MSG % (n, MAX_DENIES))
+
+
+def _release(data: dict, reason: str, write_log: bool = True) -> None:
+    """A gate that lets the call through without a verdict says so: log line and a metrics row with decision `release`."""
+    if write_log:
+        log({"event": reason, "session": str(data.get("session_id"))[:8]})
+    try:
+        import hook_metrics
+        hook_metrics.record("plan_first_gate.py", str(data.get("hook_event_name") or "PreToolUse"), "release", reason, 0,
+                            str(data.get("session_id") or ""), _agentio.client(data), str(data.get("cwd") or ""))
+    except Exception:
+        pass
 
 
 def on_stop(data: dict) -> None:
@@ -215,5 +237,6 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except SystemExit:
         raise
-    except Exception:
-        raise SystemExit(0)  # fail open
+    except Exception as e:
+        log({"event": "exception", "error": type(e).__name__})
+        raise SystemExit(0)  # fail open, logged

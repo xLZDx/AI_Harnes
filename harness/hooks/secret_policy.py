@@ -20,8 +20,9 @@ MAX_RECORDS = 200
 
 SECRET_NAME_RE = re.compile(r"(?:API[_-]?)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)", re.I)
 SENSITIVE_FILE_RE = re.compile(
-    r"(?:^|[\\/])(?:\.env(?:\.[\w.-]+)?|[\w.-]*\.tfvars|[\w.-]*\.pem|[\w.-]*\.p12|[\w.-]*\.pfx|id_(?:rsa|ed25519|ecdsa)[\w.-]*|"
-    r"\.netrc|\.npmrc|\.pypirc|credentials(?:\.json)?|[\w.-]*service[-_]?account[\w.-]*\.json|[\w.-]*(?:secret|private)[\w.-]*\.(?:json|ya?ml|txt|key))$",
+    r"(?:^|[\\/])(?:\.env(?:\.(?!example$|sample$|template$|dist$|tpl$)[\w.-]+)?|[\w.-]*\.tfvars|[\w.-]*\.pem|[\w.-]*\.p12|[\w.-]*\.pfx|"
+    r"id_(?:rsa|ed25519|ecdsa)(?:\.(?!pub$)[\w.-]+)?|\.netrc|\.npmrc|\.pypirc|credentials\.json|\.aws[\\/]credentials|"
+    r"[\w.-]*service[-_]?account[\w.-]*\.json|[\w.-]*(?:secret|private)[\w.-]*\.(?:json|ya?ml|txt|key))$",
     re.I)
 
 # value patterns: known provider formats (confirmed-capable) and a generic labelled value (detected only)
@@ -34,18 +35,18 @@ KNOWN_VALUE_RES = (
     ("slack-token", re.compile(r"\bxox[abprs]-[0-9A-Za-z-]{10,}\b")),
     ("openai-style-key", re.compile(r"\bsk-[0-9A-Za-z_-]{20,}\b")),
 )
-GENERIC_VALUE_RE = re.compile(r"(?i)\b([\w-]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)[\w-]*)\s*[=:]\s*['\"]?([A-Za-z0-9_\-/+=.]{24,})")
+GENERIC_VALUE_RE = re.compile(r"(?i)(?<![\w-])([\w-]{0,40}(?:token|secret|password|passwd|api[_-]?key|access[_-]?key)[\w-]{0,40})\s*[=:]\s*['\"]?([A-Za-z0-9_\-/+=.]{24,})")
 FIXTURE_HINT_RE = re.compile(r"(?i)fake|example|dummy|placeholder|test[-_/\\]|fixture|sample|your[-_]|xxxx|<[a-z_ -]+>")
 
 # commands that change, create or destroy credentials
 CRED_CHANGE_RES = (
     ("create", re.compile(r"gcloud\s+iam\s+service-accounts\s+keys\s+(?:create|upload)|gcloud\s+services\s+api-keys\s+create|"
-                          r"aws\s+iam\s+create-access-key|az\s+ad\s+(?:sp|app)\s+credential\s+reset|gh\s+secret\s+set|wrangler\s+secret\s+put|"
+                          r"aws\s+iam\s+create-access-key|az\s+ad\s+(?:sp|app)\s+credential\s+reset|"
                           r"api\.cloudflare\.com/client/v4/(?:user|accounts/[^/\s]+)/tokens(?!/verify)[^\n]*?(?:-X\s*POST|--request\s*POST)|"
                           r"(?:-X\s*POST|--request\s*POST)[^\n]*api\.cloudflare\.com/client/v4/(?:user|accounts/[^/\s]+)/tokens(?!/verify)", re.I)),
     ("roll", re.compile(r"/tokens/[^/\s]+/value[^\n]*(?:-X\s*PUT|--request\s*PUT)|(?:-X\s*PUT|--request\s*PUT)[^\n]*/tokens/[^/\s]+/value", re.I)),
     ("delete", re.compile(r"gcloud\s+iam\s+service-accounts\s+keys\s+(?:delete|disable)|gcloud\s+auth\s+revoke|gcloud\s+services\s+api-keys\s+delete|"
-                          r"aws\s+iam\s+(?:delete-access-key|update-access-key)|gh\s+secret\s+delete|wrangler\s+secret\s+delete|gh\s+auth\s+logout|"
+                          r"aws\s+iam\s+(?:delete-access-key|update-access-key)|gh\s+auth\s+logout|"
                           r"kubectl\s+delete\s+secret|"
                           r"(?:-X\s*DELETE|--request\s*DELETE)[^\n]*api\.cloudflare\.com/client/v4/(?:user|accounts/[^/\s]+)/tokens|"
                           r"api\.cloudflare\.com/client/v4/(?:user|accounts/[^/\s]+)/tokens[^\n]*(?:-X\s*DELETE|--request\s*DELETE)", re.I)),
@@ -84,6 +85,18 @@ SERVICE_RES = (("gcp", re.compile(r"\bgcloud\b|googleapis\.com|\bgsutil\b|\bfire
 
 # ---------------------------------------------------------------- parsing helpers
 
+HEREDOC_RE = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", re.S)
+SEGMENT_SPLIT_RE = re.compile(r"\n|;|&&|\|\||\|")
+CMD_HEAD_RE = re.compile(r"^\s*(?:sudo\s+|env\s+|time\s+|\w+=\S*\s+|cd\s+\S+\s*&&\s*)*(?:gcloud|gsutil|aws|az|gh|wrangler|kubectl|terraform|tofu|stripe|curl|http|Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b", re.I)
+
+
+def command_segments(cmd: str) -> list[str]:
+    """Segments that START with a cloud/CLI executable. Heredoc bodies and everything that is only an argument or a quoted
+    message (git commit -m "...", grep "...", echo ...) are not segments, so mentioning a command is not running it."""
+    text = HEREDOC_RE.sub("\n", cmd or "")
+    return [seg for seg in SEGMENT_SPLIT_RE.split(text) if CMD_HEAD_RE.match(seg)]
+
+
 def service_of(cmd: str) -> str:
     for name, rx in SERVICE_RES:
         if rx.search(cmd or ""):
@@ -92,7 +105,7 @@ def service_of(cmd: str) -> str:
 
 
 def project_of(cmd: str) -> str:
-    m = re.search(r"--project[= ]\s*['\"]?([\w.:-]+)|--account[- ]id[= ]\s*['\"]?([\w-]+)|\b-p\s+([\w-]{4,})|accounts/([0-9a-f]{8,})", cmd or "")
+    m = re.search(r"--project[= ]\s*['\"]?([\w.:-]+)|--account[- ]id[= ]\s*['\"]?([\w-]+)|(?<![\w-])-p\s+([\w-]{4,})|accounts/([0-9a-f]{8,})", cmd or "")
     return next((g for g in (m.groups() if m else ()) if g), "")
 
 
@@ -126,10 +139,22 @@ def classify_auth(text: str) -> str:
 
 
 def change_kind(cmd: str) -> str:
-    for kind, rx in CRED_CHANGE_RES:
-        if rx.search(cmd or ""):
-            return kind
+    """create | roll | delete | state, only for a command that really starts with the tool (see command_segments).
+    A curl pipeline is judged on the whole command, because its URL and method sit in different pipeline parts."""
+    whole = HEREDOC_RE.sub("\n", cmd or "")
+    for seg in command_segments(cmd):
+        for kind, rx in CRED_CHANGE_RES:
+            if rx.search(seg):
+                return kind
+    if re.match(r"^\s*(?:\w+=\S*\s+)*(?:curl|http|Invoke-RestMethod|irm)\b", whole, re.I):
+        for kind, rx in CRED_CHANGE_RES:
+            if rx.search(whole):
+                return kind
     return ""
+
+
+def money_command(cmd: str) -> bool:
+    return any(MONEY_CMD_RE.search(seg) for seg in command_segments(cmd))
 
 
 def fingerprint(value: str) -> str:
@@ -188,11 +213,12 @@ def fresh(rec: dict, now: float | None = None) -> bool:
     return (now or time.time()) - float(rec.get("at", 0)) <= EVIDENCE_TTL_S
 
 
-def auth_evidence_ok(rows: list[dict], cred: str, service: str, project: str) -> tuple[bool, str]:
+def auth_evidence_ok(rows: list[dict], cred: str, service: str, project: str, strict: bool = False) -> tuple[bool, str]:
     """(ok, mismatch note). Needs a fresh credential-invalid record for the SAME credential, service and project."""
     near = [r for r in rows if r.get("kind") == "auth" and fresh(r)]
     same = sorted([r for r in near if r.get("credential_id") == cred and r.get("service") == service
-                   and (not project or not r.get("project") or r.get("project") == project)], key=lambda r: r.get("at", 0))
+                   and ((r.get("project") or "") == project if strict else (not project or not r.get("project") or r.get("project") == project))],
+                  key=lambda r: r.get("at", 0))  # strict (change commands): the project must be the same, an empty one matches only an empty one
     if same and same[-1].get("class") == "credential-invalid":  # the LATEST check decides: a later success clears it
         return True, ""
     if same:

@@ -46,6 +46,20 @@ def save(d: dict) -> None:
     _agentio.atomic_write_text(_state_file(), json.dumps(d))
 
 
+def mutate(fn) -> bool:
+    """load -> fn(d) -> save under one cross-process lock (parallel SubagentStop hooks and spawns would lose updates otherwise).
+    fn returns False when it changed nothing. False result = lock timeout or nothing to save."""
+    import _agentio
+    with _agentio.file_lock(_state_file(), wait=1.0, stale=10.0) as got:
+        if not got:
+            return False
+        d = load()
+        if fn(d) is False:
+            return False
+        save(d)
+        return True
+
+
 def state_of(entry: dict, now: float | None = None) -> str:
     now = now or time.time()
     if entry.get("stop"):
@@ -90,10 +104,9 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "") -
         model = (model or str(ti.get("model") or "") or "policy").strip()[:40]
         effort = (effort or str(ti.get("reasoning_effort") or ti.get("effort") or "") or "policy").strip()[:20]
         task = task_id(str(data.get("cwd") or ""))
-        d = load()
-        d["agents"].append({"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                            "session": str(data.get("session_id") or "")[:64], "tool_use_id": str(data.get("tool_use_id") or "")[:64]})
-        save(d)
+        entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
+                 "session": str(data.get("session_id") or "")[:64], "tool_use_id": str(data.get("tool_use_id") or "")[:64]}
+        mutate(lambda d: d["agents"].append(entry))
         _emit(f"[agent START] {name} | model {model} | effort {effort} | task {task}", client)
     except Exception:
         pass
@@ -106,14 +119,21 @@ def touch(data: dict) -> None:
         name = str(data.get("agent_type") or "").strip()[:60]
         if not name:
             return
-        d = load()
-        for e in d["agents"]:
+        for e in load()["agents"]:  # cheap unlocked pre-check: at most one write per 20 s per agent
             if e.get("type") == name and not e.get("stop"):
                 if time.time() - e.get("activity", 0) < 20:
-                    return  # at most one write per 20 s per agent
-                e["activity"] = time.time()
-                save(d)
-                return
+                    return
+                break
+        else:
+            return
+
+        def apply(d: dict):
+            for e in d["agents"]:
+                if e.get("type") == name and not e.get("stop"):
+                    e["activity"] = time.time()
+                    return True
+            return False
+        mutate(apply)
     except Exception:
         pass
 
@@ -121,17 +141,17 @@ def touch(data: dict) -> None:
 def announce_stop(data: dict, client: str) -> None:
     try:
         name = str(data.get("agent_type") or "agent").strip()[:60]
-        d = load()
-        hit = None
-        for e in d["agents"]:  # oldest unfinished entry of the same type (and session when known)
-            if e.get("type") == name and not e.get("stop") and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64])):
-                hit = e
-                break
-        secs = 0
-        if hit:
-            hit["stop"] = time.time()
-            secs = int(hit["stop"] - hit["start"])
-            save(d)
+        res = {"secs": 0, "hit": False}
+
+        def apply(d: dict):
+            for e in d["agents"]:  # oldest unfinished entry of the same type (and session when known)
+                if e.get("type") == name and not e.get("stop") and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64])):
+                    e["stop"] = time.time()
+                    res["secs"], res["hit"] = int(e["stop"] - e["start"]), True
+                    return True
+            return False
+        mutate(apply)
+        hit, secs = res["hit"], res["secs"]
         _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:
             try:

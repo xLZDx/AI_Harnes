@@ -67,6 +67,10 @@ def read_turn(path: str) -> dict:
         if _is_human_claude(rows[i]):
             start, human, marker = i, _text((rows[i].get("message") or {}).get("content")), str(rows[i].get("timestamp") or "")
             break
+    else:
+        # no genuine human row in the tail (a very long turn pushed it out, or the file is unreadable): the turn start is unknown,
+        # so return an EMPTY turn - a gate then fails open visibly instead of judging a made-up turn
+        return {"human_text": "", "marker": "", "calls": [], "assistant_texts": []}
     calls: list[dict] = []
     by_id: dict[str, dict] = {}
     texts: list[str] = []
@@ -107,6 +111,8 @@ def _read_codex(rows: list[dict]) -> dict:
             if t.strip() and not t.lstrip().startswith("<"):
                 start, human, marker = i, t, str(rows[i].get("timestamp") or "")
                 break
+    else:
+        return {"human_text": "", "marker": "", "calls": [], "assistant_texts": []}
     calls, texts = [], []
     pending = None
     for r in rows[start + 1:]:
