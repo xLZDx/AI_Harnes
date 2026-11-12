@@ -1,4 +1,4 @@
-"""S10 tests: (T1) Codex installer NEXT line / no '/hooks' command, (T2) report merges PROJECT_PLAN.md with the ledger.
+"""S10/S11 tests: (S11-T1) Codex installer NEXT line names /hooks, (S10-T2) report merges PROJECT_PLAN.md with the ledger.
 Run: C:\\Python314\\python.exe -I tests/test_s10_report.py"""
 import copy
 import hashlib
@@ -16,41 +16,68 @@ import report  # noqa: E402
 ROOT = HERE.parent
 
 
-# ---------- T1 ----------
-def _next_line():
-    text = (ROOT / "tools" / "install_codex.py").read_text(encoding="utf-8")
-    lines = [ln for ln in text.splitlines() if "NEXT" in ln and "print" in ln]
-    assert lines, "no print line with NEXT in install_codex.py"
-    # the statement may continue on following lines: take the print statement through its closing line
-    start = text.splitlines().index(lines[-1])
-    return "\n".join(text.splitlines()[start:start + 4])
+# ---------- S11-T1 (supersedes S10-T1): Codex DOES have /hooks ----------
+INSTALLER = ROOT / "tools" / "install_codex.py"
+_RUN = {}
 
 
-def test_t1_next_line_says_trust_all_and_not_hooks_command():
-    n = _next_line()
-    assert "Trust all and continue" in n, n
-    assert "/hooks" not in n, n
+def _installer_next():
+    """NEXT text from the real installer run into a temp home/snapshot; falls back to the source text if it cannot run."""
+    if "v" not in _RUN:
+        base = hv2.fresh("s11-codex")
+        home, snap = base / "home", base / "snapshot"
+        home.mkdir()
+        (home / "config.toml").write_text("[features]\nhooks = true\n", encoding="utf-8", newline="\n")  # installer precondition
+        r = hv2.run([hv2.PY, "-I", str(INSTALLER), "--home", str(home), "--snapshot", str(snap)], base)
+        nxt = [ln for ln in r.out.splitlines() if ln.startswith("NEXT:")]
+        _RUN["v"] = (r, nxt[0] if r.rc == 0 and nxt else None, home)
+    return _RUN["v"]
 
 
-def test_t1_no_slash_hooks_command_in_tools_or_harness():
+def test_s11_t1_next_line_names_hooks_command_app_settings_and_new_session():
+    r, nxt, _ = _installer_next()
+    assert nxt, f"installer did not print a NEXT line (rc={r.rc}): {r.all[-600:]}"
+    for needle in ("/hooks", "Settings -> Hooks", "Review hooks", "NEW Codex session", "never writes trust hashes"):
+        assert needle in nxt, (needle, nxt)
+
+
+def test_s11_t1_source_next_text_has_the_same_facts():
+    text = INSTALLER.read_text(encoding="utf-8")
+    for needle in ("/hooks", "Settings -> Hooks", "Review hooks", "NEW Codex session", "never writes trust hashes"):
+        assert needle in text, needle
+
+
+def test_s11_t1_no_text_claims_codex_has_no_hooks_command():
     bad = []
+    pat = re.compile(r"(has|have|with)\s+no\s+[`'\"]?/hooks|no\s+[`'\"]?/hooks\s+command|without\s+[`'\"]?/hooks|lacks?\s+[`'\"]?/hooks|doesn.t\s+(have|support)\s+[`'\"]?/hooks", re.I)
     for d in ("tools", "harness"):
         base = ROOT / d
         if not base.is_dir():
             continue
         for f in base.rglob("*"):
-            if not f.is_file() or "__pycache__" in f.parts or f.suffix in (".pyc", ".png", ".ico", ".woff", ".woff2"):
+            if not f.is_file() or "__pycache__" in f.parts:
                 continue
             try:
                 txt = f.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            # allowed: the bypass flag, hooks.json, and the Claude installer's folder path "<home>/hooks" (a directory, not a command)
-            txt = txt.replace("--dangerously-bypass-hook-trust", "").replace("hooks.json", "").replace("<home>/hooks", "")
             for i, ln in enumerate(txt.splitlines(), 1):
-                if re.search(r"(?<![\w.\-])/hooks\b", ln):
+                if pat.search(ln):
                     bad.append(f"{f.relative_to(ROOT)}:{i}: {ln.strip()[:120]}")
-    assert not bad, "\n".join(bad)
+    assert not bad, "; ".join(bad)
+    r, nxt, _ = _installer_next()
+    assert not nxt or not pat.search(nxt), nxt
+
+
+def test_s11_t1_installer_never_writes_trusted_hash():
+    src = INSTALLER.read_text(encoding="utf-8")
+    assert not re.search(r"trusted_hash\s*[=:]", src), "installer source assigns trusted_hash"
+    assert not re.search(r"""["']trusted_hash["']""", src), "installer source references a trusted_hash key"
+    r, nxt, home = _installer_next()
+    assert nxt, r.all[-600:]
+    cfg = home / "config.toml"
+    if cfg.exists():
+        assert "trusted_hash" not in cfg.read_text(encoding="utf-8"), "installed config.toml carries trusted_hash"
 
 
 # ---------- T2 unit: merge_plan_and_ledger ----------

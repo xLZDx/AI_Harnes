@@ -283,3 +283,6 @@
 
 ## 2026-11-12 S10 review fixes (code-reviewer)
 - MINOR-2 fixed: ledger sprints are placed first so the sprint being worked is the active one. MINOR-3 kept on purpose: a plan that does not parse is a read error (criterion 4); falling back to the ledger alone would bring back the bug of showing 2 of 2 tasks as the whole program.
+
+## 2026-11-12 S11 correction: Codex /hooks does exist (operator pasted the Codex text)
+- The S9 finding and the S10 installer text said Codex 0.167 has no /hooks command. Wrong: I checked only the subcommands of codex --help; /hooks is a slash command inside the interactive CLI, and the Codex app has Settings -> Hooks and a Review hooks button. The installer now names both routes and says a new Codex session is needed (AGENTS.md and hooks are read at session start). Evidence of the stale session: ~/.codex/AGENTS.md carries the ladder (16:02) but the operator's Codex session started about 15 hours earlier; config.toml holds 33 trust entries for the old hooks while hooks.json now has 30 handlers.
