@@ -186,3 +186,5 @@
 - Kind: SHORTCOMING. Facts: the plan-first text proof used any shell call as the first change although the PreToolUse gate used is_mutation; the two gates disagreed. Rule: one predicate for one concept, shared by all gates.
 
 - Kind: SUCCESS. Facts: the test agent found two further defects while writing the round 1 tests (add_record returned None so every write logged a false failure; a verification could attach to the wrong open rotation); both fixed before the commit. Rule: have the test author read the call sites of every changed helper.
+
+- Kind: FAILURE. Facts: my round 1 fix let a single open rotation authorize deleting any bare key id, and a test pinned that unsafe behavior; GPT-PM called it a BLOCKER. Root cause: I treated uniqueness as identity. Layer that missed it: author and test agent. Rule: an irreversible action needs proof of identity of the target, never "only one candidate".

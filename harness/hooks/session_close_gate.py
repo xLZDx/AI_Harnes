@@ -263,9 +263,9 @@ def ledger_open_tasks(root: Path, mine: set) -> list[tuple[str, str]] | None:
         for t in sprint["tasks"]:
             if t.get("state") in OPEN_STATES_SKIP or t.get("blocked"):
                 continue
-            if t.get("state") != "todo" and t["id"] not in mine and mine:
-                continue  # started/verified by another session (this one worked on other tasks): not this session's to finish
-            if t.get("state") != "todo" and not mine:
+            if mine and t["id"] not in mine:
+                continue  # attribution does not depend on the state: with own ids, only own tasks hold this session
+            if not mine:
                 log({"event": "stop", "verdict": "ownership-unknown", "task": str(t["id"]), "state": str(t["state"])})  # kept, bounded release
             out.append((str(t["id"]), str(t["state"])))
         return out

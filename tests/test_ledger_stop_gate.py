@@ -279,7 +279,18 @@ def test_in_progress_started_by_another_session_is_not_blocked_on():
     r = decision(p).get("reason", "")
     check(is_block(p) and "S9-T2" in r, p.stdout)
     check("S9-T1" not in r, "another session's in_progress task is listed: " + r)
-    check("S9-T3" in r, "unowned pending task of a sprint this session works in must count: " + r)
+    check("S9-T3" not in r, "a todo task outside this session's own ids must not hold the session: " + r)
+
+
+def test_own_task_done_and_foreign_todo_does_not_block():
+    c = Ctx("owner_done_todo", [mk_task("S9-T1", "done"), mk_task("S9-T2", "todo")])
+    tp = transcript(c.root, [human("go"), tool_use("Bash", {"command": "python .harness-tools/ledger.py start S9-T1"})])
+    p = c.call(transcript=tp)
+    check(not is_block(p), "blocked by a todo task this session never started: " + p.stdout)
+    # control: the same session owning T2 is blocked by it
+    tp2 = transcript(c.root, [human("go"), tool_use("Bash", {"command": "python .harness-tools/ledger.py start S9-T2"})], "t2.jsonl")
+    p2 = c.call(transcript=tp2, session="sess2")
+    check(is_block(p2) and "S9-T2" in decision(p2)["reason"], p2.stdout)
 
 
 def test_only_foreign_in_progress_task_does_not_block():

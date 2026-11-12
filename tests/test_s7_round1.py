@@ -61,6 +61,18 @@ def pre(sb, cmd, env=None, human=None):
         return ""
 
 
+def pre_reason(sb, cmd, env=None):
+    payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "s1",
+               "cwd": str(sb["root"]), "transcript_path": str(sb["root"] / "missing.jsonl")}
+    rc, out, err = fb.run_script(sb, "secret_guard.py", payload, extra_env=env)
+    assert rc == 0, err
+    try:
+        o = json.loads(out)["hookSpecificOutput"]
+        return o.get("permissionDecision", ""), o.get("permissionDecisionReason", "")
+    except (ValueError, KeyError, TypeError):
+        return "", ""
+
+
 def recs(sb):
     return fb.sg_records(sb)
 
@@ -153,31 +165,34 @@ def test_f2_delete_matches_old_or_verified_credential_of_the_transaction():
     assert sp.rotation_for_delete(rows, "", "cloudflare", "") is None
 
 
-def test_f2_unresolved_id_needs_exactly_one_open_rotation():
+def test_f2_unresolved_id_is_never_accepted_even_with_exactly_one_open_rotation():
     one = [rot("verified", "R1", "env:A", "env:A2", "gcp", "p")]
-    for cred in ("keyid:ABC123", "default:gcp"):
-        assert sp.rotation_for_delete(one, cred, "gcp", "p")["rotation_id"] == "R1", cred
+    for cred in ("keyid:ABC123", "default:gcp", ""):
+        assert sp.rotation_for_delete(one, cred, "gcp", "p") is None, cred
     two = one + [rot("verified", "R2", "env:B", "env:B2", "gcp", "p")]
     for cred in ("keyid:ABC123", "default:gcp"):
         assert sp.rotation_for_delete(two, cred, "gcp", "p") is None, cred
-    # named credentials still resolve with two open rotations
+    # named credentials still resolve with one or two open rotations
+    assert sp.rotation_for_delete(one, "env:A", "gcp", "p")["rotation_id"] == "R1"
     assert sp.rotation_for_delete(two, "env:B", "gcp", "p")["rotation_id"] == "R2"
     assert sp.rotation_for_delete(two, "env:A", "gcp", "p")["rotation_id"] == "R1"
-    # once one is revoked the other is the only open one again
+    # once one is revoked the other is still not reachable through an unresolved id
     three = two + [{"kind": "rotation", "step": "old_revoked", "rotation_id": "R1", "service": "gcp", "project": "p", "at": time.time()}]
-    assert sp.rotation_for_delete(three, "keyid:ABC123", "gcp", "p")["rotation_id"] == "R2"
+    assert sp.rotation_for_delete(three, "keyid:ABC123", "gcp", "p") is None
+    assert sp.rotation_for_delete(three, "env:B", "gcp", "p")["rotation_id"] == "R2"
+    assert sp.rotation_for_delete(three, "env:A", "gcp", "p") is None
 
 
 def test_f2_other_project_other_service_created_only_and_stale_rotations_do_not_authorize():
     ver = rot("verified", "R1", "env:A", "env:A2", "gcp", "p")
-    assert sp.rotation_for_delete([ver], "keyid:ABC123", "gcp", "p") is not None  # control
+    assert sp.rotation_for_delete([ver], "env:A", "gcp", "p") is not None  # control
     assert sp.rotation_for_delete([ver], "keyid:ABC123", "gcp", "q") is None
     assert sp.rotation_for_delete([ver], "env:A", "gcp", "q") is None
     assert sp.rotation_for_delete([ver], "keyid:ABC123", "aws", "p") is None
     assert sp.rotation_for_delete([ver], "env:A", "aws", "p") is None
     assert sp.rotation_for_delete([rot("created", "R1", "env:A", "env:A", "gcp", "p")], "env:A", "gcp", "p") is None
-    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=25 * 3600)], "keyid:ABC123", "gcp", "p") is None
-    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=23 * 3600)], "keyid:ABC123", "gcp", "p") is not None
+    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=25 * 3600)], "env:A", "gcp", "p") is None
+    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=23 * 3600)], "env:A", "gcp", "p") is not None
 
 
 def test_f2_after_old_revoked_the_same_rotation_cannot_authorize_again():
@@ -253,10 +268,10 @@ def test_f2_verification_in_another_project_does_not_verify():
 def test_f2_delete_gate_through_the_hook_unresolved_id_and_scope():
     del_key = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p"
     ev = lambda svc="gcp", proj="p": invalid("keyid:ABC123", svc, proj)  # noqa: E731
-    # one open rotation: allowed
+    # one open rotation of A, delete of a bare key id (maybe a different key B): denied, identity unresolved
     sb = fb.sandbox("r1f2_one")
     seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), ev()])
-    assert pre(sb, del_key) == ""
+    assert pre(sb, del_key) == "deny"
     # two open rotations of the same service and project: the unresolved key id is denied
     sb = fb.sandbox("r1f2_two")
     seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), rot("verified", "R2", "env:B", "env:B2", "gcp", "p"), ev()])
@@ -278,6 +293,23 @@ def test_f2_delete_gate_through_the_hook_unresolved_id_and_scope():
     sb = fb.sandbox("r1f2_created")
     seed(sb, [rot("created", "R1", "env:A", "env:A", "gcp", "p"), ev()])
     assert pre(sb, del_key) == "deny"
+
+
+def test_f2_one_open_rotation_of_a_keyid_delete_of_other_key_is_denied_with_identity_reason():
+    del_key = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p"
+    sb = fb.sandbox("r1f2_keyid_reason")
+    seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), invalid("keyid:ABC123", "gcp", "p")])
+    dec, reason = pre_reason(sb, del_key)
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+
+
+def test_f2_one_open_rotation_delete_by_the_old_credentials_env_name_is_allowed():
+    sb = fb.sandbox("r1f2_envname_ok")
+    seed(sb, [rot("verified", "R1", "env:CF_A_TOKEN", "env:CF_A2_TOKEN"), invalid("env:CF_A_TOKEN", "cloudflare")])
+    assert pre_reason(sb, cf_delete("CF_A_TOKEN"))[0] == ""
+    # control: a different env name than the pair is still denied
+    seed(sb, [invalid("env:CF_C_TOKEN", "cloudflare")])
+    assert pre_reason(sb, cf_delete("CF_C_TOKEN"))[0] == "deny"
 
 
 def test_f2_two_parallel_rotations_end_to_end_delete_by_env_name():
@@ -398,36 +430,53 @@ def unknown_events(log):
 NON_TODO = ["implemented", "verified", "not_run", "failed", "in_progress"]
 
 
-def test_f4_with_own_ids_foreign_non_todo_tasks_are_skipped_whatever_their_state():
+def test_f4_with_own_ids_only_own_tasks_are_returned_whatever_their_state():
     sb = fb.sandbox("r1f4_mine")
     log = with_log(sb)
     mk_ledger(sb["root"], ["todo"] + NON_TODO + ["done"], extra=[{**fb.mk_task("T-blocked", "implemented"), "blocked": {"class": "OPERATOR"}}])
     got = scg.ledger_open_tasks(sb["root"], {"T-implemented"})
-    assert sorted(got) == [("T-implemented", "implemented"), ("T-todo", "todo")], got
+    assert got == [("T-implemented", "implemented")], got
     assert unknown_events(log) == [], "ownership is known: no ownership-unknown event"
-    for st in NON_TODO:  # each state on its own: owned -> kept, foreign -> skipped
-        got = scg.ledger_open_tasks(sb["root"], {"T-" + st})
-        assert ("T-" + st, st) in got, (st, got)
-        others = {t for t, _ in got} - {"T-todo", "T-" + st}
-        assert others == set(), (st, got)
+    for st in NON_TODO + ["todo"]:  # each state on its own: owned -> kept, everything else (todo included) skipped
+        assert scg.ledger_open_tasks(sb["root"], {"T-" + st}) == [("T-" + st, st)], st
+    # owned but done / blocked: never returned
+    assert scg.ledger_open_tasks(sb["root"], {"T-done"}) == []
+    assert scg.ledger_open_tasks(sb["root"], {"T-blocked"}) == []
 
 
-def test_f4_without_own_ids_non_todo_tasks_are_kept_and_logged_as_ownership_unknown():
+def test_f4_without_own_ids_all_open_tasks_are_kept_and_logged_as_ownership_unknown():
     sb = fb.sandbox("r1f4_nomine")
     log = with_log(sb)
     mk_ledger(sb["root"], ["todo"] + NON_TODO + ["done"], extra=[{**fb.mk_task("T-blocked", "failed"), "blocked": {"class": "EXTERNAL"}}])
     got = scg.ledger_open_tasks(sb["root"], set())
     assert sorted(got) == sorted([("T-todo", "todo")] + [("T-" + s, s) for s in NON_TODO]), got
-    assert unknown_events(log) == sorted(("T-" + s, s) for s in NON_TODO), unknown_events(log)  # none for todo, done or blocked
+    assert unknown_events(log) == sorted([("T-todo", "todo")] + [("T-" + s, s) for s in NON_TODO]), unknown_events(log)  # none for done or blocked
 
 
-def test_f4_todo_tasks_are_always_listed_and_done_never():
+def test_f4_mine_in_progress_and_foreign_todo_returns_only_mine():
+    sb = fb.sandbox("r1f4_ip_todo")
+    log = with_log(sb)
+    mk_ledger(sb["root"], [], extra=[fb.mk_task("T1", "in_progress"), fb.mk_task("T2", "todo")])
+    assert scg.ledger_open_tasks(sb["root"], {"T1"}) == [("T1", "in_progress")]
+    assert unknown_events(log) == []
+
+
+def test_f4_mine_done_and_foreign_todo_returns_nothing():
+    sb = fb.sandbox("r1f4_done_todo")
+    with_log(sb)
+    mk_ledger(sb["root"], [], extra=[fb.mk_task("T1", "done"), fb.mk_task("T2", "todo")])
+    assert scg.ledger_open_tasks(sb["root"], {"T1"}) == []
+    assert scg.ledger_open_tasks(sb["root"], {"T2"}) == [("T2", "todo")]  # control: owning the todo task does hold the session
+
+
+def test_f4_done_never_listed_todo_listed_only_when_ownership_unknown_or_own():
     sb = fb.sandbox("r1f4_todo")
     log = with_log(sb)
     mk_ledger(sb["root"], ["todo", "done"])
-    for mine in (set(), {"T-todo"}, {"T-unrelated"}):
-        assert scg.ledger_open_tasks(sb["root"], mine) == [("T-todo", "todo")], mine
-    assert unknown_events(log) == []
+    assert scg.ledger_open_tasks(sb["root"], set()) == [("T-todo", "todo")]
+    assert unknown_events(log) == [("T-todo", "todo")]
+    assert scg.ledger_open_tasks(sb["root"], {"T-todo"}) == [("T-todo", "todo")]
+    assert scg.ledger_open_tasks(sb["root"], {"T-unrelated"}) == []
     # unreadable ledger is None, not an empty list
     (sb["root"] / ".harness" / "ledger.json").write_text("{ nope", encoding="utf-8")
     assert scg.ledger_open_tasks(sb["root"], set()) is None

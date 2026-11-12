@@ -220,7 +220,15 @@ rows = load_records(st)
 rows.append({"kind": "rotation", "service": "gcp", "project": "p", "step": "verified", "rotation_id": "gcp:1",
              "old_credential_id": "file:a.json", "credential_id": "file:a2.json", "at": time.time() - 10})
 save_records(st, rows)
-expect("c) created then verified allows delete", "", st, DEL_D)
+out = expect("c) created then verified still denies a default-credential delete (identity unresolved)", "deny", st, DEL_D)
+check("c) reason mentions credential-identity-unresolved", "credential-identity-unresolved" in reason(out), reason(out))
+DEL_NAMED = DEL_D + " --key-file=a.json"  # cred file:a.json = the rotation's old credential
+post(st, GCP_READ + " --key-file=a.json", UNAUTH)
+expect("c) created then verified allows delete naming the old credential", "", st, DEL_NAMED)
+st_other = new_state()
+post(st_other, GCP_READ + " --key-file=b.json", UNAUTH)
+save_records(st_other, load_records(st_other) + [r for r in load_records(st) if r.get("kind") == "rotation"])
+expect("c) delete naming a credential outside the rotation pair is denied", "deny", st_other, DEL_D + " --key-file=b.json")
 
 # c2) full flow via PostToolUse on cloudflare with confirmed exposure. The leak is attributed to env:CF_API_TOKEN only when the live
 # variable in the hook's environment has the same fingerprint as the leaked value, so the hook subprocess gets CF_API_TOKEN=<leaked value>.

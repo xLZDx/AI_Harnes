@@ -171,8 +171,8 @@ def change_problem(cmd: str, kind: str, data: dict) -> str:
     if kind == "delete":
         if sp.rotation_for_delete(rows, cred, svc, proj) is None:
             return ("deleting or revoking the old credential needs a verified replacement of THIS rotation (same service and project): create the "
-                    "new one, switch the consumers, run a successful read-only call with the NEW one, then delete the old; with two open "
-                    "rotations name the key by its env/file name")
+                    "new one, switch the consumers, run a successful read-only call with the NEW one, then delete the old. A bare key id cannot be tied to the old "
+                    "credential (credential-identity-unresolved): authenticate that delete with the old credential's own env/file name")
     return ""
 
 

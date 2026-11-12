@@ -240,15 +240,14 @@ def open_rotations(rows: list[dict], service: str, project: str) -> list[dict]:
 
 def rotation_for_delete(rows: list[dict], cred: str, service: str, project: str) -> dict | None:
     """The verified rotation (one transaction: old credential -> new credential -> verified) that a delete of `cred` belongs to.
-    A delete names either the old credential (its env/file name), the verified new one, or only a key id that cannot be resolved to a
-    name; the last case is accepted only when exactly one rotation of this service and project is open (two open ones are ambiguous)."""
-    opens = open_rotations(rows, service, project)
-    pair = [v for v in opens if cred and cred in (v.get("old_credential_id"), v.get("credential_id"))]
-    if pair:
-        return pair[-1]
-    if cred.startswith(("keyid:", "default:")) and len(opens) == 1:
-        return opens[0]
-    return None
+    A delete counts only when its credential id EQUALS the transaction's old or verified credential id (an env, file or key-file
+    name). A bare key id (`keyid:...`) or a default credential cannot be tied to the old credential without a provider lookup, so it
+    is never accepted here (credential-identity-unresolved): delete with the old credential's own env/file name, or have the
+    operator name the action."""
+    if not cred or cred.startswith(("keyid:", "default:")):
+        return None
+    pair = [v for v in open_rotations(rows, service, project) if cred in (v.get("old_credential_id"), v.get("credential_id"))]
+    return pair[-1] if pair else None
 
 
 def exposure_state(rows: list[dict], cred: str) -> str:
