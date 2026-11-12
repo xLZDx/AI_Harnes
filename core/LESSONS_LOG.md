@@ -257,3 +257,4 @@
 - Kind: SUCCESS. Facts: the missing START line traced to one missing event name in build.py HOOK_EVENTS. Rule: when a hook never fires, check the generated settings for its event before the hook code.
 - Kind: SUCCESS. Facts: the false block traced to a separator inside a quoted string, not to the word itself; the fix keeps every real destructive case blocked (table of 13 inputs in the engineer report). Rule: parse quoting before classifying shell words.
 - Kind: SUCCESS. Facts: the enforcement tests run the real hooks through run_hook and a real git push to a bare remote, so they would catch a gate that fails open. Rule: gate tests must exercise the shipped entry point, not the inner function.
+- Kind: SHORTCOMING. Facts: S9 changed ledger block --class OPERATOR and S13 narrowed decision refs, but the older test files were not updated in the same change. Rule: a behaviour change updates every test file that asserts the old behaviour in the same sprint.

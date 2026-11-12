@@ -310,3 +310,6 @@
 
 ## 2026-11-12 S13-R1 R2 R4 tests
 - tests/test_s13_enforcement.py: 18 passed (functional-test-reviewer a041e695): 21 prohibited commands in 4 wrappings denied in Claude and Codex, allowed cases pass, named test files only for test agents; push and PR denied without approval, with approval on another HEAD, with an open task, allowed when approved and all tasks verified, done or blocked; a real git push with an auto-triggered workflow refused and with workflow_dispatch accepted; build registers SubagentStart and the START line prints once. Not covered: live client screens, Codex exec_command, two pushes at once.
+
+## 2026-11-12 S13-R5 tests
+- tests/test_s13_r5_false_positives.py: 12 passed (functional-test-reviewer a47c05e1): permission questions pass and value asks are denied; task and sprint ids alone pass while an unexplained D-ref blocks and a third identical stop is released; the plan gate ignores a repo only visited and blocks a repo edited; both Stop gates wait for a pending own agent and block again after its notification; quoted text with destructive words passes and eight real destructive commands are denied. Two older files are stale by design: tests/test_ledger_stop_gate.py (OPERATOR block now needs --case, S9) and tests/test_decision_explain_gate.py (sprint ids and short hex are no longer decision refs).
