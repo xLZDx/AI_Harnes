@@ -201,3 +201,6 @@
 
 ## 2026-11-12 S8 metrics must tell the truth
 - The live check showed 83 gate releases and a hook latency p95 of 650000 ms. Reading the rows: nearly all releases came from test fixtures (sessions s1, A, sess1; projects proj, headchg-*) because tests that build their own environment never set HARNESS_METRICS_DIR; the p95 came from agent-stop rows whose ms field holds the agent's run time. Fixes: tests/hv2.py and every hand-built test environment point metrics and state at a sink under D:/tmp/harness_v2_tests/sink; 80 + 16 fixture rows were removed from the live file (backup D:/Backup/metrics-events-pre-s8-20261112.jsonl); tools/metrics.py leaves agent-start/stop rows out of latency; session_close_gate records one release row per streak. Limit: a future test that builds its own environment without the sink would pollute again; tests/test_s8_metrics.py checks the two gate test files end to end.
+
+## 2026-11-12 S8-T1 ledger note
+- The test-isolation change of S8-T1 landed in commit d2b7a36 together with S8-T2 (one commit carries one Task trailer, so this note commit records S8-T1 in the ledger). No code differs.
