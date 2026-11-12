@@ -218,3 +218,6 @@
 
 ## 2026-11-12 S9-T3 ask_last_gate deny message
 - Finding: the gate already handles prose asks (Stop handler) and is already wired for Codex (Stop entry in out/codex/hooks.json line 110); only Claude has the AskUserQuestion pre-check because Codex has no such tool. Decision: change only the deny message so it names the ladder next step (/unblock, create the missing item, store outside git, log without value). Tests for it are written by the tester in /verify, not run here.
+
+## 2026-11-12 S9-T4 secret store
+- Decision: tools/secret_store.py stores agent-issued secrets outside git (HARNESS_SECRET_DIR or ~/.harness-secrets), value only from stdin, exclusive create so a retry or a concurrent run never makes a second value, refuses a folder inside a git work tree, log subcommand writes a value-free line. Not yet shown: behaviour under test (tester in /verify) and a Windows ACL on the folder (the file mode bits are weak on Windows).

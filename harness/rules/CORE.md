@@ -65,7 +65,8 @@ instruction wins; platform permission and safety controls always apply.
   status (`gh auth status`, `aws sts get-caller-identity`, and the like); (3) use what was found; (4) if it is missing and the tool
   allows it, issue a new key or token, or create the missing tool, stack or file (for example a Terraform stack that is absent), with
   the smallest working content; (5) store the result outside git (environment variable or a store outside the repository) and
-  write one value-free line to `core/DECISION_LOG.md` (what was created, where, never the value); (6) only then ask.
+  write one value-free line to `core/DECISION_LOG.md` (what was created, where, never the value); `tools/secret_store.py`
+  does this safely (value from stdin, create-if-absent, refuses a folder inside git); (6) only then ask.
 - Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
   trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
   production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.

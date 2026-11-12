@@ -204,3 +204,5 @@
 - Kind: SUCCESS. Facts: S9-T2 added the /unblock command to both clients with one file, checked by listing the build output of both clients. Rule: check a shared source by listing both outputs.
 
 - Kind: SHORTCOMING. Facts: S9-T3 as planned assumed Codex wiring and prose asks were missing; reading registry.json and out/codex/hooks.json showed both exist. Root cause: the plan was written before reading the gate. Layer that missed it: author. Rule: read the existing code before splitting a task.
+
+- Kind: SHORTCOMING. Facts: S9-T4 helper was committed without being run once; only the tester will run it in /verify. Rule: the tester run decides, but read the code path of concurrent create once more before verify.
