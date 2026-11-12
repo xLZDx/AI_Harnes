@@ -266,3 +266,12 @@
 
 ## 2026-11-12 S9 tests for GPT-PM round 3 fix
 - Evidence: tests/test_self_service.py 68 passed (tester a1f7e247): default folder refused with git unstartable (also with empty PATH), the GPT-PM failing input (GIT_WORK_TREE = default folder, external GIT_DIR) refused with nothing written, and a working git with a default folder outside any repo still gives created. Not shown: the new regression fails on the pre-fix code.
+
+## 2026-11-12 S10 report must show the whole program (operator complaint about the ERP report)
+- Observed: the ERP worktree report said "100 % of the program, 2 of 2 tasks". Cause in tools/report.py: PROJECT_PLAN.md (46 tasks) was used only when the ledger had no sprints; ERP also has a ledger with one sprint of 2 tasks (other id space), so the ledger won and the plan was ignored. The template was the right one; the data source was wrong.
+- Decision: with PROJECT_PLAN.md present, the whole program is the plan plus the ledger sprints; a task id in both is counted once and the ledger state wins. Rejected: plan only (loses the evidence-bound ledger states), ledger only (the bug). Also fixed the installer text that named the non-existent Codex /hooks command.
+
+## 2026-11-12 S10-T1: Fix /hooks reference in install_codex
+- Removed references to non-existent /hooks command from tools/install_codex.py
+- Updated NEXT instruction line and docstring to use "startup screen 'Hooks need review'" and "hooks-review command"
+- All 10 tests in test_s10_report.py now pass; defect was test_t1_next_line_says_trust_all_and_not_hooks_command and test_t1_no_slash_hooks_command_in_tools_or_harness

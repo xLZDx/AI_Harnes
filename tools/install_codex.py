@@ -10,7 +10,7 @@ What it does (nothing is deleted without a copy in the snapshot folder):
   hooks.json                                                              -> merged: entries running a script the
       harness replaces are dropped, every other entry (for example a SessionEnd hook) is kept, harness entries added
 It never edits config.toml and never writes a hook trust hash: Codex runs new or changed hooks only after the
-operator approves them (`/hooks` in Codex). Before touching anything it checks: the snapshot folder does not exist,
+operator approves them (startup screen "Hooks need review", choice "Trust all and continue"). Before touching anything it checks: the snapshot folder does not exist,
 out/codex is complete, hooks.json (old and new) has the expected shape and the merge works, and config.toml has
 `hooks = true` under [features]. restore.ps1 does not restore config.toml (the install never changes it, and Codex
 may have changed it since: trust state).
@@ -236,7 +236,8 @@ def install(home: Path, snap: Path, source: Path) -> int:
             print("  - " + d[:160])
     if extra_skills:
         print("skills in the Codex home that the harness does not ship (left alone): " + ", ".join(extra_skills))
-    print("NEXT: open Codex and approve the new hooks with /hooks (this tool never writes trust hashes).")
+    print('NEXT: start Codex and choose "Trust all and continue" on the startup screen "Hooks need review" '
+          "(Codex 0.167 has no hooks-review command; this tool never writes trust hashes).")
     return 0
 
 
@@ -251,3 +252,4 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
