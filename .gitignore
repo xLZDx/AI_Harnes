@@ -13,3 +13,4 @@ bench/gen_treal.py
 bench/check_hidden.py
 harness/skills/html-report/golden/
 
+.harness-tools/
