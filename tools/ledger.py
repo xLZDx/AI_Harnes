@@ -296,8 +296,14 @@ def c_commit_hook(a, d):
 
 
 TEST_ROLES = {"functional-test-reviewer", "tdd-guide", "e2e-runner"}
-NOT_REVIEWERS = {"implementation-engineer", "general-purpose", "claude", "explore", "plan", "planner",
-                 "build-error-resolver", "code-simplifier", "refactor-cleaner", "doc-updater", "technical-writer"}
+REVIEW_ROLES_EXTRA = {"silent-failure-hunter", "architect", "code-architect", "type-design-analyzer", "comment-analyzer",
+                      "pr-test-analyzer", "a11y-architect"}
+
+
+def is_reviewer(role: str) -> bool:
+    """Allow list: '*-reviewer' agents (not the test author functional-test-reviewer) and the named analysis roles."""
+    r = role.lower()
+    return r not in TEST_ROLES and (r.endswith("-reviewer") or r in REVIEW_ROLES_EXTRA)
 
 
 def _hook_state_base() -> Path:
@@ -325,6 +331,13 @@ def _agents_state() -> list:
         return []
 
 
+def is_test_path(f: str) -> bool:
+    f = f.replace("\\", "/").lower()
+    name = f.rsplit("/", 1)[-1]
+    return (f.startswith(("tests/", "test/")) or "/tests/" in f or name.startswith("test_") or name.endswith("_test.py")
+            or ".test." in name or ".spec." in name)
+
+
 def require_agent_run(role: str, task_commit: str, what: str) -> None:
     """A pass/accepted result needs a finished run of that agent role that started after the task's last commit, as
     recorded by the agent_visibility hook. 2026-11-12 incident: a runaway helper session wrote 'verify pass' and
@@ -337,7 +350,9 @@ def require_agent_run(role: str, task_commit: str, what: str) -> None:
         cur = task_commit
         while True:
             files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", cur).splitlines() if f]
-            if not files or any(not route.is_doc(rules, f) for f in files):
+            # docs-only and tests-only commits do not make a run stale (the test agent's own tests are committed after
+            # its run); a commit that touches product code does
+            if not files or any(not (route.is_doc(rules, f) or is_test_path(f)) for f in files):
                 break
             prev = [c for c in git("rev-list", "--parents", "-n", "1", cur).split()[1:2]]
             if not prev:
@@ -346,8 +361,16 @@ def require_agent_run(role: str, task_commit: str, what: str) -> None:
         since = int(git("show", "-s", "--format=%ct", cur))
     except (GitError, ValueError, ImportError):
         sys.exit(f"ledger: cannot read the time of commit {task_commit[:12]}")
-    runs = [e for e in _agents_state() if str(e.get("type", "")).lower() == role.lower()
-            and e.get("stop") and float(e.get("start", 0)) >= since - 5]
+    here = os.path.normcase(str(main_root().resolve()))
+    runs = []
+    for e in _agents_state():
+        try:
+            if (isinstance(e, dict) and str(e.get("type", "")).lower() == role.lower() and e.get("stop")
+                    and float(e.get("start", 0)) >= since - 5
+                    and os.path.normcase(str(e.get("project") or "")) == here):  # a run in another project does not count
+                runs.append(e)
+        except (TypeError, ValueError):
+            continue
     if not runs:
         sys.exit(f"ledger: no finished {role} agent run after commit {task_commit[:12]} is recorded; {what} needs one "
                  "(the agent_visibility hook records START/STOP). Run that agent, then record the result.")
@@ -374,7 +397,7 @@ def c_review(a, d):
         sys.exit(f"ledger: {a.id} has no commit yet")
     if a.result == "accepted":
         by = [r.strip() for r in (a.by or "").split(",") if r.strip()]
-        if not by or any(r.lower() in NOT_REVIEWERS or r.lower() in TEST_ROLES for r in by):
+        if not by or not all(is_reviewer(r) for r in by):
             sys.exit("ledger: review accepted needs --by <reviewer role[,role]> (the reviewers route.py chose; "
                      "an implementation, test or general agent is not a reviewer)")
         for r in by:
@@ -428,11 +451,11 @@ def find_pm_approve(request_id: str, h: str, project: str) -> tuple[str | None, 
                 try:
                     r = json.loads(line)
                 except ValueError:
+                    continue  # also a partial last line while PM Bridge is writing
+                if not isinstance(r, dict) or r.get("reviewRequestId") != request_id:
                     continue
-                if r.get("reviewRequestId") != request_id:
-                    continue
-                if r.get("project") and norm(r["project"]) != norm(project):
-                    continue
+                if norm(r.get("project")) != norm(project):
+                    continue  # a record must name this project
                 if r.get("direction") == "outbound":
                     out_text += str(r.get("text") or "")
                 elif r.get("direction") == "inbound" and r.get("correlated"):
@@ -441,16 +464,16 @@ def find_pm_approve(request_id: str, h: str, project: str) -> tuple[str | None, 
         return None, f"cannot read {path}: {e}"
     if not replies:
         return None, f"no correlated GPT-PM reply to request {request_id} for project {project} in {path}"
-    for r in reversed(replies):
-        text = str(r.get("text") or "")
-        lines = text.splitlines()
-        if any(NEGATIVE_LINE.match(l) for l in lines) or not any(APPROVE_LINE.match(l) for l in lines):
-            continue
-        heads = HEAD_LINE.findall(text) or HEAD_LINE.findall(out_text)
-        if not heads or not all(h.startswith(x.lower()) for x in heads):
-            return None, f"the APPROVE reply to {request_id} is for HEAD {', '.join(heads) or '(none named)'}, not {h[:12]}"
-        return str(r.get("replyId") or r.get("messageId")), ""
-    return None, f"the GPT-PM reply to {request_id} is not a bare APPROVE (REVISE/RESEND/findings or no verdict line)"
+    # only the NEWEST reply decides: an APPROVE followed by a REVISE/RESEND to the same request is not an approval
+    r = replies[-1]
+    text = str(r.get("text") or "")
+    lines = text.splitlines()
+    if any(NEGATIVE_LINE.match(l) for l in lines) or not any(APPROVE_LINE.match(l) for l in lines):
+        return None, f"the latest GPT-PM reply to {request_id} is not a bare APPROVE (REVISE/RESEND/findings or no verdict line)"
+    heads = HEAD_LINE.findall(text)  # the reply itself must name the HEAD; our own request text proves nothing
+    if not heads or not all(h.startswith(x.lower()) for x in heads):
+        return None, f"the APPROVE reply to {request_id} names HEAD {', '.join(heads) or '(none)'}, not {h[:12]}"
+    return str(r.get("replyId") or r.get("messageId")), ""
 
 
 def c_approve(a, d):

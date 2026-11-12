@@ -484,3 +484,6 @@ Decisions:
 - M2 (code fact): rules_gate analyze/classify returned no finding past depth 3, so a test runner nested in four command substitutions ran. Now past depth 3 the command is denied as not analysable (fail closed); one level of substitution of a harmless command is still allowed.
 - Found live: the installed gate denied my own commit because a quoted python heredoc body held the text of a substitution; python heredoc bodies are now read as plain lines with substitution neutralised (bash heredoc bodies still analysed fully).
 - Minor findings m1-m7 go to the GPT-PM packet as single-reviewer items.
+
+## 2026-11-12 S14 review consensus (code-reviewer, silent-failure-hunter, python-reviewer, reliability-reviewer)
+- Accepted MAJOR (reliability + python + code-reviewer; code fact): find_pm_approve skipped a later REVISE/RESEND and used an older APPROVE. Now only the newest correlated reply decides, the reply itself must name the HEAD (our request text no longer counts: silent-failure m2 + python m4), records must name the project, non-dict lines are skipped.
