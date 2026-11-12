@@ -119,6 +119,7 @@ def strip_heredocs(cmd: str) -> str:
         pre = split_segments(line[:ms[0].start()])
         last = tokenize(pre[-1]) if pre else []
         interp = any(base(t) in SHELLS or base(t) in PY_BASES for t in last[:4])
+        py_body = not any(base(t) in SHELLS for t in last[:4])  # a python body has no shell substitution
         for m in ms:
             tag = m.group(2) or m.group(3) or m.group(4)
             body: list[str] = []
@@ -129,7 +130,9 @@ def strip_heredocs(cmd: str) -> str:
                     break
                 body.append(l)
             if interp:
-                out.extend(body)
+                # python source keeps its plain lines (a shell-like `npm test` line is still read), but `$(` and
+                # backticks there are Python text, not shell substitution, so they are neutralised
+                out.extend([b.replace("$(", "$ (").replace("`", "'") for b in body] if py_body else body)
     return "\n".join(out)
 
 
@@ -307,7 +310,7 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
     """Findings for one command (already split). kinds: full-test, named-test, py-script-test, lint, typecheck, verify,
     ci, push, pr-create."""
     if depth > 3:
-        return []
+        return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]  # fail closed: too deep to read is not allowed
     toks = list(tokens)
     while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]):
         toks.pop(0)  # leading VAR=value
@@ -521,7 +524,7 @@ def strip_case(toks: list[str]) -> list[str]:
 
 def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
     if depth > 3:
-        return []
+        return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]
     found: list[tuple] = []
     cur = cwd
     outer, inners = extract_subst(strip_heredocs(command))

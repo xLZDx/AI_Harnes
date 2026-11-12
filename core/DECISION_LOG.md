@@ -479,3 +479,8 @@ Decisions:
 
 ## 2026-11-12 S14 review (silent-failure-hunter): M1 accepted, fixed
 - M1 (code fact): run_hook returned 0 for every hook when HARNESS_HOOK_CHILD=1, so a leaked variable switched off deny gates. Now only session-steering events (Stop, SubagentStop, UserPromptSubmit, SessionStart, PreCompact, Notification) are skipped, each skip logged to state/run_hook/child_skips.jsonl; PreToolUse gates still run (checked: rules_gate denies a full npm suite with the variable set).
+
+## 2026-11-12 S14 review (silent-failure-hunter): M2 accepted, fixed; heredoc false positive fixed
+- M2 (code fact): rules_gate analyze/classify returned no finding past depth 3, so a test runner nested in four command substitutions ran. Now past depth 3 the command is denied as not analysable (fail closed); one level of substitution of a harmless command is still allowed.
+- Found live: the installed gate denied my own commit because a quoted python heredoc body held the text of a substitution; python heredoc bodies are now read as plain lines with substitution neutralised (bash heredoc bodies still analysed fully).
+- Minor findings m1-m7 go to the GPT-PM packet as single-reviewer items.
