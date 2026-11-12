@@ -222,3 +222,5 @@
 - Kind: SHORTCOMING. Facts: an earlier message of mine asked the operator to approve hooks via /hooks, a command that does not exist in 0.167. Root cause: I answered from memory, not from the binary. Rule: before naming a CLI command to the operator, run --help or search the binary.
 
 - Kind: FAILURE. Facts: a scripted edit silently did not apply and I reported the fix as done. Root cause: no grep after the replace. Layer that missed it: author; the tester caught it. Rule: after a scripted replace, grep the result before saying it is fixed.
+
+- Kind: FAILURE. Facts: two turns after writing the stop-and-ask rule I ended a turn with a blocker table waiting for my own agent. Root cause: the rule was text only and I did not re-read it before ending the turn. Layer that missed it: author; no gate. Rule: re-read CORE.md anti-pattern list before every final message.

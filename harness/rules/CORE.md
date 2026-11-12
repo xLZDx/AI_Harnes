@@ -77,6 +77,10 @@ instruction wins; platform permission and safety controls always apply.
   is not a blocker for the operator: do the independent steps meanwhile; if none is left, end the turn with a plain status line, with
   no question and no `ledger.py block` (the agent's finish message resumes the work). The only open questions allowed are the
   operator-only cases below, and push/PR/merge only when the project's instructions forbid doing them unasked.
+  The same pattern in disguise, also forbidden: a status table or "Блокеры: EXTERNAL" as the end of a turn for something that resumes by
+  itself (own agent, own job, a queue); handing the operator a click or a command for a platform approval before the agent has
+  searched for the platform's own route (help output, binary strings, config keys) and logged the rejected options; and breaking a
+  rule in the turn right after writing it. Before ending any turn, re-read this list against your last message.
 - Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
   trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
   production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.

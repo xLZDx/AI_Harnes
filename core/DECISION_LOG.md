@@ -245,3 +245,6 @@
 
 ## 2026-11-12 S9 stdin fix
 - The earlier fix to read stdin as UTF-8 had not been applied (a string replace did not match and I did not check); the tester found it at secret_store.py:117. Now sys.stdin.buffer is decoded as utf-8-sig. Evidence: dummy "cafe-with-accent" piped as bytes stored as 11 bytes. Tests: 54 passed before this fix; re-run pending.
+
+## 2026-11-12 S9 anti-pattern extended
+- Operator correction: the pattern appeared again in disguise right after the rule was written (a status table ending the turn with EXTERNAL for my own tester, and an operator click handed over as the Codex hook step). CORE.md now names the disguised forms and requires re-reading the rule list before ending a turn. Rejected: leaving it as one sentence. Open: a Stop gate that detects it (S10).
