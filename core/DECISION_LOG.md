@@ -356,3 +356,6 @@
 
 ## 2026-11-12 S13-R4 agent START and STOP registration
 - Code in 78c9d17: tools/build.py HOOK_EVENTS gains SubagentStart for Claude, registry.json registers agent_visibility for SubagentStart, SubagentStop and PreToolUse Agent|Task, duplicates removed. Installed 2026-11-12 18:01 (snapshot D:/Backup/claude-hooks-s13fix-20261112-1801); audit claude-home client_cfg OK confirms all three registrations. Live on-screen check: NOT_RUN in this session (hooks apply to new sessions); it is the first step of the next new session.
+
+## 2026-11-12 S13-R7 Codex parity
+- Codex home installed 2026-11-12 18:01: AGENTS.md carries the operator rules block (line 23), hooks.json 32 entries including rules_gate; audit codex-home gates_live OK (every prohibited command denied by the live Codex hooks). Installer prints the real review route (CLI /hooks or the startup screen, app Settings -> Hooks or Review hooks), S11-T1. Open: 2 of 32 handlers untrusted; trust is a Codex platform safety review the agent does not write itself (decision: no trusted_hash writes; rejected: editing config.toml hooks.state), so the operator approves once in a new Codex session.
