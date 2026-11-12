@@ -137,6 +137,9 @@ def build_snippets(gate, message: str, cwd: Path) -> list[dict]:
     return out
 
 
+LAST_FAIL: dict = {}  # why the last judge call failed (exit code, stderr tail, timeout); goes into the call-failed log
+
+
 def ask_judge(claim: str, snippets: list[dict]) -> list[dict] | None:
     blocks = "\n\n".join(
         f"[{s['id']}] cited as: {s['raw']}\n{s['path']} around line {s['line']}:\n{s['window']}"
@@ -156,18 +159,38 @@ def ask_judge(claim: str, snippets: list[dict]) -> list[dict] | None:
     # Workflow, loaded the user's hooks, ran in the project folder, and the Stop hooks ("TASKS LEFT ... continue")
     # drove it to implement and commit sprint tasks. Now: no tools, no settings (so no hooks), no MCP, one turn,
     # no saved session, and a neutral working folder.
+    argv = [*prefix, CLAUDE_CMD, "-p", "--model", MODEL,
+            "--tools", "", "--setting-sources", "", "--strict-mcp-config",
+            "--max-turns", "1", "--no-session-persistence", "--disable-slash-commands"]
+    LAST_FAIL.clear()
     try:
-        proc = subprocess.run(
-            [*prefix, CLAUDE_CMD, "-p", "--model", MODEL,
-             "--tools", "", "--setting-sources", "", "--strict-mcp-config",
-             "--max-turns", "1", "--no-session-persistence", "--disable-slash-commands"],
-            input=prompt, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", env=env, timeout=CALL_TIMEOUT, cwd=tempfile.gettempdir(),
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-    except (subprocess.TimeoutExpired, OSError):
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                encoding="utf-8", errors="replace", env=env, cwd=tempfile.gettempdir(),
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except OSError as e:
+        LAST_FAIL.update(error=f"cannot start: {e}"[:200])
         return None  # logged by the caller as call-failed
-    raw = (proc.stdout or "").strip()
+    try:
+        out, err = proc.communicate(prompt, timeout=CALL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # kill the whole tree: through `cmd /c` a plain kill leaves the claude grandchild holding the pipes
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        LAST_FAIL.update(error=f"timeout after {CALL_TIMEOUT}s, process tree killed")
+        return None
+    if proc.returncode != 0:
+        LAST_FAIL.update(error=f"exit {proc.returncode}: {(err or '').strip()[-200:]}")
+
+    class _R:  # keep the parsing below unchanged
+        stdout = out
+    raw = (_R.stdout or "").strip()
     m = re.search(r"\[.*\]", raw, re.DOTALL)      # tolerate ```json fences / preamble
     if not m:
         return None
@@ -196,7 +219,7 @@ def evaluate(gate, data: dict) -> tuple[str | None, dict]:
 
     verdicts = ask_judge(message, snippets)
     if verdicts is None:
-        return None, {"judge": "call-failed", "checked": len(snippets)}
+        return None, {"judge": "call-failed", "checked": len(snippets), **LAST_FAIL}
 
     by_id = {s["id"]: s for s in snippets}
     bad, unrelated = [], []
