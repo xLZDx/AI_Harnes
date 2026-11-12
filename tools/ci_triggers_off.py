@@ -247,7 +247,18 @@ def _park(p: Path, a: Path) -> str | None:
     except FileExistsError:
         return f"{a.name} exists; it was not overwritten"
     t2 = p.with_name(f".{p.name}.cioff-park-{secrets.token_hex(8)}")
-    os.rename(p, t2)  # unguessable name: no other writer can have a file there
+    try:
+        os.rename(p, t2)  # unguessable name: no other writer can have a file there
+    except OSError:
+        # p vanished or cannot be moved: drop the link we just made unless p is now another file (then a holds the
+        # earlier bytes and the caller's message names it)
+        try:
+            same = os.path.samestat(os.stat(p), os.stat(a))
+        except FileNotFoundError:
+            same = True  # p is gone: a is only an extra name of bytes the other writer removed
+        if same:
+            os.unlink(a)
+        raise
     s2, sa = os.stat(t2), os.stat(a)
     if (s2.st_ino, s2.st_dev) == (sa.st_ino, sa.st_dev):
         os.unlink(t2)  # only a second name of the parked file; its bytes stay at a
@@ -275,6 +286,7 @@ def _drop_parked(a: Path, known: set, tries: int = 6) -> str:
                                 wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     k32.SetFileInformationByHandle.restype = wintypes.BOOL
     k32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
     invalid = wintypes.HANDLE(-1).value
     generic_read, delete, open_existing, attr_normal, file_disposition_info = 0x80000000, 0x00010000, 3, 0x80, 4
     h = None
@@ -285,10 +297,21 @@ def _drop_parked(a: Path, known: set, tries: int = 6) -> str:
         if ctypes.get_last_error() in (2, 3):  # file or path not found: nothing left to delete
             return "deleted"
         h = None
-        time.sleep(0.05 * (2 ** i))  # sharing violation: another handle is open (or a scanner holds it briefly)
+        if i < tries - 1:
+            time.sleep(0.05 * (2 ** i))  # sharing violation: another handle is open (or a scanner holds it briefly)
     if h is None:
         return "kept"
-    with open(msvcrt.open_osfhandle(h, os.O_RDONLY), "rb") as f:  # closing f closes the handle
+    try:
+        fd = msvcrt.open_osfhandle(h, os.O_RDONLY)
+    except OSError:
+        k32.CloseHandle(h)  # never keep an exclusive handle that would block the user's writer
+        return "kept"
+    try:
+        f = open(fd, "rb")
+    except OSError:
+        os.close(fd)
+        return "kept"
+    with f:  # closing f closes the handle
         if hashlib.sha256(f.read()).hexdigest() not in known:
             return "changed"
         flag = ctypes.c_ubyte(1)  # FILE_DISPOSITION_INFO.DeleteFile = TRUE: deleted when our handle closes
@@ -298,6 +321,20 @@ def _drop_parked(a: Path, known: set, tries: int = 6) -> str:
 
 
 LEFTOVER_ASIDES: list[str] = []  # parked copies that were kept after a completed swap (reported in the row)
+KEPT_NOTE = ("; NOTE kept parked copies of known old bytes (not provably safe to delete: another process had them "
+             "open, or a POSIX system); check and delete by hand: ")
+
+
+def _retire_kept(a: Path) -> Path:
+    """Move a parked copy that has to be kept to a unique name, so it never blocks a later swap of the same file
+    (which needs the parked name free). Never overwrites; returns where the copy is now (a if it could not move)."""
+    k = a.with_name(f"{a.name}-kept-{secrets.token_hex(4)}")
+    try:
+        if _place_noclobber(a, k):
+            return k
+    except OSError:
+        pass  # Windows: another process has it open without delete sharing; it stays at a
+    return a
 
 
 def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
@@ -347,7 +384,7 @@ def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
         if r == "changed":
             return f"{a.name} was written to while parked; kept for a manual check (compare with {p.name})"
         if r == "kept":
-            LEFTOVER_ASIDES.append(str(a))
+            LEFTOVER_ASIDES.append(str(_retire_kept(a)))
         return None
     finally:
         try:
@@ -510,6 +547,14 @@ def rollback(repo: Path, j: dict) -> list[str]:
                     t.unlink()
                 except OSError:
                     pass
+            for t in p.parent.glob(f".{p.name}.cioff-park-*"):  # POSIX _park crashed after moving p to t
+                try:
+                    if a.exists() and os.path.samestat(os.stat(t), os.stat(a)):
+                        t.unlink()  # only a second name of the parked copy
+                    else:
+                        errs.append(f"{f}: {t.name} may hold a newer edit made during the run; compare and merge by hand")
+                except OSError as e:
+                    errs.append(f"{f}: could not check {t.name} ({e})")
             try:
                 if not p.exists() and a.exists() and not _place_noclobber(a, p):  # crash inside swap_in: unpark
                     errs.append(f"{f}: could not move {a.name} back; both kept")
@@ -518,7 +563,10 @@ def rollback(repo: Path, j: dict) -> list[str]:
                     # parked copy of known bytes (pre-run bytes are also in the backup): dropped only when provably
                     # safe; otherwise it stays and blocks the restore, which would need the same parked name
                     r = _drop_parked(a, {h for h in (pre.get(f), merged.get(f)) if h})
-                    if r != "deleted":
+                    k = _retire_kept(a) if r == "kept" else a
+                    if k != a:
+                        LEFTOVER_ASIDES.append(str(k))  # known bytes kept under a unique name; the restore can go on
+                    elif r != "deleted":
                         errs.append(f"{f}: {a.name} kept ({r}); check it against the backup, delete it by hand")
                         continue
                 now = _sha(p)
@@ -575,12 +623,16 @@ def recover(repo: Path) -> str:
     if j["phase"] == "done":
         cleanup_run(repo, j, jp)
         return f"RECOVERED run had completed at {j['new'][:7]}; journal removed"
+    LEFTOVER_ASIDES.clear()
     errs = rollback(repo, j)
+    kept = (KEPT_NOTE + ", ".join(LEFTOVER_ASIDES)) if LEFTOVER_ASIDES else ""
+    LEFTOVER_ASIDES.clear()
     if errs:
-        return "ERROR recovery incomplete, journal kept: " + "; ".join(errs)
+        return "ERROR recovery incomplete, journal kept: " + "; ".join(errs) + kept
     extra = drift(repo, j)
     cleanup_run(repo, j, jp)
-    return f"RECOVERED from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, {len(j['files'])} file(s) restored{extra}"
+    return (f"RECOVERED from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, {len(j['files'])} file(s) "
+            f"restored{extra}{kept}")
 
 
 def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
@@ -677,7 +729,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             after, stage_after = status_map(repo), stage_map(repo)
             for p in set(snap_status) | set(after):
                 if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??")                         and not (p in files and p in eol_only and after.get(p) is None):
-                    if (snap_status.get(p) is None and p.endswith(".cioff-aside")
+                    if (snap_status.get(p) is None and ".cioff-aside" in p
                             and any(os.path.normcase(str(Path(x).resolve())) == os.path.normcase(str((repo / p).resolve()))
                                     for x in LEFTOVER_ASIDES)):
                         continue  # our own parked copy that could not be deleted: reported in the row, not a user change
@@ -706,7 +758,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                     cleanup_run(repo, j, jp)
                     result = f"ERROR {e}; working files restored, branch back at {old[:7]}"
         if LEFTOVER_ASIDES:  # this repo's parked copies only (the list is cleared when the run starts)
-            result += "; NOTE kept parked copies (known old bytes; another process had them open, or POSIX), check and delete by hand: " + ", ".join(LEFTOVER_ASIDES)
+            result += KEPT_NOTE + ", ".join(LEFTOVER_ASIDES)
             LEFTOVER_ASIDES.clear()
         return result
     finally:
