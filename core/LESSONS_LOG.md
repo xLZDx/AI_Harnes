@@ -321,3 +321,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SHORTCOMING 2026-11-12 S14-T5: my child guard was an unconditional off switch for all hooks; silent-failure-hunter found it. Next time: a bypass flag narrows to the hooks it is meant for and logs each use.
 - FAILURE 2026-11-12 S14-T2: a recursion limit returned 'allow' (silent-failure-hunter), and the new substitution parser read Python heredoc text as shell (live false positive on my commit). Next time: every limit in a gate returns deny, and a parser for one language never runs over another's text.
 - FAILURE 2026-11-12 S14-T6: approve accepted an APPROVE that a later REVISE replaced; three reviewers found it. Next time: a verdict check reads the latest verdict only.
+- SHORTCOMING 2026-11-12 S14-T7: the agent-run record had no project, so a run anywhere on the machine counted. Next time: evidence records carry the scope they prove.

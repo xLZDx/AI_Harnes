@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 UNKNOWN_AFTER_S = 600
-CAP = 60
+CAP = 400  # shared by every project on the machine; ledger.py looks runs up here, so keep enough history
 
 
 def _state_file() -> Path:
@@ -70,6 +70,20 @@ def state_of(entry: dict, now: float | None = None) -> str:
     return "ACTIVE_CONFIRMED" if entry.get("activity") else "START_OBSERVED"
 
 
+def project_root(cwd: str) -> str:
+    """Main checkout of the git repo at cwd (same as ledger.py main_root), '' when not a repo. ledger.py counts a test or
+    review run only for the project it ran in."""
+    try:
+        import _agentio
+        r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd or ".")
+        if r.returncode != 0:
+            return ""
+        common = Path(r.stdout.strip())
+        return str((common.parent if common.name == ".git" else common).resolve())
+    except Exception:
+        return ""
+
+
 def task_id(cwd: str) -> str:
     """Id of the ledger task that is in progress for the project at cwd, else 'active'."""
     try:
@@ -113,6 +127,7 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         session = str(data.get("session_id") or "")[:64]
         tuid = str(data.get("tool_use_id") or "")[:64]
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
+                 "project": project_root(str(data.get("cwd") or "")),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
         res = {"dup": False}
 
