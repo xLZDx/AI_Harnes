@@ -14,10 +14,14 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
+import queue
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,6 +41,8 @@ AUDIT_TMP = Path(r"D:\tmp\harness_audit")
 DENY_CMDS = ["npm test", "npx vitest", "npm run lint", "tsc --noEmit", "npm run verify", "pytest", "gh workflow run ci.yml", "git push"]
 ALLOW_CMDS = ["git status"]
 RULES_BLOCK = "Operator development rules"
+CODEX_HOOKS_BY_CWD: dict[str, dict] = {}
+CODEX_HOOKS_ERROR: str | None = None
 
 OK, FAIL, NA = "OK", "FAIL", "n.a."
 
@@ -409,7 +415,90 @@ def chk_claude_cfg():
     return (FAIL, "; ".join(probs)) if probs else (OK, "rules_gate, agent_visibility (3 events), rules block present")
 
 
-def chk_codex_cfg():
+def _codex_executable() -> str | None:
+    """Find the installed Codex executable without depending on its package-manager layout."""
+    return shutil.which("codex.exe") or shutil.which("codex")
+
+
+def _codex_rpc_response(proc, output_queue, request_id: int, timeout: int) -> dict:
+    """Read JSONL app-server output until the response with the requested id arrives."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"timed out waiting for app-server response {request_id}")
+        try:
+            line = output_queue.get(timeout=remaining)
+        except queue.Empty as exc:
+            raise TimeoutError(f"timed out waiting for app-server response {request_id}") from exc
+        if line is None:
+            raise RuntimeError(f"Codex app-server exited before response {request_id} (exit {proc.poll()})")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Codex app-server returned invalid JSON: {exc.msg}") from exc
+        if message.get("id") == request_id:
+            if "error" in message:
+                raise RuntimeError(f"Codex app-server RPC error: {message['error']}")
+            return message
+
+
+def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
+    """Ask the running Codex executable for authoritative hook trust per project cwd."""
+    exe = _codex_executable()
+    if not exe:
+        return {}, "Codex executable not found on PATH"
+    try:
+        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+    except OSError as exc:
+        return {}, f"could not start Codex app-server: {type(exc).__name__}: {exc}"
+
+    output_queue: queue.Queue = queue.Queue()
+
+    def read_output():
+        try:
+            for line in proc.stdout:
+                output_queue.put(line)
+        finally:
+            output_queue.put(None)
+
+    reader = threading.Thread(target=read_output, name="codex-app-server-output", daemon=True)
+    reader.start()
+
+    def send(message: dict):
+        proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"clientInfo": {"name": "harness-audit", "title": "Harness audit", "version": "1.0"}}})
+        _codex_rpc_response(proc, output_queue, 1, 20)
+        send({"jsonrpc": "2.0", "method": "initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "hooks/list",
+              "params": {"cwds": [str(p.resolve()) for p in cwds]}})
+        response = _codex_rpc_response(proc, output_queue, 2, 30)
+        data = response.get("result", {}).get("data")
+        if not isinstance(data, list):
+            return {}, "Codex app-server hooks/list response has no result.data list"
+        by_cwd = {}
+        for item in data:
+            if not isinstance(item, dict) or not item.get("cwd"):
+                return {}, "Codex app-server hooks/list returned an invalid cwd entry"
+            by_cwd[norm_path(item["cwd"])] = item
+        return by_cwd, None
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        return {}, f"Codex app-server hooks/list failed: {exc}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def chk_codex_cfg(cwd: Path | None = None):
     hp = HOME / ".codex" / "hooks.json"
     cfg = load_json(hp)
     if cfg is None:
@@ -424,24 +513,54 @@ def chk_codex_cfg():
             probs.append(f"AGENTS.md lacks '{RULES_BLOCK}'")
     except OSError:
         probs.append("AGENTS.md unreadable")
-    expected = []
-    for ev, groups in (cfg.get("hooks") or {}).items():
-        for gi, g in enumerate(groups):
-            for hi, _ in enumerate(g.get("hooks", [])):
-                expected.append(f"{norm_path(hp)}:{snake(ev)}:{gi}:{hi}")
-    trusted = set()
-    try:
-        import tomllib
-        toml = tomllib.loads((HOME / ".codex" / "config.toml").read_text(encoding="utf-8"))
-        for k, v in ((toml.get("hooks") or {}).get("state") or {}).items():
-            if isinstance(v, dict) and v.get("trusted_hash"):
-                trusted.add(norm_path(k.rsplit(":", 3)[0]) + ":" + ":".join(k.rsplit(":", 3)[1:]))
-    except Exception as e:
-        probs.append(f"config.toml unreadable: {e}")
-    untrusted = [e for e in expected if e not in trusted]
-    if untrusted:
-        probs.append(f"untrusted {len(untrusted)} of {len(expected)} hook handlers")
-    return (FAIL, "; ".join(probs)) if probs else (OK, f"{len(expected)} handlers, all trusted")
+    target = cwd or HARNESS
+    if CODEX_HOOKS_ERROR:
+        probs.append(CODEX_HOOKS_ERROR)
+        return FAIL, "; ".join(probs)
+    item = CODEX_HOOKS_BY_CWD.get(norm_path(target))
+    if item is None:
+        probs.append(f"Codex app-server hooks/list returned no entry for {target}")
+        return FAIL, "; ".join(probs)
+
+    hooks = item.get("hooks")
+    warnings = item.get("warnings", [])
+    errors = item.get("errors", [])
+    if not isinstance(hooks, list) or not isinstance(warnings, list) or not isinstance(errors, list):
+        probs.append("Codex app-server hooks/list returned invalid hooks, warnings, or errors")
+        return FAIL, "; ".join(probs)
+    if any(not isinstance(hook, dict) for hook in hooks):
+        probs.append("Codex app-server hooks/list returned an invalid hook entry")
+        return FAIL, "; ".join(probs)
+    untrusted = [h for h in hooks if h.get("source") in ("user", "project") and h.get("trustStatus") != "trusted"]
+    for hook in untrusted:
+        probs.append("untrusted hook: " + ", ".join(str(hook.get(k) or "-") for k in ("source", "event", "statusMessage", "sourcePath")))
+    if warnings:
+        probs.append("Codex app-server warnings: " + json.dumps(warnings, ensure_ascii=False))
+    if errors:
+        probs.append("Codex app-server errors: " + json.dumps(errors, ensure_ascii=False))
+
+    project_hooks_path = target / ".codex" / "hooks.json"
+    if project_hooks_path.is_file():
+        project_cfg = load_json(project_hooks_path)
+        if project_cfg is None:
+            probs.append(f"project hooks.json unreadable: {project_hooks_path}")
+        else:
+            project_groups = project_cfg.get("hooks") or {}
+            if not isinstance(project_groups, dict) or any(
+                    not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks", []), list)
+                                                       for group in groups)
+                    for groups in project_groups.values()):
+                probs.append(f"project hooks.json has invalid hooks structure: {project_hooks_path}")
+                project_groups = {}
+            expected_count = sum(len(group.get("hooks", [])) for groups in project_groups.values() for group in groups)
+            loaded_count = sum(h.get("source") == "project" and norm_path(h.get("sourcePath", "")) == norm_path(project_hooks_path)
+                               for h in hooks)
+            if loaded_count < expected_count:
+                probs.append(f"project hooks.json handlers missing from hooks/list: {loaded_count} of {expected_count} listed ({project_hooks_path})")
+
+    if probs:
+        return FAIL, "; ".join(probs)
+    return OK, f"{len(hooks)} hooks listed; warnings=[]; errors=[]"
 
 
 # ---- orchestration ---------------------------------------------------------------------------------------------------------------
@@ -462,7 +581,7 @@ def audit_project(d: Path, github: bool) -> dict:
     put("ci_github", chk_ci_github, d, github)
     put("ledger_whole", chk_ledger_whole, d)
     put("gates_live", chk_gates_live, d, HOME / ".claude" / "settings.json", "claude", True)
-    cells["client_cfg"] = (NA, "")
+    cells["client_cfg"] = chk_codex_cfg(d)
     return {"project": d.name, "cells": cells}
 
 
@@ -473,7 +592,7 @@ def audit_client(name: str) -> dict:
         cells["client_cfg"] = chk_claude_cfg()
     else:
         cells["gates_live"] = chk_gates_live(HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
-        cells["client_cfg"] = chk_codex_cfg()
+        cells["client_cfg"] = chk_codex_cfg(HARNESS)
     return {"project": name, "cells": cells}
 
 
@@ -501,9 +620,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     names = {a.project.lower()} if a.project else None
     rows = []
-    for d in discover(Path(a.root)):
-        if names is None or d.name.lower() in names:
-            rows.append(audit_project(d, not a.no_github))
+    projects = [d for d in discover(Path(a.root)) if names is None or d.name.lower() in names]
+    codex_cwds = [d for d in projects]
+    if names is None or "codex-home" in names:
+        codex_cwds.append(HARNESS)
+    global CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR
+    CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR = codex_hooks_list(codex_cwds)
+    for d in projects:
+        rows.append(audit_project(d, not a.no_github))
     for c in ("claude-home", "codex-home"):
         if names is None or c in names:
             rows.append(audit_client(c))
