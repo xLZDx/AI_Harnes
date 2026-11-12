@@ -41,9 +41,16 @@ import _agentio as agentio  # noqa: E402
 STATE = Path(os.environ.get("CLAUDE_QUESTION_POLICY_STATE") or agentio.state_dir("question_policy"))
 CONFIG = STATE / "config.json"
 LEDGER = STATE / "auto_answers.jsonl"
-DEFAULTS = {"idle_minutes": 5, "auto_accept": True, "include_destructive": False,
+DEFAULTS = {"idle_minutes": 10, "auto_accept": True, "include_destructive": False,
             "only_sessions": None, "stop_gate": True,
-            "pending_mode": "probe", "pending_minutes": 5, "probe_sleep_seconds": 0, "poll_seconds": 5}
+            "pending_mode": "live", "pending_minutes": 10, "probe_sleep_seconds": 0, "poll_seconds": 5}
+# S7-T1 (operator 2026-11-12): a question that stays on screen is answered with the recommended option after
+# pending_minutes. Risk-class questions are never auto-answered (GPT-PM plan round 2, BLOCKER-01).
+RISK_RE = re.compile(
+    r"delet|remov|drop\b|wipe|purge|destroy|force|reset|rotat|revoke|credential|secret|token|api[- ]?key|password|"
+    r"access|permission|grant|payment|money|trade|trading|production|prod\b|deploy|account|"
+    r"удал|сн[оё]с|уничтож|очист|ротац|ключ|токен|секрет|парол|доступ|разрешен|права|деньги|платёж|платеж|"
+    r"боев|продакшн|аккаунт|учётн|учетн", re.I)
 REC_RE = re.compile(r"\(\s*(recommended|рекомендую|рекомендуется|рекомендовано)\s*\)\s*$", re.I)
 AUTOMATED = ("<task-notification>", "<system-reminder>", "[SYSTEM NOTIFICATION", "[Request interrupted", "Caveat:")
 
@@ -200,10 +207,22 @@ Problems found: %s"""
 
 
 def destructive_scope(qs):
-    """Text the destructive-word check looks at (operator 2026-10-25): only the `header` chip of each
-    question. The question text, option labels and descriptions are not scanned (a feature name such
-    as "волне W2 (удаление аккаунта)" is not an action)."""
-    return " | ".join(str(q.get("header", "")) for q in qs)
+    """Text the destructive-word check looks at: the `header` chip (operator 2026-10-25, a feature name in a neutral
+    question is not an action) and, since S7-T1, the question text and the RECOMMENDED option's label/description,
+    because that option is what an auto-answer would execute. Other options are not scanned."""
+    parts = []
+    for q in qs:
+        parts += [str(q.get("header", "")), str(q.get("question", ""))]
+        for o in q.get("options") or []:
+            if isinstance(o, dict) and REC_RE.search(str(o.get("label", "")).strip()):
+                parts += [str(o.get("label", "")), str(o.get("description", ""))]
+                break
+    return " | ".join(parts)
+
+
+def risk_class(qs):
+    text = destructive_scope(qs)
+    return bool(DESTRUCTIVE_RE.search(text) or RISK_RE.search(text))
 
 
 def pre(data, c):
@@ -234,7 +253,7 @@ def pre(data, c):
     if str(c.get("pending_mode", "probe")).lower() == "live":
         return  # operator 2026-11-01: keep the question on screen for pending_minutes; the PermissionRequest handler answers
     text = destructive_scope(qs)
-    if DESTRUCTIVE_RE.search(text) and not c["include_destructive"]:
+    if risk_class(qs) and not c["include_destructive"]:
         log_ledger({"sid": str(data.get("session_id")), "action": "kept-for-operator-destructive", "q": text[:200]})
         return
     answers = {}
@@ -300,7 +319,7 @@ def perm(data, c):
             return
     else:
         wait = float(c["pending_minutes"]) * 60.0
-    if DESTRUCTIVE_RE.search(destructive_scope(qs)) and not c["include_destructive"]:
+    if risk_class(qs) and not c["include_destructive"]:
         log_ledger({"sid": sid, "action": "pending-kept-for-operator-destructive"})
         return
     tp = data.get("transcript_path") or ""

@@ -56,6 +56,16 @@ instruction wins; platform permission and safety controls always apply.
 - The pre-commit hook regenerates `reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html` and stages it into the commit; it
   never blocks a commit and the report is not reviewed. On request ("дай репорт") run `tools/report.py` the same way.
 
+## Autonomy and visibility (S7, operator 2026-11-12)
+- Do it yourself first: everything that is not prohibited is allowed, except money. Ask the operator for credentials, state,
+  settings or access only after real attempts whose results are in the transcript (`ask_last_gate`).
+- Show the work plan before the first change (`plan_first_gate`); a plan that was not presented does not count.
+- A turn does not end while its ledger tasks are open (`session_close_gate`); a task that cannot proceed is marked with
+  `ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause "<verified cause>"`.
+- Never print secret values; change or delete a credential only with proof bound to that same credential (`secret_guard`).
+- Every agent start and stop is printed with the agent type; `python tools/metrics.py` shows what the hooks did.
+- A recommended option of a question the operator leaves unanswered for 10 minutes is accepted, except risk-class questions.
+
 ## Safety
 - Operator-only: unrecoverable deletion, real money and live trading, force-push,
   `git reset --hard`, `git clean -f`, deleting remote branches, production data.
