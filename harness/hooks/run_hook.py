@@ -54,6 +54,10 @@ def main() -> int:
         sys.stderr.write(f"run_hook: no such hook script {name}\n")
         return 1
     raw = sys.stdin.buffer.read()
+    if os.environ.get("HARNESS_HOOK_CHILD") == "1":
+        # A helper model call started by a hook (citation_judge) is a text-only child, not a working session:
+        # no gate may steer it (a Stop hook once made such a child implement and commit sprint tasks).
+        return 0
     real_out, real_err = sys.stdout, sys.stderr
     out_buf, err_buf = io.BytesIO(), io.BytesIO()
     sys.stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace")

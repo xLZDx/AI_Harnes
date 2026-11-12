@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -146,17 +147,22 @@ def ask_judge(claim: str, snippets: list[dict]) -> list[dict] | None:
     env = dict(os.environ)
     env["CODEX_EVIDENCE_GATE"] = "off"; env["CLAUDE_EVIDENCE_GATE"] = "off"      # child must not re-enter either gate
     env["CODEX_CITATION_JUDGE"] = "off"; env["CLAUDE_CITATION_JUDGE"] = "off"
+    env["HARNESS_HOOK_CHILD"] = "1"   # run_hook.py runs no hook at all in this child
 
     if not CLAUDE_CMD:
         return None
     prefix = ["cmd", "/c"] if os.name == "nt" and CLAUDE_CMD.lower().endswith((".cmd", ".bat")) else []
+    # The judge is a pure text call. 2026-11-12 incident: with only a tool deny list it kept PowerShell, Skill and
+    # Workflow, loaded the user's hooks, ran in the project folder, and the Stop hooks ("TASKS LEFT ... continue")
+    # drove it to implement and commit sprint tasks. Now: no tools, no settings (so no hooks), no MCP, one turn,
+    # no saved session, and a neutral working folder.
     try:
         proc = subprocess.run(
             [*prefix, CLAUDE_CMD, "-p", "--model", MODEL,
-             "--disallowed-tools", "Read", "Write", "Edit", "Bash", "Glob", "Grep",
-             "WebFetch", "WebSearch", "Agent"],
+             "--tools", "", "--setting-sources", "", "--strict-mcp-config",
+             "--max-turns", "1", "--no-session-persistence", "--disable-slash-commands"],
             input=prompt, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", env=env, timeout=CALL_TIMEOUT,
+            errors="replace", env=env, timeout=CALL_TIMEOUT, cwd=tempfile.gettempdir(),
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
     except (subprocess.TimeoutExpired, OSError):
