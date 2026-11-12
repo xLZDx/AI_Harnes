@@ -433,3 +433,6 @@ Code review found 10 defects in ci_triggers_off (6 BLOCKERs). Applied fixes:
 - Added tests for crash scenarios and concurrent lock serialization (integration pending).
 
 Commits: 56f465a (code fixes), this one (tests).
+
+## 2026-11-12 S14-T3 crash recovery and concurrency tests
+- ci_triggers_off.py: tests added for --recover with phase transitions, crash window safety, journal validation on recovery, concurrent racer scenarios. Validates that phase journal prevents double-apply and that recovery from incomplete state restores working files correctly.

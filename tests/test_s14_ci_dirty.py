@@ -325,5 +325,60 @@ def test_two_simultaneous_runs_make_exactly_one_commit():
     assert not (repo / ".git" / JOURNAL).exists()
 
 
+def test_crlf_rewritten_content_equal_log_with_dirty_workflow_is_changed():
+    root = mk_root()
+    scratch = hv2.fresh("scratch")
+    repo = mk_project(root, "p_crlf_eq", {WF: WF_LONG})
+    assert hv2.git(repo, "config", "core.autocrlf", "true").rc == 0
+    for rel in (WF, DL):
+        (repo / rel).unlink()
+    assert hv2.git(repo, "checkout", "--", ".").rc == 0
+    # LESSONS_LOG rewritten as CRLF with the same content (stat-dirty, content-equal) + a real workflow edit
+    lines = rd(repo / LL).replace(b"\r\n", b"\n")
+    _w(repo / LL, lines.replace(b"\n", b"\r\n"))
+    edit = SESSION_EDIT.replace(b"\n", b"\r\n")
+    _w(repo / WF, rd(repo / WF).replace(b"      - run: echo tail\r\n", edit))
+    before = snapshot(repo)
+    res = run_tool(root, scratch, "--dirty-ok")
+    assert res.rc == 0 and "CHANGED" in res.out and "ERROR" not in res.out, res.all
+    assert commits(repo) == before["n"] + 1
+    work = rd(repo / WF)
+    assert edit in work and wg.triggers(work.decode()) == {"workflow_dispatch"}
+    committed = {WF, DL, LL}
+
+    def strip(text):
+        return [l for l in text.splitlines() if l.split()[-1] not in committed]
+    assert strip(stage_of(repo)) == strip(before["stage"])
+    assert strip(status_of(repo)) == strip(before["status"])
+    no_leftovers(repo, scratch)
+    assert_no_ci_off_refs(repo)
+
+
+def test_lock_held_by_another_process_gives_skip_after_timeout():
+    import subprocess
+    root, scratch, repo = dirty_repo()
+    before = snapshot(repo)
+    helper = scratch / "hold_lock.py"
+    helper.write_text(
+        "import sys\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\nimport ci_triggers_off as ci\n"
+        "with ci.repo_lock(ci.common_dir(Path(sys.argv[2]))):\n    print('READY', flush=True)\n    sys.stdin.readline()\n",
+        encoding="utf-8", newline="\n")
+    holder = subprocess.Popen([hv2.PY, "-I", str(helper), str(HERE.parent / "tools"), str(repo)], cwd=str(root),
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    orig = ci.repo_lock
+    try:
+        assert holder.stdout.readline().strip() == "READY"
+        ci.repo_lock = lambda common: orig(common, timeout=0.5)  # the 30 s wait is a default arg, so shorten it here
+        row = ci.process(repo, False, False, True, scratch)
+    finally:
+        ci.repo_lock = orig
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        holder.wait(timeout=20)
+    assert row["status"] == "SKIP another ci_triggers_off run holds the lock", row
+    assert snapshot(repo) == before
+    assert "CHANGED" in run_tool(root, scratch, "--dirty-ok").out  # lock released: a real run works
+
+
 if __name__ == "__main__":
     sys.exit(hv2.run_all(globals()))
