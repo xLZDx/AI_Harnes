@@ -473,3 +473,6 @@ Decisions:
 
 ## 2026-11-12 S14-T7 ledger reads the agent runs where the hooks write them
 - Found by me on the first real `verify --by functional-test-reviewer`: every task refused although the run (19:57:13-20:04:52) is in ~/.harness-hooks/state/agents/active.json. ledger.py looked only at HARNESS_HOOK_STATE or ~/.harness-hooks; the hooks also read HARNESS_HOOK_STATE from the machine config ~/.harness-hooks/config.json (value ~/.harness-hooks/state). Now ledger.py reads the same config key.
+
+## 2026-11-12 S14-T5 session_close_gate saw no running agents
+- Log ~/.harness-hooks/state/session_close/session_close_gate.jsonl: 'block ledger-open-tasks' at 20:06, 20:08 and 20:09 while five of my agents ran. Cause: Claude writes the 'Async agent launched' result twice; the copy has no timestamp, and pending_agents_aged removed the launch on that copy. A SendMessage resume ('resumedAgentId') was not counted either. Fix: an untimed copy never removes a timed launch; a resume counts as a launch at its time. Checked on this session's transcript: 5 agents pending (before: none).
