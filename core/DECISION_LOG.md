@@ -168,3 +168,6 @@
 
 ## 2026-11-12 S7-T7 committed
 - run_hook.py runs each hook in process and records one metrics row (hook, event, decision, ms; no text); tools/metrics.py; 30-day retention runs on write, on metrics.py and on --purge, independent of rotation. Limit: the daily scheduled purge task is not installed yet (needs the operator accept).
+
+## 2026-11-12 S7-T5 committed
+- secret_guard: secret values are never printed (files, env, tokens, inline scripts, terraform output without a name), money CLIs are refused, credential changes need a fresh credential-invalid record for the SAME credential/service/project or an operator message naming the action or a confirmed exposure under the standing order; deleting the old credential needs a verified replacement. Exposure states detected/confirmed (authorized is derived at decision time from confirmed plus the standing order). Limit: only known formats become confirmed; unknown channels cannot be prevented.

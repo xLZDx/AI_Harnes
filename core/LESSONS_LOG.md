@@ -164,3 +164,5 @@
 - Kind: SUCCESS. Facts: S7-T6 tests assert the exact START line and that a fake secret in the prompt appears nowhere (UI, state, metrics). Rule: test privacy claims with a planted fake secret.
 
 - Kind: SUCCESS. Facts: the runner output is byte-identical to a direct hook run for deny, allow and exit-2 cases (tests), found one real bug first (a dropped TextIOWrapper closed its buffer). Rule: keep references to wrapped streams.
+
+- Kind: FAILURE. Facts: a literal backspace in the money regex (a  typed in a normal string) made every English money word unmatched; found by a test agent, not by me. Rule: scan new files for control characters.
