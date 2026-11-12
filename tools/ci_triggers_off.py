@@ -37,6 +37,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -233,18 +234,70 @@ def _place_noclobber(src: Path, dst: Path) -> bool:
         return False
 
 
-def _unlink_retry(p: Path, tries: int = 6) -> bool:
-    """Delete with a short bounded retry (Windows: a scanner or indexer can hold a file for a moment)."""
+def _park(p: Path, a: Path) -> str | None:
+    """Move p to the parked name a without ever overwriting a. Returns None when parked, else why not (p untouched,
+    or p was replaced by a newer file which then keeps its path). FileNotFoundError when p does not exist.
+    Windows: one rename, which refuses an existing a. POSIX has no no-clobber rename in the standard library, so:
+    link p to a (refuses an existing a), move p to an unguessable name, and drop that name only when it is the same
+    file as a; if a newer file had replaced p in between, it goes back to p and a keeps the earlier bytes."""
+    if os.name == "nt":
+        return None if _place_noclobber(p, a) else f"{a.name} exists; it was not overwritten"
+    try:
+        os.link(p, a)
+    except FileExistsError:
+        return f"{a.name} exists; it was not overwritten"
+    t2 = p.with_name(f".{p.name}.cioff-park-{secrets.token_hex(8)}")
+    os.rename(p, t2)  # unguessable name: no other writer can have a file there
+    s2, sa = os.stat(t2), os.stat(a)
+    if (s2.st_ino, s2.st_dev) == (sa.st_ino, sa.st_dev):
+        os.unlink(t2)  # only a second name of the parked file; its bytes stay at a
+        return None
+    if _place_noclobber(t2, p):
+        return f"{p.name} was replaced during the run; the newer file kept its path, {a.name} holds the earlier bytes"
+    return f"{p.name} was replaced twice during the run; kept as {t2.name} and {p.name}, earlier bytes in {a.name}"
+
+
+def _drop_parked(a: Path, known: set, tries: int = 6) -> str:
+    """Delete a parked copy only when no other process can write to it and it holds bytes in `known`.
+    Returns "deleted" (or already gone), "changed" (other bytes: kept) or "kept" (not provably safe: kept).
+    Windows: the copy is opened with share mode 0, which fails while any other handle to it is open and blocks every
+    new open while ours is held; it is hashed and marked for deletion through that one handle, so no write can land
+    between the check and the delete. POSIX cannot exclude a writer that already holds the file open, so the copy is
+    always kept there and reported for a manual check."""
+    if os.name != "nt":
+        return "kept"
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.SetFileInformationByHandle.restype = wintypes.BOOL
+    k32.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    invalid = wintypes.HANDLE(-1).value
+    generic_read, delete, open_existing, attr_normal, file_disposition_info = 0x80000000, 0x00010000, 3, 0x80, 4
+    h = None
     for i in range(tries):
-        try:
-            p.unlink(missing_ok=True)
-            return True
-        except PermissionError:
-            time.sleep(0.05 * (2 ** i))
-    return False
+        h = k32.CreateFileW(str(a), generic_read | delete, 0, None, open_existing, attr_normal, None)
+        if h not in (None, invalid):
+            break
+        if ctypes.get_last_error() in (2, 3):  # file or path not found: nothing left to delete
+            return "deleted"
+        h = None
+        time.sleep(0.05 * (2 ** i))  # sharing violation: another handle is open (or a scanner holds it briefly)
+    if h is None:
+        return "kept"
+    with open(msvcrt.open_osfhandle(h, os.O_RDONLY), "rb") as f:  # closing f closes the handle
+        if hashlib.sha256(f.read()).hexdigest() not in known:
+            return "changed"
+        flag = ctypes.c_ubyte(1)  # FILE_DISPOSITION_INFO.DeleteFile = TRUE: deleted when our handle closes
+        if not k32.SetFileInformationByHandle(h, file_disposition_info, ctypes.byref(flag), 1):
+            return "kept"
+    return "deleted"
 
 
-LEFTOVER_ASIDES: list[str] = []  # parked copies that could not be deleted after a completed swap (reported in the row)
+LEFTOVER_ASIDES: list[str] = []  # parked copies that were kept after a completed swap (reported in the row)
 
 
 def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
@@ -254,9 +307,9 @@ def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
       1. the current file is moved aside in one rename; from that instant any other writer creates a NEW p;
       2. the moved bytes are hashed: not `expect` -> they are put back (never over a newer p) and the swap is refused;
       3. the new bytes are placed only where p does not exist (no-clobber); if someone created p meanwhile, theirs stays;
-      4. the parked bytes are removed only if they still hash to `expect` (bounded retry); a copy that cannot be
-         removed is reported in LEFTOVER_ASIDES and the swap still counts as done (it holds known bytes).
-    Residual: a writer that already held the old file open and writes in place between the step-4 hash and delete.
+      4. the parked bytes are removed only through _drop_parked (no other open handle, still `expect`); a copy that
+         is kept is reported in LEFTOVER_ASIDES and the swap still counts as done.
+    Step 1 never overwrites an existing parked name (_park).
     Returns None on success, else an error; on error no other writer's bytes were lost (they are at p or at the aside)."""
     a = aside_path(p)
     t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
@@ -275,11 +328,13 @@ def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
             return (f"{a.name} exists from an earlier swap; check that it holds old bytes of {p.name} (pre-run or "
                     f"merged), delete it by hand, then run again")
         try:
-            os.replace(p, a)  # step 1 (a does not exist, so nothing is overwritten)
+            perr = _park(p, a)  # step 1: never overwrites a
         except FileNotFoundError:
             return f"{p.name} disappeared during the run; nothing written"
         except OSError as e:
             return f"{p.name} could not be moved aside ({e}); nothing written"
+        if perr:
+            return perr + "; nothing written"
         if _sha(a) != expect:  # step 2: someone changed it before we moved it
             if _place_noclobber(a, p):
                 return f"{p.name} changed during the run; it was not overwritten"
@@ -288,9 +343,10 @@ def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
         if data is not None and not _place_noclobber(t, p):  # step 3
             return (f"{p.name} was recreated by someone else during the run; theirs kept, the pre-run bytes are in "
                     f"{a.name} (delete it after checking)")
-        if _sha(a) != expect:  # step 4
+        r = _drop_parked(a, {expect})  # step 4
+        if r == "changed":
             return f"{a.name} was written to while parked; kept for a manual check (compare with {p.name})"
-        if not _unlink_retry(a):
+        if r == "kept":
             LEFTOVER_ASIDES.append(str(a))
         return None
     finally:
@@ -458,10 +514,13 @@ def rollback(repo: Path, j: dict) -> list[str]:
                 if not p.exists() and a.exists() and not _place_noclobber(a, p):  # crash inside swap_in: unpark
                     errs.append(f"{f}: could not move {a.name} back; both kept")
                     continue
-                if p.exists() and a.exists() and _sha(a) in (pre.get(f), merged.get(f)) and not _unlink_retry(a):
-                    # parked copy of known bytes (pre-run bytes are also in the backup): safe to drop
-                    errs.append(f"{f}: could not delete {a.name} (holds known bytes); delete it by hand")
-                    continue
+                if p.exists() and a.exists():
+                    # parked copy of known bytes (pre-run bytes are also in the backup): dropped only when provably
+                    # safe; otherwise it stays and blocks the restore, which would need the same parked name
+                    r = _drop_parked(a, {h for h in (pre.get(f), merged.get(f)) if h})
+                    if r != "deleted":
+                        errs.append(f"{f}: {a.name} kept ({r}); check it against the backup, delete it by hand")
+                        continue
                 now = _sha(p)
                 if now == pre.get(f):
                     continue  # already the pre-run bytes
@@ -647,7 +706,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                     cleanup_run(repo, j, jp)
                     result = f"ERROR {e}; working files restored, branch back at {old[:7]}"
         if LEFTOVER_ASIDES:  # this repo's parked copies only (the list is cleared when the run starts)
-            result += "; NOTE could not delete parked copies (known old bytes), delete by hand: " + ", ".join(LEFTOVER_ASIDES)
+            result += "; NOTE kept parked copies (known old bytes; another process had them open, or POSIX), check and delete by hand: " + ", ".join(LEFTOVER_ASIDES)
             LEFTOVER_ASIDES.clear()
         return result
     finally:
