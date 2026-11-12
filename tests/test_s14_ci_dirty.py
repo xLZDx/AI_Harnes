@@ -2,6 +2,7 @@
 Temp repos only under D:\\tmp\\harness_v2_tests; the tool runs as a subprocess with --root and --scratch both pointing at
 temp folders (never at the real D:\\Repo), except the stale-branch test, which drives process_dirty in-process on a temp repo.
 Run: C:\\Python314\\python.exe -I tests/test_s14_ci_dirty.py"""
+import contextlib
 import sys
 from pathlib import Path
 
@@ -464,22 +465,22 @@ def test_real_content_edit_in_a_file_the_tool_rewrites_is_never_lost():
 
 def _run_with_hook_before_first_write(repo, scratch, edit_rel, extra):
     """In-process process_dirty; just before the first real file write in the repo, append `extra` to edit_rel."""
-    orig = ci.atomic_write
+    orig = ci.swap_in  # atomic_write was removed; swap_in is the single write path (each file write, each restore)
     state = {"writes": [], "fired": False}
 
-    def hooked(p, data):
-        if Path(p).is_relative_to(repo):  # the inner run writes in the temp worktree; only count the real repo
+    def hooked(p, data, expect):
+        if Path(p).is_relative_to(repo):
             state["writes"].append(Path(p).relative_to(repo).as_posix())
             if not state["fired"]:
                 state["fired"] = True
                 if extra is not None:
                     _w(repo / edit_rel, rd(repo / edit_rel) + extra)
-        return orig(p, data)
-    ci.atomic_write = hooked
+        return orig(p, data, expect)
+    ci.swap_in = hooked
     try:
         out = ci.process_dirty(repo, False, scratch)
     finally:
-        ci.atomic_write = orig
+        ci.swap_in = orig
     return out, state
 
 
@@ -531,6 +532,379 @@ def test_same_hook_without_outside_edit_is_changed():
     assert not (repo / ".git" / JOURNAL).exists()
     no_leftovers(repo, scratch)
     assert_no_ci_off_refs(repo)
+
+
+# ------------------------------------------------------------------ swap_in races (GPT-PM round 2 MAJOR)
+
+EXTRA = b"CONCURRENT-USER-BYTES\n"
+USER_NEW = b"user recreated this file\n"
+ASIDE_NAME = ".{}.cioff-aside"
+FILES3 = (WF, DL, LL)
+
+
+@contextlib.contextmanager
+def race(repo, rel, point, action):
+    """Fire `action(path)` once, deterministically, at one exact instant inside swap_in for file `rel`:
+    point 'before-aside' = just before step 1 os.replace(p, aside) (after every hash check);
+    point 'before-place' = just before step 3 _place_noclobber(tmp, p) (p is parked aside at that moment).
+    action None = pass-through twin (only counts that the point was reached)."""
+    target = repo / rel
+    st = {"fired": 0}
+    o_replace, o_place = ci.os.replace, ci._place_noclobber
+
+    def fire():
+        st["fired"] += 1
+        if action is not None:
+            action(target)
+
+    def r_hook(src, dst, *a, **k):
+        if point == "before-aside" and not st["fired"] and Path(src) == target and Path(dst) == ci.aside_path(target):
+            fire()
+        return o_replace(src, dst, *a, **k)
+
+    def p_hook(src, dst):
+        if point == "before-place" and not st["fired"] and Path(dst) == target and Path(src).name.endswith(".tmp"):
+            fire()
+        return o_place(src, dst)
+    ci.os.replace, ci._place_noclobber = r_hook, p_hook
+    try:
+        yield st
+    finally:
+        ci.os.replace, ci._place_noclobber = o_replace, o_place
+
+
+def _append_extra(t):
+    _w(t, rd(t) + EXTRA)
+
+
+def _create_user(t):
+    assert not t.exists(), "step 1 should have parked the file"
+    _w(t, USER_NEW)
+
+
+def _no_asides(repo):
+    for rel in FILES3:
+        assert not ci.aside_path(repo / rel).exists(), rel
+
+
+def test_A_edit_right_before_the_replace_is_never_lost():
+    for rel in FILES3:
+        root, scratch, repo = dirty_repo("a_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        with race(repo, rel, "before-aside", _append_extra) as st:
+            out = ci.process_dirty(repo, False, scratch)
+        assert st["fired"] == 1, (rel, st)
+        assert out.startswith("ERROR") and "changed during the run" in out, (rel, out)
+        assert rd(repo / rel) == before["files"][rel] + EXTRA, (rel, "user bytes must be exact")
+        _no_asides(repo)
+        jp = repo / ".git" / JOURNAL
+        assert jp.exists() and "journal kept" in out, (rel, out)
+        mid = snapshot(repo)
+        rec = ci.recover(repo)  # refuses while the user's edit stays
+        assert rec.startswith("ERROR") and "RECOVERED" not in rec, (rel, rec)
+        assert snapshot(repo) == mid and rd(repo / rel) == before["files"][rel] + EXTRA and jp.exists(), rel
+        _w(repo / rel, before["files"][rel])  # user reverts their edit
+        ok = ci.recover(repo)
+        assert ok.startswith("RECOVERED"), (rel, ok)
+        assert snapshot(repo) == before, rel
+        _no_asides(repo)
+        assert not jp.exists()
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_B_file_recreated_after_it_was_parked_is_never_lost():
+    for rel in FILES3:
+        root, scratch, repo = dirty_repo("b_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        with race(repo, rel, "before-place", _create_user) as st:
+            out = ci.process_dirty(repo, False, scratch)
+        assert st["fired"] == 1, (rel, st)
+        assert out.startswith("ERROR") and "recreated" in out, (rel, out)
+        assert rd(repo / rel) == USER_NEW, rel  # user's bytes exactly
+        aside = ci.aside_path(repo / rel)
+        assert aside.is_file() and rd(aside) == before["files"][rel], (rel, "aside must hold the pre-run bytes")
+        jp = repo / ".git" / JOURNAL
+        assert jp.exists(), rel
+        mid = snapshot(repo)
+        rec = ci.recover(repo)  # refuses while the user's p stays
+        assert rec.startswith("ERROR") and "RECOVERED" not in rec, (rel, rec)
+        assert rd(repo / rel) == USER_NEW and rd(aside) == before["files"][rel] and jp.exists(), rel
+        assert snapshot(repo) == mid, rel
+        # the user resolves by hand: puts the pre-run bytes back and removes the parked copy -> recovery is exact
+        _w(repo / rel, before["files"][rel])
+        aside.unlink()
+        ok = ci.recover(repo)
+        assert ok.startswith("RECOVERED"), (rel, ok)
+        assert snapshot(repo) == before, rel
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_C_races_during_recover_restore_keep_the_users_bytes():
+    for point, act in (("before-aside", _append_extra), ("before-place", _create_user)):
+        for rel in FILES3:
+            root, scratch, repo = dirty_repo("c_" + point[7:] + "_" + rel[-7:-3].strip("./_").lower())
+            before = snapshot(repo)
+            _crash_at(root, scratch, "files-merged")
+            merged = rd(repo / rel)
+            assert merged != before["files"][rel], rel  # the crash left merged bytes in place
+            jp = repo / ".git" / JOURNAL
+            with race(repo, rel, point, act) as st:
+                rec = ci.recover(repo)
+            tag = (point, rel, rec)
+            assert st["fired"] == 1, tag
+            assert rec.startswith("ERROR") and "RECOVERED" not in rec and "journal kept" in rec, tag
+            aside = ci.aside_path(repo / rel)
+            if point == "before-aside":
+                assert "changed during the run" in rec, tag
+                assert rd(repo / rel) == merged + EXTRA, tag
+                assert not aside.exists(), tag
+                _w(repo / rel, merged)  # user reverts
+            else:
+                assert "recreated" in rec, tag
+                assert rd(repo / rel) == USER_NEW, tag
+                assert aside.is_file() and rd(aside) == merged, tag  # parked bytes are kept, not deleted
+                mid = snapshot(repo)
+                assert ci.recover(repo).startswith("ERROR") and rd(repo / rel) == USER_NEW, tag
+                assert snapshot(repo) == mid, tag
+                _w(repo / rel, merged)  # user resolves by hand
+                aside.unlink()
+            assert jp.exists(), tag
+            ok = ci.recover(repo)
+            assert ok.startswith("RECOVERED"), (tag, ok)
+            assert snapshot(repo) == before, tag
+            _no_asides(repo)
+            no_leftovers(repo, scratch)
+            assert_no_ci_off_refs(repo)
+
+
+CRASH_HELPER = """import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import ci_triggers_off as ci
+repo, scratch, mode, rel = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5]
+point = sys.argv[6] if len(sys.argv) > 6 else 'after-aside'
+target = repo / rel
+orig, oplace = os.replace, ci._place_noclobber
+def hook(src, dst, *a, **k):
+    hit = Path(src) == target and str(dst).endswith('.cioff-aside')
+    if hit and point == 'before-aside':
+        os._exit(70)
+    r = orig(src, dst, *a, **k)
+    if hit and point == 'after-aside':
+        os._exit(70)  # hard crash right after step 1
+    return r
+def phook(src, dst):
+    r = oplace(src, dst)
+    if r and point == 'after-place' and Path(dst) == target and Path(src).name.endswith('.tmp'):
+        os._exit(70)
+    return r
+os.replace, ci._place_noclobber = hook, phook
+if mode == 'run':
+    print(ci.process_dirty(repo, False, scratch))
+else:
+    print(ci.recover(repo))
+"""
+
+
+def _crash_helper(root, scratch, repo, mode, rel, point="after-aside"):
+    h = scratch / "crash_helper.py"
+    h.write_text(CRASH_HELPER, encoding="utf-8", newline=chr(10))
+    return hv2.run([hv2.PY, "-I", str(h), str(HERE.parent / "tools"), str(repo), str(scratch), mode, rel, point], root)
+
+
+def test_D_hard_crash_after_step1_leaves_aside_and_recover_restores_exact_state():
+    for rel in FILES3:
+        root, scratch, repo = dirty_repo("d_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        res = _crash_helper(root, scratch, repo, "run", rel)
+        assert res.rc == 70, (rel, res.all)
+        aside = ci.aside_path(repo / rel)
+        assert not (repo / rel).exists() and aside.is_file(), rel  # parked, p absent
+        assert rd(aside) == before["files"][rel], rel
+        jp = repo / ".git" / JOURNAL
+        assert jp.is_file(), rel
+        rerun = run_tool(root, scratch, "--dirty-ok")
+        assert "SKIP" in rerun.out and "interrupted run found; use --recover" in rerun.out, (rel, rerun.all)
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 0 and "RECOVERED" in rec.out and "ERROR" not in rec.out, (rel, rec.all)
+        assert snapshot(repo) == before, rel
+        _no_asides(repo)
+        assert not jp.exists()
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_D2_hard_crash_inside_recover_restore_then_second_recover_is_exact():
+    for rel in FILES3:
+        root, scratch, repo = dirty_repo("d2_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        _crash_at(root, scratch, "files-merged")
+        merged = rd(repo / rel)
+        res = _crash_helper(root, scratch, repo, "recover", rel)
+        assert res.rc == 70, (rel, res.all)
+        aside = ci.aside_path(repo / rel)
+        assert not (repo / rel).exists() and aside.is_file() and rd(aside) == merged, rel
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 0 and "RECOVERED" in rec.out, (rel, rec.all)
+        assert snapshot(repo) == before, rel
+        _no_asides(repo)
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_E_twins_without_any_edit_are_changed_and_recovered():
+    for point in ("before-aside", "before-place"):
+        root, scratch, repo = dirty_repo("e1_" + point[7:])
+        before = snapshot(repo)
+        with race(repo, WF, point, None) as st:
+            out = ci.process_dirty(repo, False, scratch)
+        assert st["fired"] == 1 and out.startswith("CHANGED"), (point, out)
+        assert commits(repo) == before["n"] + 1
+        assert SESSION_EDIT in rd(repo / WF) and wg.triggers(rd(repo / WF).decode()) == {"workflow_dispatch"}
+        assert not (repo / ".git" / JOURNAL).exists()
+        _no_asides(repo)
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+        root, scratch, repo = dirty_repo("e2_" + point[7:])
+        before = snapshot(repo)
+        _crash_at(root, scratch, "files-merged")
+        with race(repo, WF, point, None) as st:
+            rec = ci.recover(repo)
+        assert st["fired"] == 1 and rec.startswith("RECOVERED"), (point, rec)
+        assert snapshot(repo) == before, point
+        _no_asides(repo)
+        no_leftovers(repo, scratch)
+
+
+def test_F_crash_after_place_before_aside_delete_recovers_exact_state():
+    for rel in FILES3:
+        root, scratch, repo = dirty_repo("f_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        res = _crash_helper(root, scratch, repo, "run", rel, "after-place")
+        assert res.rc == 70, (rel, res.all)
+        aside = ci.aside_path(repo / rel)
+        assert (repo / rel).is_file() and aside.is_file(), rel
+        assert rd(aside) == before["files"][rel] and rd(repo / rel) != before["files"][rel], rel  # p = merged, aside = pre
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 0 and "RECOVERED" in rec.out and "ERROR" not in rec.out, (rel, rec.all)
+        assert snapshot(repo) == before, rel
+        _no_asides(repo)
+        assert not (repo / ".git" / JOURNAL).exists()
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_F2_exception_after_place_rolls_back_without_a_person():
+    root, scratch, repo = dirty_repo()
+    before = snapshot(repo)
+    o_place = ci._place_noclobber
+    target = repo / WF
+    fired = []
+
+    def boom(src, dst):
+        r = o_place(src, dst)
+        if r and not fired and Path(dst) == target and Path(src).name.endswith(".tmp"):
+            fired.append(1)  # only the forward write fails; the rollback's own restore must work
+            raise RuntimeError("injected failure after step 3")
+        return r
+    ci._place_noclobber = boom
+    try:
+        out = ci.process_dirty(repo, False, scratch)
+    finally:
+        ci._place_noclobber = o_place
+    assert out.startswith("ERROR") and "injected failure" in out and "working files restored" in out, out
+    assert snapshot(repo) == before
+    _no_asides(repo)
+    assert not (repo / ".git" / JOURNAL).exists()
+    no_leftovers(repo, scratch)
+    assert_no_ci_off_refs(repo)
+
+
+def _fail_unlink_of_asides():
+    orig = ci._unlink_retry
+
+    def fake(p, *a, **k):
+        return False if Path(p).name.endswith(".cioff-aside") else orig(p, *a, **k)
+    ci._unlink_retry = fake
+    return orig
+
+
+def test_G_undeletable_parked_copy_still_changed_with_note_and_next_run_is_clean():
+    root, scratch, repo = dirty_repo()
+    before = snapshot(repo)
+    orig = _fail_unlink_of_asides()
+    try:
+        out = ci.process_dirty(repo, False, scratch)
+    finally:
+        ci._unlink_retry = orig
+    assert out.startswith("CHANGED"), out
+    assert "NOTE could not delete parked copies" in out, out
+    for rel in FILES3:
+        assert ci.aside_path(repo / rel).is_file(), rel
+    assert not (repo / ".git" / JOURNAL).exists()
+    assert commits(repo) == before["n"] + 1
+    assert SESSION_EDIT in rd(repo / WF) and wg.triggers(rd(repo / WF).decode()) == {"workflow_dispatch"}
+    assert ci.LEFTOVER_ASIDES == [], ci.LEFTOVER_ASIDES
+    snap = snapshot(repo)
+    rec = run_tool(root, scratch, "--recover")  # not needed: nothing to recover
+    assert "SKIP" in rec.out and "RECOVERED" not in rec.out, rec.all
+    again = run_tool(root, scratch, "--dirty-ok")
+    assert again.rc == 0 and "CLEAN" in again.out and "SKIP" not in again.out and "ERROR" not in again.out, again.all
+    assert commits(repo) == before["n"] + 1 and rd(repo / WF) == snap["files"][WF]
+
+
+def test_H_note_of_one_repo_never_reaches_another_repo():
+    root1, scratch1, repo1 = dirty_repo("h1")
+    root2, scratch2, repo2 = dirty_repo("h2")
+    o_swap = ci.swap_in
+    state = {"n": 0}
+
+    def swap_with_edit(p, data, expect):  # user edit of LL just before LL's swap in repo1 -> ERROR after WF/DL left parked copies
+        if Path(p) == repo1 / LL and not state["n"]:
+            state["n"] = 1
+            _w(repo1 / LL, rd(repo1 / LL) + EXTRA)
+        return o_swap(p, data, expect)
+    ci.swap_in = swap_with_edit
+    orig = _fail_unlink_of_asides()
+    try:
+        row1 = ci.process(repo1, False, False, True, scratch1)
+    finally:
+        ci._unlink_retry = orig
+        ci.swap_in = o_swap
+    assert state["n"] == 1
+    assert row1["status"].startswith("ERROR") and "NOTE could not delete parked copies" in row1["status"], row1
+    assert str(ci.aside_path(repo1 / WF)) in row1["status"], row1
+    assert rd(repo1 / LL).endswith(EXTRA)
+    # same process, next repo, normal unlink: no NOTE
+    row2 = ci.process(repo2, False, False, True, scratch2)
+    assert row2["status"].startswith("CHANGED") and "NOTE" not in row2["status"], row2
+    # stale list left by anything earlier is cleared when a repo run starts
+    root3, scratch3, repo3 = dirty_repo("h3")
+    ci.LEFTOVER_ASIDES[:] = ["STALE-OTHER-REPO-ASIDE"]
+    try:
+        row3 = ci.process(repo3, False, False, True, scratch3)
+    finally:
+        ci.LEFTOVER_ASIDES.clear()
+    assert row3["status"].startswith("CHANGED") and "NOTE" not in row3["status"] and "STALE" not in row3["status"], row3
+
+
+def test_I_crash_leaving_swap_temp_file_is_cleaned_by_recover():
+    for rel in (WF, LL):
+        root, scratch, repo = dirty_repo("i_" + rel[-7:-3].strip("./_").lower())
+        before = snapshot(repo)
+        res = _crash_helper(root, scratch, repo, "run", rel, "before-aside")
+        assert res.rc == 70, (rel, res.all)
+        p = repo / rel
+        tmps = list(p.parent.glob(f".{p.name}.cioff-*.tmp"))
+        assert len(tmps) == 1, (rel, tmps)  # the crash really left the temp file
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 0 and "RECOVERED" in rec.out, (rel, rec.all)
+        assert list(p.parent.glob(f".{p.name}.cioff-*.tmp")) == [], rel
+        assert snapshot(repo) == before, rel
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
 
 
 def test_lock_held_by_another_process_gives_skip_after_timeout():

@@ -618,6 +618,10 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             after, stage_after = status_map(repo), stage_map(repo)
             for p in set(snap_status) | set(after):
                 if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??")                         and not (p in files and p in eol_only and after.get(p) is None):
+                    if (snap_status.get(p) is None and p.endswith(".cioff-aside")
+                            and any(os.path.normcase(str(Path(x).resolve())) == os.path.normcase(str((repo / p).resolve()))
+                                    for x in LEFTOVER_ASIDES)):
+                        continue  # our own parked copy that could not be deleted: reported in the row, not a user change
                     raise RuntimeError(f"status changed for {p}: {snap_status.get(p)!r} -> {after.get(p)!r}")
             for p in set(snap_stage) | set(stage_after):
                 if p not in files and snap_stage.get(p) != stage_after.get(p):
