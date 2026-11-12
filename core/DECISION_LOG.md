@@ -467,3 +467,6 @@ Decisions:
   - Virtual_scrum_team 7b544dfe (2026-11-10): commit 1e45905 (U2-6 tests) and the registry commit; both already merged into later branches.
   - Harness_v2 b3f76eff (11-12 14:22): amended the S10 commit (0693978) on s10-report-whole-program; f1badd65 (17:00): a commit refused by a moved HEAD; e6321013 and 4ed83215: the S14 forgery above.
 - Decision: no history rewrite (rule 5, force-push is operator-only). The AEVE s20-plan changes go to backlog B13 for review in AEVE's next sprint before its PR; the plan statuses they wrote are not trusted.
+
+## 2026-11-12 S14-T7 docs-only commits do not make an agent run stale
+- require_agent_run walks back from the task's last commit over docs-only commits (route.is_doc) and compares the agent start with the nearest commit that changes code. Found by me: my log commit 020450c landed after the S14 test agent started.

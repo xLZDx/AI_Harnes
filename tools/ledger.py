@@ -314,8 +314,21 @@ def require_agent_run(role: str, task_commit: str, what: str) -> None:
     recorded by the agent_visibility hook. 2026-11-12 incident: a runaway helper session wrote 'verify pass' and
     'review accepted' for every S14 task with no test or review agent ever run, then closed the sprint."""
     try:
-        since = int(git("show", "-s", "--format=%ct", task_commit))
-    except (GitError, ValueError):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import route
+        rules = route.load_rules(main_root())
+        # a docs-only commit (logs, backlog) after the agent run does not make the run stale
+        cur = task_commit
+        while True:
+            files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", cur).splitlines() if f]
+            if not files or any(not route.is_doc(rules, f) for f in files):
+                break
+            prev = [c for c in git("rev-list", "--parents", "-n", "1", cur).split()[1:2]]
+            if not prev:
+                break
+            cur = prev[0]
+        since = int(git("show", "-s", "--format=%ct", cur))
+    except (GitError, ValueError, ImportError):
         sys.exit(f"ledger: cannot read the time of commit {task_commit[:12]}")
     runs = [e for e in _agents_state() if str(e.get("type", "")).lower() == role.lower()
             and e.get("stop") and float(e.get("start", 0)) >= since - 5]
