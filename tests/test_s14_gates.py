@@ -289,5 +289,48 @@ def test_t4_report_alerts_stay_clean_for_errors_resolved_after_the_commit_hook_l
     assert alerts(repo, path) == [], "resolved error resurfaced from hook-error.log"
 
 
+def _with_log(name, task_ids, ledger_errors, log_lines, ack_at=None):
+    repo, path = make_ledger(name, task_ids, ledger_errors)
+    if ack_at:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["events"].append({"at": ack_at, "kind": "hook-error-ack", "reason": "noise", "count": 0})
+        path.write_text(json.dumps(data), encoding="utf-8")
+    (path.parent / "hook-error.log").write_text("".join(l + "\n" for l in log_lines), encoding="utf-8")
+    return repo, path
+
+
+def test_t4_log_lines_already_in_the_ledger_are_not_raised_again():
+    resolved = "commit a names unknown task S1-T1"
+    acked = "commit b names unknown task X-7"
+    repo, path = _with_log("s14-t4-log-known", ["S1-T1"], [resolved, acked],
+                           ["2026-11-12T05:00:00+00:00 " + resolved, "2026-11-12T05:00:01+00:00 " + acked], ack_at="2026-11-12T03:00:00+00:00")
+    assert alerts(repo, path) == [], "resolved/acknowledged ledger errors came back from the log"
+    # twin: the same text is still reported when the ledger has it open and no ack exists
+    repo, path = _with_log("s14-t4-log-open", ["S1-T1"], [acked], ["2026-11-12T05:00:01+00:00 " + acked])
+    al = alerts(repo, path)
+    assert len(al) == 1 and ": 1," in al[0] and "X-7" in al[0], al
+
+
+def test_t4_log_only_line_shown_only_when_newer_than_the_last_ack():
+    ack = "2026-11-12T03:00:00+00:00"
+    repo, path = _with_log("s14-t4-log-new", ["S1-T1"], [], ["2026-11-12T05:00:00+00:00 shell level crash NEW"], ack_at=ack)
+    al = alerts(repo, path)
+    assert len(al) == 1 and "shell level crash NEW" in al[0], al
+    repo, path = _with_log("s14-t4-log-old", ["S1-T1"], [], ["2026-11-12T01:00:00+00:00 shell level crash OLD"], ack_at=ack)
+    assert alerts(repo, path) == [], "log line older than the ack must be hidden"
+    repo, path = _with_log("s14-t4-log-noack", ["S1-T1"], [], ["2026-11-12T01:00:00+00:00 shell level crash NOACK"])
+    assert len(alerts(repo, path)) == 1  # without any ack an old log-only line is shown
+    repo, path = _with_log("s14-t4-log-mixed", ["S1-T1"], [], ["2026-11-12T01:00:00+00:00 old one", "2026-11-12T05:00:00+00:00 new one"], ack_at=ack)
+    al = alerts(repo, path)
+    assert len(al) == 1 and ": 1," in al[0] and "new one" in al[0] and "old one" not in al[0], al
+
+
+def test_t4_open_unknown_task_error_still_appears_next_to_log_lines():
+    repo, path = _with_log("s14-t4-log-unknown", ["S1-T1"], ["commit c names unknown task Q-5"],
+                           ["2026-11-12T05:00:00+00:00 commit c names unknown task Q-5"])
+    al = alerts(repo, path)
+    assert len(al) == 1 and ": 1," in al[0] and "Q-5" in al[0], al
+
+
 if __name__ == "__main__":
     sys.exit(hv2.run_all(globals()))
