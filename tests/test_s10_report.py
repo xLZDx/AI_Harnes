@@ -109,8 +109,18 @@ def test_t2d_sprint_id_collision_gets_ledger_suffix():
     led = {"sprints": [_sprint("S1", ["B-1"])]}
     m = report.merge_plan_and_ledger(plan, led)
     sids = [s["id"] for s in m["sprints"]]
-    assert sids == ["S1", "S1-ledger"], sids
+    assert sids == ["S1-ledger", "S1"], sids  # ledger sprints first; the colliding ledger id gets the suffix
+    assert m["sprints"][0]["tasks"][0]["id"] == "B-1" and m["sprints"][1]["tasks"][0]["id"] == "A-1"
     assert _total(m) == 2
+
+
+def test_t2_ledger_open_sprint_is_the_active_one_after_merge():
+    import ledger as ledger_mod
+    plan = {"sprints": [_sprint("P2", ["P-1", "P-2"])]}  # open, not started
+    led = {"sprints": [_sprint("L1", ["L-1"])]}  # open
+    m = report.merge_plan_and_ledger(plan, led)
+    act = ledger_mod.active_sprint(m)
+    assert act is not None and act["id"] == "L1", act
 
 
 # ---------- T2 end to end ----------
@@ -156,6 +166,10 @@ def test_t2_e2e_denominator_is_plan_plus_ledger_tasks():
     n, m = _formula(html)
     prov = re.search(r"\(([^()]*?), все спринты", html)
     assert prov and "PROJECT_PLAN.md" in prov.group(1) and ".harness/ledger.json" in prov.group(1), prov and prov.group(1)
+    sec = re.search(r'id="active-sprint">(.*?)</section>', html, re.S)
+    assert sec, "no active-sprint section"
+    assert "S1" in sec.group(1) and "Sprint one" in sec.group(1), sec.group(1)[:300]  # the ledger's open sprint, not plan sprint P1
+    assert "P1" not in sec.group(1), sec.group(1)[:300]
     assert m == 3 + 2, (n, m)  # 3 plan tasks + 2 ledger tasks, not 2
     assert n == 1, (n, m)      # only PX-1 is ACCEPTED, ledger tasks are todo
 

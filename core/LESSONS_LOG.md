@@ -247,3 +247,4 @@
 - Kind: SHORTCOMING. Facts: my first S10 commit put the second Task: line in a separate paragraph and the ledger saw only one task. Rule: all Task: trailers go in one block.
 - Kind: SHORTCOMING. Facts: two Task: trailers in one commit registered only the first. Rule: one task per commit while commit-hook reads a single trailer.
 - Kind: SUCCESS. Facts: the failure hunter found a false provenance label that the first tests did not check. Rule: assert the stated data source, not only the numbers.
+- Kind: SHORTCOMING. Facts: my merge put plan sprints first, which made a plan sprint the active one. Root cause: I checked counts, not which sprint the report calls active. Rule: after merging two sources, test every consumer of the order.

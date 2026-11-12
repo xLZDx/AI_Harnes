@@ -603,9 +603,11 @@ def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
         if kept:
             merged.append({**sp, "tasks": kept})
     taken = {sp.get("id") for sp in merged}
+    ledger_part = []
     for sp in led_sprints:
-        merged.append({**sp, "id": sp["id"] if sp.get("id") not in taken else f"{sp['id']}-ledger"})
-        taken.add(merged[-1]["id"])
+        ledger_part.append({**sp, "id": sp["id"] if sp.get("id") not in taken else f"{sp['id']}-ledger"})
+        taken.add(ledger_part[-1]["id"])
+    merged = ledger_part + merged  # ledger sprints first: the first sprint that is not closed is the active one, and that is the one being worked
     return {**led, "sprints": merged, "source": f"{plan.get('source') or 'PROJECT_PLAN.md'} + .harness/ledger.json"}
 
 

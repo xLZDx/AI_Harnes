@@ -280,3 +280,6 @@
 
 ## 2026-11-12 S10 review fixes (silent-failure-hunter)
 - MINOR-1 fixed: the merged report names both sources (PROJECT_PLAN.md + .harness/ledger.json). MINOR-2 fixed: the ledger approval and events are kept when the ledger has no task-bearing sprints. MINOR-3 kept on purpose: the ledger state wins over the plan state for the same id.
+
+## 2026-11-12 S10 review fixes (code-reviewer)
+- MINOR-2 fixed: ledger sprints are placed first so the sprint being worked is the active one. MINOR-3 kept on purpose: a plan that does not parse is a read error (criterion 4); falling back to the ledger alone would bring back the bug of showing 2 of 2 tasks as the whole program.
