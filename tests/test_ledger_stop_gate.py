@@ -57,7 +57,7 @@ class Ctx:
             payload["transcript_path"] = str(transcript)
         payload.update(extra or {})
         env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_") and not k.startswith("SESSION_CLOSE")}
-        env["HARNESS_METRICS_DIR"] = r"D:	mp\harness_v2_tests\sink\metrics"  # S8-T1
+        env["HARNESS_METRICS_DIR"] = str(hv2.SINK / "metrics")  # S8-T1
         env.update({"HARNESS_HOOK_STATE": str(self.state), "HARNESS_HOOK_CONFIG": str(self.root / "no_config.json"),
                     "SESSION_CLOSE_GATE_MODE": mode, "PYTHONIOENCODING": "utf-8"})
         env.update(env_extra or {})

@@ -196,3 +196,5 @@
 - Kind: FAILURE. Facts: my own S7 tests wrote about 100 fixture rows into the operator's real metrics file, and I first read them as 24 real plan-first exceptions. Root cause: hook tests built their environment by hand without the metrics folder; the metrics tool had no way to tell test rows from real ones. Layer that missed it: author and tests. Rule: any test that runs a hook sets every output folder to a sink, and before calling a number in a metric a defect, look at the session ids and projects of the rows behind it.
 
 - Kind: SHORTCOMING. Facts: two ledger tasks were committed together under one Task trailer, so the ledger could not verify the first. Rule: one commit per task, or add the second task by a note commit before verify.
+
+- Kind: FAILURE. Facts: a path with a TAB (D: TAB mp) shipped in four test files; my own end-to-end test passed because it only counted fixture rows in the real folder. Root cause: escapes in a generated patch script; no check of the written bytes. Layer that missed it: author; GPT-PM found it. Rule: after any scripted edit of a path, grep the written bytes, and test that an isolation path is absolute.

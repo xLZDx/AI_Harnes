@@ -60,7 +60,7 @@ def transcript(state, human):
 def run(payload, state, env=None, client_arg=None):
     e = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
     e["HARNESS_HOOK_STATE"] = str(state)
-    e.setdefault("HARNESS_METRICS_DIR", r"D:	mp\harness_v2_tests\sink\metrics")  # S8-T1: never the real metrics folder
+    e.setdefault("HARNESS_METRICS_DIR", os.path.join(__import__("tempfile").gettempdir(), "secret_guard_test_metrics"))  # S8-T1: never the real metrics folder
     e["PYTHONIOENCODING"] = "utf-8"
     e.update(env or {})
     argv = [PY, "-s", "-X", "utf8", str(HOOK)] + ([client_arg] if client_arg else [])

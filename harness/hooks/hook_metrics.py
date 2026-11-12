@@ -25,7 +25,7 @@ RETENTION_DAYS = 30
 ROTATE_BYTES = 5 * 1024 * 1024
 KEEP = 5
 PURGE_EVERY_S = 3600
-FIELDS = ("ts", "client", "session", "hook", "event", "decision", "reason", "ms", "project", "agent")
+FIELDS = ("ts", "client", "session", "hook", "event", "decision", "reason", "ms", "project", "agent", "rid")
 
 
 def metrics_dir() -> Path:
@@ -177,8 +177,10 @@ def _rotate(d: Path, active: Path) -> None:
 
 
 def record(hook: str, event: str, decision: str, reason: str = "", ms: int = 0, session: str = "",
-           client: str = "", project: str = "", agent: str = "") -> bool:
-    """Append one row. Never raises, never blocks longer than the lock wait. Returns True when written."""
+           client: str = "", project: str = "", agent: str = "", rid: str = "") -> bool:
+    """Append one row. Never raises, never blocks longer than the lock wait. Returns True when the row is in the file.
+    `rid` is an optional stable event id: when a row with the same rid is already in the active file, nothing is appended and True is
+    returned, so a retry after a crash or a concurrent second writer never counts one event twice."""
     try:
         d = metrics_dir()
         if inside_git_work_tree(d):
@@ -189,7 +191,7 @@ def record(hook: str, event: str, decision: str, reason: str = "", ms: int = 0, 
         _restrict(d)
         row = {"ts": datetime.now(timezone.utc).isoformat(), "client": client, "session": str(session)[:64], "hook": hook,
                "event": event, "decision": decision, "reason": str(reason)[:60], "ms": int(ms),
-               "project": os.path.basename(str(project).rstrip("\\/")) if project else "", "agent": agent}
+               "project": os.path.basename(str(project).rstrip("\\/")) if project else "", "agent": agent, "rid": str(rid)[:40]}
         line = json.dumps({k: row[k] for k in FIELDS}, ensure_ascii=False) + "\n"
         active = d / "events.jsonl"
         lk = _lock(active)
@@ -199,6 +201,8 @@ def record(hook: str, event: str, decision: str, reason: str = "", ms: int = 0, 
             if not got:
                 _bump_drop(d)
                 return False
+            if rid and active.exists() and ('"rid": "%s"' % str(rid)[:40]) in active.read_text(encoding="utf-8", errors="replace"):
+                return True  # this event is already recorded
             if active.exists() and active.stat().st_size >= ROTATE_BYTES:
                 try:
                     _rotate(d, active)

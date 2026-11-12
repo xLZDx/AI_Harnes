@@ -20,7 +20,7 @@ HOOKS = hv2.SRC / "harness" / "hooks"
 METRICS_CLI = hv2.TOOLS / "metrics.py"
 PY = hv2.PY
 SECRET = "FAKE-SECRET-123"
-FIELDS = ("ts", "client", "session", "hook", "event", "decision", "reason", "ms", "project", "agent")
+FIELDS = ("ts", "client", "session", "hook", "event", "decision", "reason", "ms", "project", "agent", "rid")
 
 sys.path.insert(0, str(HOOKS))
 import hook_metrics as hm  # noqa: E402

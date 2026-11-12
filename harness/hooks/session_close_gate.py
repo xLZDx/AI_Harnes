@@ -313,15 +313,18 @@ def ledger_stop(data: dict, msg: str) -> bool:
         if rec["n"] > LEDGER_MAX_BLOCKS or now_ts - rec["first"] > LEDGER_MAX_SECONDS:
             reason = "no-progress-blocks" if rec["n"] > LEDGER_MAX_BLOCKS else "30-minutes"
             log({"event": "stop", "verdict": "ESCALATE", "why": "ledger-release", "release_reason": reason, "project": key, "open": listing})
-            if not rec.get("released"):  # one release row per streak: every later Stop of a released streak is not a new release
+            if not rec.get("metric_ok"):  # the release happened; its metrics row is retried until it is in the file (rid = no double count)
                 rec["released"] = True
-                save_state(state)
                 try:
+                    import hashlib
                     import hook_metrics
-                    hook_metrics.record("session_close_gate.py", "Stop", "release", "ledger-" + reason, 0, str(data.get("session_id") or ""),
-                                        _agentio.client(data), str(root))
+                    rid = hashlib.sha1(f"{key}|{rec.get('first')}".encode("utf-8")).hexdigest()[:16]
+                    if hook_metrics.record("session_close_gate.py", "Stop", "release", "ledger-" + reason, 0, str(data.get("session_id") or ""),
+                                           _agentio.client(data), str(root), rid=rid):
+                        rec["metric_ok"] = True
                 except Exception:
                     pass
+                save_state(state)
             warn(f"{len(tasks)} open task(s) in {root} and no progress ({reason}); releasing the session: {listing}")
             continue
         log({"event": "stop", "verdict": "block" if mode() == "live" else "would-block", "why": "ledger-open-tasks",

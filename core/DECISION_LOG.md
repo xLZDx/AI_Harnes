@@ -204,3 +204,6 @@
 
 ## 2026-11-12 S8-T1 ledger note
 - The test-isolation change of S8-T1 landed in commit d2b7a36 together with S8-T2 (one commit carries one Task trailer, so this note commit records S8-T1 in the ledger). No code differs.
+
+## 2026-11-12 S8 GPT-PM round 1 fixes
+- Round 1 of S8 found two MAJOR. F2 was real: my patch script turned the backslash-t of the sink path into a TAB in four test files, so those tests wrote metrics to a relative path on drive D; the literals are replaced by hv2.SINK or temp-folder paths and a test checks for tabs and absolute paths. F1: the release metric could be lost when the write failed after the state was saved; the release row now carries a stable rid, hook_metrics.record is idempotent per rid, and the gate retries until the row is in the file (metric_ok). Limit: only active-file rows are deduplicated by rid.
