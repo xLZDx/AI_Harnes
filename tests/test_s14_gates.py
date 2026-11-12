@@ -250,6 +250,24 @@ def test_t2_python_heredoc_text_is_not_a_substitution_but_a_shell_heredoc_body_i
     check(fails)
 
 
+def test_t2_python_heredoc_code_that_starts_a_shell_keeps_the_substitution_check():
+    deny = ["python - <<'EOF'\nimport os; os.system(\"echo $(npm test)\")\nEOF",
+            "python - <<'EOF'\nimport subprocess; subprocess.run(\"x $(npm test)\", shell=True)\nEOF"]
+    allow = ["python - <<'EOF'\nprint(\"$(npm test)\")\nEOF"]
+    fails = []
+    for cmd in deny:
+        d, reason, r = enf.gate(cmd)
+        if not d:
+            fails.append(f"NOT denied: {cmd!r}")
+        elif "full" not in reason.lower() and "test" not in reason.lower():
+            fails.append(f"denied for another reason: {cmd!r}: {reason[:160]}")
+    for cmd in allow:
+        d, reason, r = enf.gate(cmd)
+        if d:
+            fails.append(f"wrongly denied: {cmd!r}: {reason[:120]}")
+    check(fails)
+
+
 def child_call(name, payload, child="1"):
     root = hv2.fresh("s14-child")
     env = {"HARNESS_HOOK_STATE": str(root / "state"), "HARNESS_HOOK_CONFIG": str(root / "none.json")}
@@ -269,6 +287,25 @@ def test_t5_child_skips_only_session_steering_events_and_logs_each_skip():
         # twin: without the child flag the hook runs and nothing is logged
         r2, log2 = child_call("session_close_gate.py", {"hook_event_name": ev, "session_id": "c", "cwd": str(hv2.fresh("c"))}, child=None)
         assert not log2.exists(), ev
+
+
+def test_t5_child_skip_is_logged_also_under_isolated_mode_python_I():
+    # b5d9af7: under `python -I` the script folder is not on sys.path; the skip must still be logged
+    def call(child):
+        root = hv2.fresh("s14-child-I")
+        env = {"HARNESS_HOOK_STATE": str(root / "state"), "HARNESS_HOOK_CONFIG": str(root / "none.json")}
+        if child is not None:
+            env["HARNESS_HOOK_CHILD"] = child
+        payload = {"hook_event_name": "Stop", "session_id": "c", "cwd": str(hv2.fresh("c"))}
+        r = hv2.run([PY, "-I", str(HOOKS / "run_hook.py"), "session_close_gate.py", "--harness-client=claude"],
+                    root, env, json.dumps(payload))
+        return r, root / "state" / "run_hook" / "child_skips.jsonl"
+    r, log = call("1")
+    assert r.rc == 0 and log.is_file(), r.all
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["event"] == "Stop" and rows[0]["hook"] == "session_close_gate.py", rows
+    r2, log2 = call(None)  # twin: no child flag -> no skip line
+    assert not log2.exists(), r2.all
 
 
 def test_t5_child_flag_never_switches_off_the_pretooluse_gates():

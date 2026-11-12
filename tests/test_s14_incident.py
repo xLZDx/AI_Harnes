@@ -269,6 +269,23 @@ def test_t5_resumed_agent_is_pending_again_after_its_notification():
 
 
 # ------------------------------------------------------------------ T7
+def _notice(summary, ts, agent="agentX1"):
+    text = f"<task-notification><task-id>{agent}</task-id><status>completed</status><summary>{summary}</summary></task-notification>"
+    return {"type": "user", "timestamp": ts, "message": {"role": "user", "content": text}}
+
+
+def test_t5_interim_still_running_notice_keeps_the_agent_pending():
+    timed = _result_row(LAUNCH, _stamp(600))
+    interim = _notice('Agent "y" is waiting on its own background work', _stamp(5))
+    assert _pending([timed, interim]) == ["agentX1"]
+    # twin: a final notice clears it
+    assert _pending([timed, _notice('Agent "y" finished', _stamp(5))]) == []
+    # an interim notice older than 30 minutes no longer counts
+    assert _pending([_result_row(LAUNCH, _stamp(4000)), _notice('Agent "y" is waiting on its own background work', _stamp(31 * 60))]) == []
+    # an interim notice for another agent does not revive this one
+    assert _pending([timed, _notice('Agent "y" finished', _stamp(30)), _notice('Agent "z" is waiting on its own background work', _stamp(5), "agentZ9")]) == ["agentZ9"]
+
+
 def test_t7_verify_pass_needs_by_a_test_role():
     p = Proj("t7-by")
     p.commit("a.py", "x=1\n", T0)

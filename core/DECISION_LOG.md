@@ -504,3 +504,6 @@ Decisions:
 
 ## 2026-11-12 S14-T5 interim agent notice keeps the agent pending
 - The Stop gate blocked again while the final test agent ran: its notice said 'is waiting on its own background work', and the gate took any task-notification as the end. Now such an interim notice keeps the agent pending from the notice time (the 30-minute limit still applies, so an agent that misreports itself stops counting after 30 minutes). B14 added to the backlog (python heredoc shell-start words), review of S14-T2 recorded from silent-failure-hunter round 3.
+
+## 2026-11-12 S14 final test rounds
+- At b5d9af7: 8 named files OK (gates, incident, ci_dirty, s13_enforcement, s13_review_gates, s13_review_tools, ledger_stop_gate, s13_r5_false_positives); new test: child skip logged under python -I. At be12863: gates, incident, ledger_stop_gate, r5, review_gates OK; new tests: python heredoc that starts a shell keeps the substitution check, interim agent notice keeps the agent pending. Every S14 task verified by a functional-test-reviewer run and reviewed by code-reviewer / silent-failure-hunter runs recorded after its last code commit.
