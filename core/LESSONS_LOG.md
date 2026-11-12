@@ -277,3 +277,4 @@
 - Kind: SHORTCOMING. Facts: the dirty-repo CI switch-off reset the index and dropped intent-to-add marks in PDCC; caught by comparing git status before and after, repaired. Root cause: git diff --cached ignores intent-to-add entries. Rule: before resetting an index someone else built, save git ls-files --stage and compare status before and after.
 - Kind: SHORTCOMING. Facts: a test written before the GPT fix asserted the removed age-based lock takeover and failed after it. Rule: when a fix changes a contract, grep the tests for the old contract in the same change.
 - Kind: SUCCESS. Facts: open items that had lived only in chat answers are now in docs/BACKLOG.md with a closing condition each. Rule: an item named as open in an answer goes to the backlog in the same turn.
+- Kind: SHORTCOMING. Facts: an older test compared the title with .lower() and so hid the upper-case defect for months. Rule: assertions on user-visible text compare it exactly.

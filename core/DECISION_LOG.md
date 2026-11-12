@@ -378,3 +378,6 @@
 
 ## 2026-11-12 Backlog file and B1 fix
 - docs/BACKLOG.md created (operator rule 9) with B1-B11: open items from S11 and S13 with why each is open and what closes it. B1 fixed now: tools/plan_ledger.py kept the upper-cased id text as the sprint title for headings like 'Sprint S05-Payment flow'; the title tail now comes from the original heading text. Dry run over all projects: no ledger changes (no real plan uses that heading form).
+
+## 2026-11-12 B1 tests
+- tests/test_s11_plan_import.py: 5 heading tests added (S05-Payment flow keeps case, mixed case after dash, bold id, underscore tail, lower-case id still upper-cased), whole file OK: 0 failing (functional-test-reviewer).

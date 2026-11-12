@@ -317,6 +317,38 @@ def test_heading_with_title_glued_to_id_resolves_to_the_id():
     assert d["sprints"][0]["title"].lower() == "title", d["sprints"][0]["title"]  # (source upper-cases it: 'TITLE', cosmetic)
 
 
+def _heading_sprint(heading):
+    body = f"{heading}\nGoal: g\n\n| Task | Title | Status |\n|---|---|---|\n| T-1 | a | ACCEPTED |\n"
+    d = plan_ledger.parse(_plan(body, [("S00", "Zero", "X", "g")]))
+    assert len(d["sprints"]) == 1, [s["id"] for s in d["sprints"]]
+    return d["sprints"][0]
+
+
+def test_heading_title_glued_to_id_keeps_original_case():
+    s = _heading_sprint("## Sprint S05-Payment flow: checkout")
+    assert (s["id"], s["title"]) == ("S05", "Payment flow: checkout"), (s["id"], s["title"])
+
+
+def test_heading_mixed_case_title_after_dash_is_not_upper_cased():
+    s = _heading_sprint("## Sprint S07 — Mixed Case Title")
+    assert (s["id"], s["title"]) == ("S07", "Mixed Case Title"), (s["id"], s["title"])
+
+
+def test_heading_bold_id_keeps_title_case():
+    s = _heading_sprint("## Sprint **S08**: Bold id")
+    assert (s["id"], s["title"]) == ("S08", "Bold id"), (s["id"], s["title"])
+
+
+def test_heading_underscore_glued_tail_keeps_case_and_drops_leading_underscore():
+    s = _heading_sprint("## Sprint S09_lower_tail rest")
+    assert (s["id"], s["title"]) == ("S09", "lower_tail rest"), (s["id"], s["title"])
+
+
+def test_heading_lowercase_id_is_still_upper_cased():
+    s = _heading_sprint("## Sprint s10-x")
+    assert s["id"] == "S10" and s["title"] == "x", (s["id"], s["title"])
+
+
 def test_expanded_section_with_zero_tasks_while_roadmap_announces_n_raises():
     text = _plan("## Sprint S05 - Empty\nGoal: g\n", [("S05", "Empty", "X", "3 task placements, task list not expanded here")])
     _raises(text, "S05")
