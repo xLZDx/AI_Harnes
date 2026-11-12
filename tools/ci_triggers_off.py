@@ -461,7 +461,10 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             set_phase(jp, j, "done")
             result = f"CHANGED {new[:7]} (dirty merge into {', '.join(files)})"
             journaled = False
-            jp.unlink(missing_ok=True)  # only after the final status/stage check passed
+            try:
+                jp.unlink(missing_ok=True)  # only after the final status/stage check passed
+            except (OSError, PermissionError):
+                pass  # unlink failure does not invalidate the successful commit
             shutil.rmtree(j["backup_dir"], ignore_errors=True)
         except Exception as e:  # noqa: BLE001 - restore everything
             if not journaled:
@@ -485,7 +488,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
 def process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
             scratch: Path = Path(r"D:\tmp\scratch_worktrees"), recover_run: bool = False) -> dict:
     """Locked entry point: one run per repo at a time (OS lock in the git common dir), journal check, optional --recover."""
-    if dry and not recover_run:
+    if dry:
         return _process(repo, include_deploy, dry, dirty_ok, scratch)
     row = {"repo": repo.name, "branch": "", "files": "", "trig": "", "status": ""}
     b = git(repo, "symbolic-ref", "-q", "--short", "HEAD")
@@ -662,10 +665,14 @@ def main() -> int:
             continue
         if not (d / ".git").exists() or not (d / ".github" / "workflows").is_dir():
             continue
-        rows.append(process(d, a.include_deploy, a.dry_run, a.dirty_ok, Path(a.scratch), a.recover))
+        try:
+            rows.append(process(d, a.include_deploy, a.dry_run, a.dirty_ok, Path(a.scratch), a.recover))
+        except (OSError, PermissionError) as e:
+            rows.append({"repo": d.name, "branch": "", "files": "", "trig": "", "status": f"ERROR {type(e).__name__}: {e}"})
     print_table(rows)
     return 1 if any(r["status"].startswith("ERROR") for r in rows) else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
