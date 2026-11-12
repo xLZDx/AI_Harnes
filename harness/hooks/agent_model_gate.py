@@ -227,6 +227,24 @@ def main() -> int:
         if data.get("tool_name") in ("Agent", "spawn_agent"):
             sys.stderr.write(f"agent_model_gate: internal error {exc!r}; failing closed\n")
             return 2
+    # S7-T6: the spawn was allowed; show which agent starts. Printing only, never changes the decision.
+    try:
+        if data.get("tool_name") in ("Agent", "spawn_agent"):
+            import agent_visibility
+            codex = data.get("tool_name") == "spawn_agent"
+            m, e = codex_policy() if codex else ("", "")
+            agent_visibility.announce_start(data, "codex" if codex else "claude", m, e)
+            try:
+                import hook_metrics
+                ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+                hook_metrics.record("agent_model_gate.py", "PreToolUse", "allow", "agent-start",
+                                    session=str(data.get("session_id") or ""), client="codex" if codex else "claude",
+                                    project=str(data.get("cwd") or ""),
+                                    agent=str(ti.get("subagent_type") or ti.get("agent_type") or ""))
+            except Exception:
+                pass
+    except Exception:
+        pass
     return 0
 
 

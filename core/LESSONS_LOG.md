@@ -160,3 +160,5 @@
 - Kind: FAILURE. Facts: literal backspace characters (a "\b" typed inside a normal string) had sat in two production hooks and one new module; a test agent found it in the new module (English money words never matched). Rule: after writing regexes into a file, check the file for control characters.
 - Kind: SUCCESS. Facts: asking each test agent for the observed defects instead of green tests exposed 11 real defects (backspace regex, ExitPlanMode result not checked, wrong-shape ledger, read-only tools tying a session to a project, a call without result counted as proof) before any review. Rule: brief test agents to report defects with the failing input.
 - Kind: SHORTCOMING. Facts: the plan review took six rounds because I sent plan text with unproven mechanisms (ownership by owner field, ACTIVE_CONFIRMED) that the code later did not implement as written. Rule: write the plan from what the code can read today.
+
+- Kind: SUCCESS. Facts: S7-T6 tests assert the exact START line and that a fake secret in the prompt appears nowhere (UI, state, metrics). Rule: test privacy claims with a planted fake secret.

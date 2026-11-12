@@ -142,6 +142,9 @@ def install(home: Path, snap: Path, source: Path) -> int:
             shutil.copy2(src_hooks / name, dst)
             _tick()
         merged = {**settings, "hooks": new_cfg["hooks"]}
+        if "statusLine" not in settings and "agents_statusline.py" in files:  # S7-T6: never overwrite the operator's own
+            py = Path(sys.executable).as_posix()
+            merged["statusLine"] = {"type": "command", "command": f'"{py}" -s -X utf8 "{(home / "hooks" / "agents_statusline.py").as_posix()}"'}
         tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
         _tick()
         for attempt in range(8):  # Windows may refuse the replace for a moment (antivirus, indexer)
