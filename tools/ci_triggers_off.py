@@ -541,6 +541,8 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
         except Exception as e:  # noqa: BLE001 - restore everything
             if not journaled:
                 result = f"ERROR {e}"
+                if not jp.exists():  # nothing to recover from: do not leave copies of user files in scratch
+                    shutil.rmtree(j["backup_dir"], ignore_errors=True)
             else:
                 errs = rollback(repo, j)
                 if errs:
