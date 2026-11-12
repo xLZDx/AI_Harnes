@@ -80,12 +80,28 @@ def test_t2b_same_id_counted_once_ledger_state_wins_and_empty_plan_sprint_droppe
     assert "P1" not in [s["id"] for s in m["sprints"]], m["sprints"]
 
 
-def test_t2c_ledger_without_tasks_returns_plan_unchanged():
-    plan = {"sprints": [_sprint("P1", ["A-1", "A-2"])]}
-    snap = copy.deepcopy(plan)
-    for led in ({}, {"sprints": []}, {"sprints": [_sprint("L1", [])]}):
+def test_t2c_ledger_without_tasks_keeps_plan_sprints_and_takes_ledger_approval_events():
+    plan = {"sprints": [_sprint("P1", ["A-1", "A-2"])], "approval": {"who": "plan"}, "events": [{"e": "plan"}]}
+    snap = copy.deepcopy(plan["sprints"])
+    appr, evs = {"head": "abc"}, [{"e": "led"}]
+    for sprints in (None, [], [_sprint("L1", [])]):
+        led = {"approval": appr, "events": evs}
+        if sprints is not None:
+            led["sprints"] = sprints
         m = report.merge_plan_and_ledger(plan, led)
-        assert m == snap, (led, m)
+        assert m["sprints"] == snap, (led, m["sprints"])
+        assert m["approval"] == appr and m["events"] == evs, m
+    # falsy ledger values fall back to the plan's
+    m = report.merge_plan_and_ledger(plan, {})
+    assert m["sprints"] == snap and m["approval"] == {"who": "plan"} and m["events"] == [{"e": "plan"}], m
+
+
+def test_t2_merged_source_names_plan_and_ledger():
+    led = {"sprints": [_sprint("L1", ["L-1"])]}
+    m = report.merge_plan_and_ledger({"sprints": [_sprint("P1", ["P-1"])]}, led)
+    assert m["source"] == "PROJECT_PLAN.md + .harness/ledger.json", m.get("source")
+    m = report.merge_plan_and_ledger({"sprints": [_sprint("P1", ["P-1"])], "source": "X.md"}, led)
+    assert m["source"] == "X.md + .harness/ledger.json", m.get("source")
 
 
 def test_t2d_sprint_id_collision_gets_ledger_suffix():
@@ -136,7 +152,10 @@ def test_t2_e2e_denominator_is_plan_plus_ledger_tasks():
     out = repo / "r.html"
     r = _report(repo, out)
     assert r.rc == 0, r.all
-    n, m = _formula(out.read_text(encoding="utf-8"))
+    html = out.read_text(encoding="utf-8")
+    n, m = _formula(html)
+    prov = re.search(r"\(([^()]*?), все спринты", html)
+    assert prov and "PROJECT_PLAN.md" in prov.group(1) and ".harness/ledger.json" in prov.group(1), prov and prov.group(1)
     assert m == 3 + 2, (n, m)  # 3 plan tasks + 2 ledger tasks, not 2
     assert n == 1, (n, m)      # only PX-1 is ACCEPTED, ledger tasks are todo
 

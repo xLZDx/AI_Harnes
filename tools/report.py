@@ -594,8 +594,8 @@ def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
     """Whole program = every plan task plus every ledger sprint. A task id in both is counted once and the ledger state wins
     (it is the newer, evidence-bound record). Without ledger sprints the plan is returned as it is."""
     led_sprints = [sp for sp in led.get("sprints", []) if sp.get("tasks")]
-    if not led_sprints:
-        return plan
+    if not led_sprints:  # no ledger tasks to add, but the ledger's approval and events still belong to the report
+        return {**plan, "approval": led.get("approval") or plan.get("approval"), "events": led.get("events") or plan.get("events", [])}
     led_ids = {t.get("id") for sp in led_sprints for t in sp["tasks"]}
     merged = []
     for sp in plan.get("sprints", []):
@@ -606,7 +606,7 @@ def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
     for sp in led_sprints:
         merged.append({**sp, "id": sp["id"] if sp.get("id") not in taken else f"{sp['id']}-ledger"})
         taken.add(merged[-1]["id"])
-    return {**led, "sprints": merged}
+    return {**led, "sprints": merged, "source": f"{plan.get('source') or 'PROJECT_PLAN.md'} + .harness/ledger.json"}
 
 
 def run(a) -> int:

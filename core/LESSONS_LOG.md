@@ -246,3 +246,4 @@
 - Rule: when tests clearly identify a defect, fix it directly without adding extra scaffolding.
 - Kind: SHORTCOMING. Facts: my first S10 commit put the second Task: line in a separate paragraph and the ledger saw only one task. Rule: all Task: trailers go in one block.
 - Kind: SHORTCOMING. Facts: two Task: trailers in one commit registered only the first. Rule: one task per commit while commit-hook reads a single trailer.
+- Kind: SUCCESS. Facts: the failure hunter found a false provenance label that the first tests did not check. Rule: assert the stated data source, not only the numbers.

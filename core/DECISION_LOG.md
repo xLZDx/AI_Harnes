@@ -277,3 +277,6 @@
 - All 10 tests in test_s10_report.py now pass; defect was test_t1_next_line_says_trust_all_and_not_hooks_command and test_t1_no_slash_hooks_command_in_tools_or_harness
 - Process note: the ledger commit hook reads only trailers in one block at the end of the message, so two tasks in one commit need two consecutive Task: lines.
 - Correction: the ledger commit hook registers one Task: trailer per commit, so S10-T2 gets its own commit.
+
+## 2026-11-12 S10 review fixes (silent-failure-hunter)
+- MINOR-1 fixed: the merged report names both sources (PROJECT_PLAN.md + .harness/ledger.json). MINOR-2 fixed: the ledger approval and events are kept when the ledger has no task-bearing sprints. MINOR-3 kept on purpose: the ledger state wins over the plan state for the same id.
