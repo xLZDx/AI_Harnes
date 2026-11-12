@@ -218,3 +218,5 @@
 - Kind: SUCCESS. Facts: three independent reviewers found the same two defects and the fix was confirmed by 48 tests. Rule: run reviewers on risky create-then-write code before the tester, not after.
 
 - Kind: FAILURE. Facts: I ended the S9 turn with "Not verified and not done" plus a permission question for steps that were allowed, and used ledger block EXTERNAL to wait for my own agents; the operator pointed it out twice in the day. Root cause: the safe-looking habit of asking, no rule against it. Layer that missed it: author; no gate catches it. Rule: allowed means do it; ask only the operator-only cases.
+
+- Kind: SHORTCOMING. Facts: an earlier message of mine asked the operator to approve hooks via /hooks, a command that does not exist in 0.167. Root cause: I answered from memory, not from the binary. Rule: before naming a CLI command to the operator, run --help or search the binary.
