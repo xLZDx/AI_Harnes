@@ -405,3 +405,145 @@ def test_g_non_ascii_utf8_value_stored_byte_exact_and_not_printed(sdir, tmp_path
     assert (sdir / "UNI_KEY").read_bytes() == raw
     assert raw not in r.stdout + r.stderr
     assert "секрет".encode("utf-8") not in r.stdout + r.stderr
+
+
+# ---------- H: no-hardlink race, git not startable, stale lock (GPT-PM F1-F3) ----------
+WRAPPER_TMPL = '''import importlib.util, os, subprocess, sys
+{patch}
+spec = importlib.util.spec_from_file_location("secret_store_wrapped", {store!r})
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sys.exit(mod.main(sys.argv[1:]))
+'''
+PATCH_NO_LINK = '''def _nolink(*a, **k):
+    raise OSError("hard links not supported")
+os.link = _nolink'''
+PATCH_NO_GIT = '''def _nogit(*a, **k):
+    raise FileNotFoundError("git not found")
+subprocess.run = _nogit'''
+
+
+def _wrapper(patch):
+    d = Path(tempfile.mkdtemp(prefix="h_wrapper_"))
+    w = d / "wrapper.py"
+    w.write_text(WRAPPER_TMPL.format(patch=patch, store=str(STORE)), encoding="utf-8")
+    return w
+
+
+def _wenv(sdir):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    env["HARNESS_SECRET_DIR"] = str(sdir)
+    return env
+
+
+def _wrun(w, args, sdir, value=""):
+    return subprocess.run([PY, "-I", str(w)] + args, input=value, capture_output=True, text=True, env=_wenv(sdir), timeout=60)
+
+
+def test_h1_no_hardlink_eight_concurrent_puts_one_created_value_matches_winner():
+    w = _wrapper(PATCH_NO_LINK)
+    sdir = Path(tempfile.mkdtemp(prefix="h1_secrets_")) / "store"
+    sdir.mkdir()
+    values = ["dummy-h1-value-%d-XYZ" % i for i in range(8)]
+    procs = [subprocess.Popen([PY, "-I", str(w), "put", "SAMEKEY"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=_wenv(sdir)) for _ in values]
+    results = []
+    for p, v in zip(procs, values):
+        o, e = p.communicate(v, timeout=120)
+        results.append((v, o.strip(), p.returncode, e))
+    outs = [r[1] for r in results]
+    assert all(r[2] == 0 for r in results), results
+    assert outs.count("created") == 1, outs
+    assert outs.count("exists") == 7, outs
+    winner = [r[0] for r in results if r[1] == "created"][0]
+    assert (sdir / "SAMEKEY").read_bytes() == winner.encode("utf-8")
+    left = sorted(os.listdir(sdir))
+    assert left == ["SAMEKEY"], left
+    assert not [n for n in left if n.startswith(".put-") or n.endswith(".lock")]
+
+
+def test_h2_git_not_startable_inside_git_marker_refused_creates_nothing():
+    w = _wrapper(PATCH_NO_GIT)
+    base = Path(tempfile.mkdtemp(prefix="h2_repo_"))
+    (base / ".git").mkdir()
+    sdir = base / "sub" / "store"
+    r = _wrun(w, ["put", "GITLESS_KEY"], sdir, DUMMY1)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not sdir.exists()
+    assert not (base / "sub").exists()
+    assert sorted(os.listdir(base)) == [".git"]
+    assert DUMMY1 not in r.stdout + r.stderr
+
+
+def test_h2_git_not_startable_no_marker_put_works():
+    w = _wrapper(PATCH_NO_GIT)
+    base = Path(tempfile.mkdtemp(prefix="h2_plain_"))
+    assert not any((q / ".git").exists() for q in (base, *base.parents)), "temp dir lies inside a git work tree"
+    sdir = base / "store"
+    r = _wrun(w, ["put", "PLAIN_KEY"], sdir, DUMMY1)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "created"
+    assert (sdir / "PLAIN_KEY").read_bytes() == DUMMY1.encode("utf-8")
+    assert not [n for n in os.listdir(sdir) if n.startswith(".put-")]
+
+
+def test_h2_empty_path_inside_git_marker_refused():
+    base = Path(tempfile.mkdtemp(prefix="h2_path_"))
+    (base / ".git").mkdir()
+    sdir = base / "store"
+    env = _wenv(sdir)
+    env["PATH"] = ""
+    r = subprocess.run([PY, "-I", str(STORE), "put", "PATHLESS_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not sdir.exists()
+
+
+def test_h3_stale_lock_does_not_block_put_without_hardlink():
+    w = _wrapper(PATCH_NO_LINK)
+    sdir = Path(tempfile.mkdtemp(prefix="h3_secrets_")) / "store"
+    sdir.mkdir()
+    lock = sdir / "STALE_KEY.lock"
+    lock.write_bytes(b"")
+    old = lock.stat().st_mtime - 40
+    os.utime(lock, (old, old))
+    r = _wrun(w, ["put", "STALE_KEY"], sdir, DUMMY1)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "created"
+    assert (sdir / "STALE_KEY").read_bytes() == DUMMY1.encode("utf-8")
+    assert sorted(os.listdir(sdir)) == ["STALE_KEY"]
+
+
+def test_h3_fresh_lock_with_existing_target_returns_exists_and_keeps_value():
+    w = _wrapper(PATCH_NO_LINK)
+    sdir = Path(tempfile.mkdtemp(prefix="h3_fresh_")) / "store"
+    sdir.mkdir()
+    (sdir / "HELD_KEY").write_bytes(DUMMY1.encode("utf-8"))
+    (sdir / "HELD_KEY.lock").write_bytes(b"")
+    r = _wrun(w, ["put", "HELD_KEY"], sdir, DUMMY2)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "exists"
+    assert (sdir / "HELD_KEY").read_bytes() == DUMMY1.encode("utf-8")
+    assert not [n for n in os.listdir(sdir) if n.startswith(".put-")]
+
+
+def test_h3_fresh_lock_reaches_publish_and_returns_exists_without_overwrite():
+    # put() short-circuits on an existing target, so call the publish step directly to exercise the lock branch.
+    mod = _load_store()
+    sdir = Path(tempfile.mkdtemp(prefix="h3_pub_"))
+    target = sdir / "PUB_KEY"
+    target.write_bytes(DUMMY1.encode("utf-8"))
+    (sdir / "PUB_KEY.lock").write_bytes(b"")
+    tmp = sdir / ".put-manual"
+    tmp.write_bytes(DUMMY2.encode("utf-8"))
+
+    def no_link(*a, **k):
+        raise OSError("link not supported")
+    orig = os.link
+    os.link = no_link
+    try:
+        assert mod._publish(str(tmp), target) == "exists"
+    finally:
+        os.link = orig
+    assert target.read_bytes() == DUMMY1.encode("utf-8")

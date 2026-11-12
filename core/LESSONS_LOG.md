@@ -226,3 +226,5 @@
 - Kind: FAILURE. Facts: two turns after writing the stop-and-ask rule I ended a turn with a blocker table waiting for my own agent. Root cause: the rule was text only and I did not re-read it before ending the turn. Layer that missed it: author; no gate. Rule: re-read CORE.md anti-pattern list before every final message.
 
 - Kind: FAILURE. Facts: two comments of mine in secret_store.py claimed no-overwrite and "no work tree to leak into" without checking POSIX rename semantics or the git-missing case; GPT-PM found both. Root cause: I wrote platform claims from memory, only Windows was run. Layer that missed it: author, three reviewers and the tester; GPT-PM caught it. Rule: a comment that claims a platform guarantee needs a test that forces that path.
+
+- Kind: SUCCESS. Facts: forcing the no-link and no-git paths in child processes proved both GPT-PM findings fixed. Rule: force the platform path a comment claims, in a child process.

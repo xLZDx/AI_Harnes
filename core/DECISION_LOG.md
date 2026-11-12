@@ -251,3 +251,6 @@
 
 ## 2026-11-12 S9 GPT-PM round 1 (HEAD 352dfc4): REVISE, 2 MAJOR
 - F1 real: the no-link fallback used os.rename, which replaces an existing file on POSIX, so two concurrent puts could both say created and lose the first value. Fixed: publish under an exclusive lock file, stale lock removed after 30 s. F2 real: when git could not start, inside_git returned False and a secret could be written inside a work tree. Fixed: parents are searched for a .git marker first, git errors that are not "not a git repository" count as inside. Rejected: none. Evidence: manual check printed "default store inside git: False" and "repo inside git: True"; tests for both fixes are being written by the tester. Round 2 must check only these two fixes.
+
+## 2026-11-12 S9 tests for GPT-PM round 1 fixes
+- Evidence: tests/test_self_service.py 61 passed (tester ae4447d8, 7 new H cases incl. 8 concurrent puts with os.link disabled: one created, seven exists, no temp or lock left; git unstartable plus .git marker refused). Not covered: fresh lock with no target (10 s wait then refusal), the 30 s boundary, a crash while holding the lock.
