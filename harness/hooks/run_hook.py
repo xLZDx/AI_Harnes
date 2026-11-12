@@ -55,9 +55,22 @@ def main() -> int:
         return 1
     raw = sys.stdin.buffer.read()
     if os.environ.get("HARNESS_HOOK_CHILD") == "1":
-        # A helper model call started by a hook (citation_judge) is a text-only child, not a working session:
-        # no gate may steer it (a Stop hook once made such a child implement and commit sprint tasks).
-        return 0
+        # A helper model call started by a hook (citation_judge) is a text-only child, not a working session: the hooks
+        # that STEER a session (Stop, SubagentStop, prompt and session-start context) must not drive it (a Stop hook once
+        # made such a child implement and commit sprint tasks). Tool gates (PreToolUse, PermissionRequest) keep running,
+        # so a leaked HARNESS_HOOK_CHILD can never switch a deny gate off. Every skip is logged.
+        try:
+            ev = str(json.loads(raw.decode("utf-8", "replace") or "{}").get("hook_event_name") or "")
+        except Exception:
+            ev = ""
+        if ev in ("Stop", "SubagentStop", "UserPromptSubmit", "SessionStart", "PreCompact", "Notification"):
+            try:
+                import _agentio
+                with open(_agentio.state_dir("run_hook") / "child_skips.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "hook": name, "event": ev}) + "\n")
+            except Exception:
+                pass
+            return 0
     real_out, real_err = sys.stdout, sys.stderr
     out_buf, err_buf = io.BytesIO(), io.BytesIO()
     sys.stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8", errors="replace")

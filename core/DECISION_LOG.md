@@ -476,3 +476,6 @@ Decisions:
 
 ## 2026-11-12 S14-T5 session_close_gate saw no running agents
 - Log ~/.harness-hooks/state/session_close/session_close_gate.jsonl: 'block ledger-open-tasks' at 20:06, 20:08 and 20:09 while five of my agents ran. Cause: Claude writes the 'Async agent launched' result twice; the copy has no timestamp, and pending_agents_aged removed the launch on that copy. A SendMessage resume ('resumedAgentId') was not counted either. Fix: an untimed copy never removes a timed launch; a resume counts as a launch at its time. Checked on this session's transcript: 5 agents pending (before: none).
+
+## 2026-11-12 S14 review (silent-failure-hunter): M1 accepted, fixed
+- M1 (code fact): run_hook returned 0 for every hook when HARNESS_HOOK_CHILD=1, so a leaked variable switched off deny gates. Now only session-steering events (Stop, SubagentStop, UserPromptSubmit, SessionStart, PreCompact, Notification) are skipped, each skip logged to state/run_hook/child_skips.jsonl; PreToolUse gates still run (checked: rules_gate denies a full npm suite with the variable set).
