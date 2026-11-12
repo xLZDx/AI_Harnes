@@ -1613,6 +1613,14 @@ def main():
     except ValueError:
         context_unavailable({}, "malformed PreToolUse input")
         return
+    if not isinstance(data, dict):
+        context_unavailable({}, "PreToolUse payload is not an object")
+        return
+
+    if agentio.client(data) == "codex":
+        if not data.get("tool_name") or not isinstance(data.get("tool_input"), dict):
+            context_unavailable(data, "PreToolUse tool_name or tool_input is missing or invalid")
+            return
 
     tool_name = data.get("tool_name") or ""
     tool_input = data.get("tool_input") or {}
