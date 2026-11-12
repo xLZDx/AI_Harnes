@@ -545,32 +545,29 @@ FILES3 = (WF, DL, LL)
 @contextlib.contextmanager
 def race(repo, rel, point, action):
     """Fire `action(path)` once, deterministically, at one exact instant inside swap_in for file `rel`:
-    point 'before-aside' = just before step 1 os.replace(p, aside) (after every hash check);
+    point 'before-aside' = just before step 1 _place_noclobber(p, aside) (Windows _park path; after every hash check);
     point 'before-place' = just before step 3 _place_noclobber(tmp, p) (p is parked aside at that moment).
     action None = pass-through twin (only counts that the point was reached)."""
     target = repo / rel
     st = {"fired": 0}
-    o_replace, o_place = ci.os.replace, ci._place_noclobber
+    o_place = ci._place_noclobber
 
     def fire():
         st["fired"] += 1
         if action is not None:
             action(target)
 
-    def r_hook(src, dst, *a, **k):
+    def p_hook(src, dst):
         if point == "before-aside" and not st["fired"] and Path(src) == target and Path(dst) == ci.aside_path(target):
             fire()
-        return o_replace(src, dst, *a, **k)
-
-    def p_hook(src, dst):
         if point == "before-place" and not st["fired"] and Path(dst) == target and Path(src).name.endswith(".tmp"):
             fire()
         return o_place(src, dst)
-    ci.os.replace, ci._place_noclobber = r_hook, p_hook
+    ci._place_noclobber = p_hook
     try:
         yield st
     finally:
-        ci.os.replace, ci._place_noclobber = o_replace, o_place
+        ci._place_noclobber = o_place
 
 
 def _append_extra(t):
@@ -686,21 +683,18 @@ import ci_triggers_off as ci
 repo, scratch, mode, rel = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5]
 point = sys.argv[6] if len(sys.argv) > 6 else 'after-aside'
 target = repo / rel
-orig, oplace = os.replace, ci._place_noclobber
-def hook(src, dst, *a, **k):
+oplace = ci._place_noclobber
+def phook(src, dst):
     hit = Path(src) == target and str(dst).endswith('.cioff-aside')
     if hit and point == 'before-aside':
         os._exit(70)
-    r = orig(src, dst, *a, **k)
-    if hit and point == 'after-aside':
-        os._exit(70)  # hard crash right after step 1
-    return r
-def phook(src, dst):
     r = oplace(src, dst)
+    if hit and r and point == 'after-aside':
+        os._exit(70)  # hard crash right after step 1
     if r and point == 'after-place' and Path(dst) == target and Path(src).name.endswith('.tmp'):
         os._exit(70)
     return r
-os.replace, ci._place_noclobber = hook, phook
+ci._place_noclobber = phook
 if mode == 'run':
     print(ci.process_dirty(repo, False, scratch))
 else:
@@ -823,11 +817,11 @@ def test_F2_exception_after_place_rolls_back_without_a_person():
 
 
 def _fail_unlink_of_asides():
-    orig = ci._unlink_retry
+    orig = ci._drop_parked
 
-    def fake(p, *a, **k):
-        return False if Path(p).name.endswith(".cioff-aside") else orig(p, *a, **k)
-    ci._unlink_retry = fake
+    def fake(a, *args, **k):
+        return "kept" if Path(a).name.endswith(".cioff-aside") else orig(a, *args, **k)
+    ci._drop_parked = fake
     return orig
 
 
@@ -838,11 +832,15 @@ def test_G_undeletable_parked_copy_still_changed_with_note_and_next_run_is_clean
     try:
         out = ci.process_dirty(repo, False, scratch)
     finally:
-        ci._unlink_retry = orig
+        ci._drop_parked = orig
     assert out.startswith("CHANGED"), out
-    assert "NOTE could not delete parked copies" in out, out
+    assert "NOTE kept parked copies" in out, out
     for rel in FILES3:
-        assert ci.aside_path(repo / rel).is_file(), rel
+        a = ci.aside_path(repo / rel)
+        assert not a.exists(), rel  # retired to a unique -kept- name, the fixed parked name is free again
+        kept = sorted(a.parent.glob(a.name + "-kept-*"))
+        assert len(kept) == 1 and str(kept[0]) in out, (rel, kept, out)
+        assert rd(kept[0]) == before["files"][rel], rel
     assert not (repo / ".git" / JOURNAL).exists()
     assert commits(repo) == before["n"] + 1
     assert SESSION_EDIT in rd(repo / WF) and wg.triggers(rd(repo / WF).decode()) == {"workflow_dispatch"}
@@ -871,11 +869,13 @@ def test_H_note_of_one_repo_never_reaches_another_repo():
     try:
         row1 = ci.process(repo1, False, False, True, scratch1)
     finally:
-        ci._unlink_retry = orig
+        ci._drop_parked = orig
         ci.swap_in = o_swap
     assert state["n"] == 1
-    assert row1["status"].startswith("ERROR") and "NOTE could not delete parked copies" in row1["status"], row1
-    assert str(ci.aside_path(repo1 / WF)) in row1["status"], row1
+    assert row1["status"].startswith("ERROR") and "NOTE kept parked copies" in row1["status"], row1
+    wf_aside = ci.aside_path(repo1 / WF)
+    kept1 = sorted(wf_aside.parent.glob(wf_aside.name + "-kept-*"))
+    assert len(kept1) == 1 and str(kept1[0]) in row1["status"], (kept1, row1)
     assert rd(repo1 / LL).endswith(EXTRA)
     # same process, next repo, normal unlink: no NOTE
     row2 = ci.process(repo2, False, False, True, scratch2)

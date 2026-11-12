@@ -30,7 +30,7 @@ def _run_with_user_file_created_before_final_check(repo, scratch, undeletable):
     finally:
         ci.refresh_index = o_refresh
         if orig:
-            ci._unlink_retry = orig
+            ci._drop_parked = orig
     assert st["n"] == 1
     return out
 
@@ -56,9 +56,11 @@ def test_exemption_does_not_leak_to_user_file_when_real_parked_copies_are_listed
     assert f"status changed for {USER_ASIDE_NAME}" in out, out
     assert rd(repo / USER_ASIDE_NAME) == USER_BYTES
     assert ci.LEFTOVER_ASIDES == [], ci.LEFTOVER_ASIDES
-    # the undeletable parked copies also block the rollback cleanup: the journal is kept for --recover, the NOTE names them
-    assert "journal kept" in out and "NOTE could not delete parked copies" in out, out
-    assert (repo / ".git" / JOURNAL).exists()
+    # kept parked copies are retired to unique -kept- names, so the rollback completes; the NOTE names them
+    assert "working files restored" in out and "NOTE kept parked copies" in out and "-kept-" in out, out
+    for rel in FILES3:
+        assert rd(repo / rel) == before["files"][rel], rel
+    assert not (repo / ".git" / JOURNAL).exists()
 
 
 if __name__ == "__main__":
