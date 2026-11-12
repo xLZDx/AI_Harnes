@@ -429,6 +429,10 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
         return [("named-test" if names and "discover" not in [a.lower() for a in rest] else "full-test", "unittest", cwd)]
     if b in ("vitest", "jest"):
         return [("named-test" if has_file(rest) else "full-test", b, cwd)]
+    if b in ("flutter", "dart", "go", "cargo", "playwright", "dotnet", "mvn", "mvnw", "gradle", "gradlew"):
+        r = classify_runner(b, rest, cwd)
+        if r:
+            return r
     if b in ("eslint", "eslint_d", "ruff", "flake8", "pylint", "biome"):
         return [("lint", b, cwd)]
     if b in ("mypy", "pyright", "basedpyright"):
@@ -440,11 +444,92 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
     return []
 
 
+def classify_runner(b: str, rest: list[str], cwd: str) -> list[tuple]:
+    """Other test runners (flutter, dart, go, cargo, playwright, dotnet, mvn, gradle): full-test unless a test file is named."""
+    args = [a for a in rest if not a.startswith("+")]  # cargo +nightly test
+    plain = [a for a in args if not is_flag(a)]
+    sub = plain[0].lower() if plain else ""
+    ext_named = lambda ext: has_file(args) or any(not is_flag(a) and a.lower().endswith(ext) for a in args)  # noqa: E731
+    if b in ("flutter", "dart") and sub == "test":
+        return [("named-test" if ext_named(".dart") else "full-test", f"{b} test", cwd)]
+    if b == "go" and sub == "test":
+        named = any(not is_flag(a) and a.lower().endswith("_test.go") for a in args)
+        return [("named-test" if named else "full-test", "go test", cwd)]
+    if b == "cargo" and sub == "test":
+        named = any(a == "--test" or a.startswith("--test=") for a in args)
+        return [("named-test" if named else "full-test", "cargo test", cwd)]
+    if b == "playwright" and sub == "test":
+        return [("named-test" if has_file(args[args.index(plain[0]) + 1:]) else "full-test", "playwright test", cwd)]
+    if b == "dotnet" and sub == "test":
+        return [("full-test", "dotnet test", cwd)]
+    if b in ("mvn", "mvnw") and "test" in [a.lower() for a in plain]:
+        return [("full-test", f"{b} test", cwd)]
+    if b in ("gradle", "gradlew") and any(a.lower() == "test" or a.lower().endswith(":test") for a in plain):
+        return [("full-test", f"{b} test", cwd)]
+    return []
+
+
+def extract_subst(cmd: str) -> tuple[str, list[str]]:
+    """Command substitutions $(...) and `...` (active outside single quotes, also inside double quotes): return the command
+    with each replaced by a placeholder, and the inner command texts to analyse on their own."""
+    out: list[str] = []
+    inners: list[str] = []
+    i, n, sq, dq = 0, len(cmd), False, False
+    while i < n:
+        ch = cmd[i]
+        if ch == "\\" and not sq and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if ch == "'" and not dq:
+            sq = not sq
+        elif ch == '"' and not sq:
+            dq = not dq
+        elif not sq and ch == "$" and cmd.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += (cmd[j] == "(") - (cmd[j] == ")")
+                j += 1
+            inners.append(cmd[i + 2:j - 1 if depth == 0 else j])
+            out.append("x")
+            i = j
+            continue
+        elif not sq and ch == "`":
+            j = i + 1
+            while j < n and cmd[j] != "`":
+                j += 2 if cmd[j] == "\\" else 1
+            inners.append(cmd[i + 1:j])
+            out.append("x")
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), inners
+
+
+def strip_case(toks: list[str]) -> list[str]:
+    """`case $a in x) cmd` and later branches `y) cmd`: drop the case head / pattern so cmd is classified."""
+    if toks and toks[0].lower() == "case":
+        for k, t in enumerate(toks):
+            if k >= 2 and t.endswith(")") and "in" in [x.lower() for x in toks[:k]]:
+                return toks[k + 1:]
+        return []
+    if toks and len(toks) > 1 and re.fullmatch(r"[^()\s]*\)", toks[0]):
+        return toks[1:]
+    return toks
+
+
 def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
+    if depth > 3:
+        return []
     found: list[tuple] = []
     cur = cwd
-    for seg in split_segments(strip_heredocs(command)):
+    outer, inners = extract_subst(strip_heredocs(command))
+    for inner in inners:
+        found.extend(analyze(inner, cwd, depth + 1))
+    for seg in split_segments(outer):
         toks = clean_tokens(tokenize(seg))
+        toks = clean_tokens(strip_case(toks)) if toks else toks
         if not toks:
             continue
         b = base(toks[0])

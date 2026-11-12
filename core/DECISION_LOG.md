@@ -396,3 +396,6 @@
 
 ## 2026-11-12 S13 closed, S14 planned (operator rule 7)
 - S13 and S11: GPT-PM APPROVE round 3 (c3f1b7a2) for 5f73c59, approval recorded in the ledger, branch pushed, PR https://github.com/xLZDx/AI_Harnes/pull/3 (stacked on #2), reviews recorded, both sprints closed (Harness_v2 done 42 of 45; the 3 open are S12 tasks closed as superseded). Final install: built and installed hook files equal in both client homes (hash check), 17 projects reinstalled. S14 opened on branch s14-backlog-gates with backlog B2, B3+B4, B6, B5 as S14-T1..T4; B3 needs no operator decision because full suites are already prohibited; B9 closed by the OS lock; B7, B10, B11 stay operator steps.
+
+## 2026-11-12 S14-T2 rules_gate: more runners, substitution, case
+- flutter, dart, go, cargo, playwright, dotnet, mvn, gradle test runs without a named test file are full suites (operator rule 4 prohibits full suites; no new operator decision needed); a named file (flutter/dart *.dart, go *_test.go, cargo --test name, playwright *.spec.*) is allowed for test agents only; dotnet/mvn/gradle have no named form yet (always full). Commands inside dollar-paren, backticks and case branches are classified like top-level ones; plain quoted text stays data. Engineer proof table piped through the hook (main session and functional-test-reviewer).
