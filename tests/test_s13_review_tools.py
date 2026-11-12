@@ -282,7 +282,7 @@ def _imp_cmd(d, led, sid, *more):
             "--sprint", sid, *more]
 
 
-def test_two_concurrent_imports_keep_both_sections_and_leave_no_lock():
+def test_two_concurrent_imports_with_different_sprints_keep_both_sections_and_leave_no_tmp():
     for rnd in range(6):
         d = _import_setup(f"imp{rnd}")
         env = hv2.base_env()
@@ -293,69 +293,81 @@ def test_two_concurrent_imports_keep_both_sections_and_leave_no_lock():
         text = (d / "PROJECT_PLAN.md").read_text(encoding="utf-8")
         assert "## Sprint S01" in text and "## Sprint S02" in text, (rnd, text)
         assert "ST-ONE-01.01" in text and "ST-TWO-01.02" in text, (rnd, text)
-        assert not (d / "PROJECT_PLAN.md.lock").exists() and not list(d.glob("*.tmp")), list(d.iterdir())
+        assert not list(d.glob("*.tmp")), list(d.iterdir())  # the OS-lock file stays (never deleted); no temp leftovers
 
 
-def test_stale_lock_older_than_120s_is_taken_over_by_cli():
+def test_old_scheme_lock_file_older_than_120s_does_not_block_cli_and_is_kept():
     d = _import_setup("stale")
     lock = d / "PROJECT_PLAN.md.lock"
-    lock.write_text("99999")
+    lock.write_text(json.dumps({"token": "old", "pid": 99999, "start": ""}))
     old = time.time() - 200
     os.utime(lock, (old, old))
     r = hv2.run(_imp_cmd(d, "l1.md", "S01"), hv2.SRC)
     assert r.rc == 0, r.all
     assert "## Sprint S01" in (d / "PROJECT_PLAN.md").read_text(encoding="utf-8")
-    assert not lock.exists()
+    assert lock.is_file(), "the lock file must never be deleted"
 
 
-def test_lock_boundary_young_lock_blocks_old_lock_taken_in_process():
-    # a42e102 contract: age never frees a lock; only a provably dead owner does
+_HOLD = (
+    "import sys, time\n"
+    "from pathlib import Path\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "import plan_import_ledger_md as pl\n"
+    "with pl.plan_lock(Path(sys.argv[2])):\n"
+    "    print('held', flush=True)\n"
+    "    time.sleep(300)\n"
+)
+
+
+def _hold(plan):
+    s = hv2.fresh("hold") / "h.py"
+    s.write_text(_HOLD, encoding="utf-8")
+    p = subprocess.Popen([hv2.PY, "-s", str(s), str(hv2.TOOLS), str(plan)], stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().strip() == "held"
+    return p
+
+
+def test_live_holder_blocks_waiter_whatever_the_file_age_and_dead_holder_frees_it_at_once():
     d = _import_setup("bound")
     plan = d / "PROJECT_PLAN.md"
     lock = d / "PROJECT_PLAN.md.lock"
-    sleeper = subprocess.Popen([hv2.PY, "-s", "-c", "import time; time.sleep(300)"])
+    holder = _hold(plan)
     try:
-        start = pim._proc_start(sleeper.pid)
-        assert start, "cannot read the process creation time"
-        body = json.dumps({"token": "live-owner", "pid": sleeper.pid, "start": start})
-        lock.write_text(body)
-        young = time.time() - 100
-        os.utime(lock, (young, young))
-        try:
-            with pim.plan_lock(plan, timeout=0.4):
-                raise AssertionError("a lock of a live owner must be respected")
-        except TimeoutError:
-            pass
-        assert lock.exists() and lock.read_text() == body, "a live lock must not be deleted by a waiter"
-        old = time.time() - 1000
-        os.utime(lock, (old, old))
-        try:
-            with pim.plan_lock(plan, timeout=0.4):
-                raise AssertionError("a live owner's lock must stay respected however old the file is")
-        except TimeoutError:
-            pass
-        assert lock.exists() and lock.read_text() == body
+        for age in (100, 1000):
+            t = time.time() - age
+            os.utime(lock, (t, t))
+            try:
+                with pim.plan_lock(plan, timeout=0.4):
+                    raise AssertionError("a lock of a live holder must be respected")
+            except TimeoutError as e:
+                assert str(lock) in str(e), str(e)
+            assert lock.is_file(), "a waiter must not delete a live lock"
     finally:
-        sleeper.kill()
-        sleeper.wait(timeout=20)
-    # the owner is now dead: the same lock is taken over and released
+        holder.kill()
+        holder.wait(timeout=20)
+    t0 = time.monotonic()
     with pim.plan_lock(plan, timeout=5):
-        assert json.loads(lock.read_text())["pid"] == os.getpid()
-    assert not lock.exists()
+        pass
+    assert time.monotonic() - t0 < 3, "acquire after the holder died must be immediate"
+    assert lock.is_file()
 
 
 def test_dry_run_takes_no_lock_and_ignores_a_held_one():
     d = _import_setup("dry")
     plan = d / "PROJECT_PLAN.md"
     before = plan.read_bytes()
+    lock = d / "PROJECT_PLAN.md.lock"
     r = hv2.run(_imp_cmd(d, "l1.md", "S01", "--dry-run"), hv2.SRC)
-    assert r.rc == 0 and not (d / "PROJECT_PLAN.md.lock").exists() and plan.read_bytes() == before, r.all
-    held = d / "PROJECT_PLAN.md.lock"
-    held.write_text("4242")
-    t0 = time.monotonic()
-    r2 = hv2.run(_imp_cmd(d, "l1.md", "S01", "--dry-run"), hv2.SRC)
-    assert r2.rc == 0 and time.monotonic() - t0 < 20, r2.all  # a lock-taking run would wait 30 s then fail
-    assert held.read_text() == "4242" and plan.read_bytes() == before
+    assert r.rc == 0 and not lock.exists() and plan.read_bytes() == before, r.all  # no lock file is even created
+    holder = _hold(plan)
+    try:
+        t0 = time.monotonic()
+        r2 = hv2.run(_imp_cmd(d, "l1.md", "S01", "--dry-run"), hv2.SRC)
+        assert r2.rc == 0 and time.monotonic() - t0 < 20, r2.all  # a lock-taking run would wait 30 s then fail
+        assert plan.read_bytes() == before
+    finally:
+        holder.kill()
+        holder.wait(timeout=20)
 
 
 # ---------- audit_projects ----------
