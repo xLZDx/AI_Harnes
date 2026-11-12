@@ -295,3 +295,6 @@
 
 ## 2026-11-12 S11-T2 review fixes: canonical sprint sizes
 - Superseded plan rows stay as tasks (state superseded) so a sprint's size is its placement count (ERP S00 60, S01 48, S02 37, 443 in 23 sprints); bounded acceptance maps to ACCEPTED_BOUNDED (verified, never done); a ledger sprint with k tasks keeps N-k UNVERIFIED placeholders of a not-expanded plan sprint; roadmap parsing is strict; the importer counts skipped rows, keeps prose, retries the Windows replace and aborts on a concurrent edit.
+
+## 2026-11-12 S13 recovery plan and the operator's nine development rules
+- The operator stopped every session on every project. docs/RECOVERY_PLAN_2026-11-12.md lists the ten complaints with verified causes, my own misses, and tasks R1-R8; every fix is harness-wide (one mechanism for all projects and both clients), per the operator's instruction not to fix project by project. CORE.md now holds the nine development rules; the flow line and reviewer routing now match the operator's 2026-11-11 edit that the source had not received (an install would have overwritten it).
