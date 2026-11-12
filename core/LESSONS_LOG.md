@@ -341,3 +341,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SHORTCOMING 2026-11-12 S14-T3: I designed swap_in for races but not for its own crash points; the reviewer walked each step. Next time: list every crash point of a multi-step file operation and the recovery for each before committing.
 - SHORTCOMING 2026-11-12 S14-T3: a module-level list cleared only on success leaked between repos; found by reliability-reviewer. Next time: per-run state is reset at the start of the run, not at one exit.
 - FAILURE 2026-11-12 S14-T3: my 'swap counts as done' path for an undeletable parked copy was never run against the final status check; the test agent's case G caught it. Next time: run each new fallback path through the whole function's later checks.
+- SHORTCOMING 2026-11-12 S14-T3: overlapping test runs share one temp folder, so a failure could not be attributed; next time a test agent runs one file at a time and keeps the full output.
