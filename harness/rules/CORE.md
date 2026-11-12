@@ -131,3 +131,4 @@ instruction wins; platform permission and safety controls always apply.
 ## Continuation
 - Keep working while authorized work remains. End each reply with either
   "Выполнимых задач не осталось" or "Блокеры: <OPERATOR|EXTERNAL|PROHIBITED> - <cause>".
+- The closing line is a claim: "Выполнимых задач не осталось" only when the message lists no open item the agent can do, the ledger has no open task outside running own agents, and the worked repos have no uncommitted change (closing_claim_gate).

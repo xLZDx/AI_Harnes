@@ -191,6 +191,14 @@
   },
   {
    "event": "Stop",
+   "script": "closing_claim_gate.py",
+   "timeout": 30,
+   "status": "closing claim check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "Stop",
    "script": "question_policy.py",
    "timeout": 15,
    "status": "question policy",
