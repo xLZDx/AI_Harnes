@@ -15,12 +15,17 @@ from __future__ import annotations
 import datetime
 import os
 import re
-import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
+def valid_name(name: str) -> bool:
+    return bool(NAME_RE.fullmatch(name)) and name.upper() not in RESERVED
 
 
 def store_dir() -> Path:
@@ -28,11 +33,17 @@ def store_dir() -> Path:
 
 
 def inside_git(p: Path) -> bool:
+    """True when p is inside a git work tree. Fails closed: any git error other than "not a git repository" counts as inside."""
     probe = p if p.exists() else p.parent
     while not probe.exists():
         probe = probe.parent
-    r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    try:
+        r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+    except OSError:
+        return False  # git is not installed, so there is no work tree to leak into
+    if r.returncode == 0:
+        return r.stdout.strip() == "true"
+    return "not a git repository" not in (r.stderr or "").lower()
 
 
 def put(name: str, value: str) -> str:
@@ -41,19 +52,38 @@ def put(name: str, value: str) -> str:
         raise SystemExit("refused: the secret folder is inside a git work tree")
     if not value:
         raise SystemExit("refused: empty value")
+    if d.exists() and not d.is_dir():
+        raise SystemExit("refused: the secret path is not a folder")
     d.mkdir(parents=True, exist_ok=True)
     target = d / name
-    try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-    except FileExistsError:
+    if target.exists():
         return "exists"
-    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-        f.write(value)
-    return "created"
+    # Write the complete value to a private temp file, then publish it without overwriting: a crash never leaves an empty secret,
+    # and of two concurrent runs only one link/rename succeeds.
+    fd, tmp = tempfile.mkstemp(prefix=".put-", dir=str(d))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(value.encode("utf-8"))
+        try:
+            os.link(tmp, target)
+        except FileExistsError:
+            return "exists"
+        except OSError:
+            try:
+                os.rename(tmp, target)  # no-overwrite on Windows; where the link is unsupported
+                tmp = ""
+            except FileExistsError:
+                return "exists"
+        return "created"
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def log_line(name: str, repo: Path) -> None:
     f = repo / "core" / "DECISION_LOG.md"
+    if not f.is_file():
+        raise SystemExit("refused: core/DECISION_LOG.md not found in the current folder")
     day = datetime.date.today().isoformat()
     with open(f, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(f"\n- {day} secret stored: name {name}, in the user secret store outside git (value not logged).\n")
@@ -69,13 +99,16 @@ def main(argv: list[str]) -> int:
         for p in sorted(d.iterdir()) if d.is_dir() else []:
             print(p.name)
         return 0
-    if len(argv) < 2 or not NAME_RE.match(argv[1]):
-        print("refused: NAME must match [A-Za-z_][A-Za-z0-9_]{0,63}")
+    if len(argv) < 2 or not valid_name(argv[1]):
+        print("refused: NAME must match [A-Za-z_][A-Za-z0-9_]{0,63} and not be a Windows device name")
         return 2
     name = argv[1]
     if cmd == "has":
         return 0 if (store_dir() / name).exists() else 1
     if cmd == "log":
+        if not (store_dir() / name).exists():
+            print("refused: NAME is not stored")
+            return 2
         log_line(name, Path.cwd())
         return 0
     print(put(name, sys.stdin.read().rstrip("\r\n")))

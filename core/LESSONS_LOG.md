@@ -212,3 +212,5 @@
 - Kind: SUCCESS. Facts: closed the OPERATOR loophole in the ledger by a fixed case list instead of free text. Rule: a gate on a free-text reason is not a gate; require a value from a closed list.
 
 - Kind: SUCCESS. Facts: tester wrote 18 cases from the criteria and all passed first run with an isolated ledger. Rule: tests for a state file always point it at a temp path.
+
+- Kind: FAILURE. Facts: secret_store and the ledger quote check shipped with a crash window and a one-apostrophe loophole. Root cause: I wrote them without running them once and without a failure-half-way thought. Layer that missed it: author and tests; python-reviewer found it. Rule: for any create-then-write step, answer "what if it dies in between" before commit.

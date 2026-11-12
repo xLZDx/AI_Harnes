@@ -247,6 +247,10 @@ def c_start(a, d):
 OPERATOR_CASES = ("prohibition", "money", "personal-secret", "captcha", "account", "irreversible-delete", "force-push", "production-data")
 
 
+# a closed pair of quotes with 6+ characters of text between them
+QUOTE_PATTERNS = ("\"[^\"]{6,}\"", "'[^']{6,}'", "`[^`]{6,}`", "“[^”]{6,}”", "«[^»]{6,}»")
+
+
 def c_block(a, d):
     """Mark a task as blocked for a verified reason. The tasks-left Stop gate ignores blocked tasks (S7-T2)."""
     _, t = find_task(d, a.id)
@@ -261,8 +265,10 @@ def c_block(a, d):
         if case not in OPERATOR_CASES:
             sys.exit("ledger: --class OPERATOR needs --case one of: " + ", ".join(OPERATOR_CASES)
                      + " (anything else the agent decides or does itself, see the self-service ladder)")
-        if case == "prohibition" and not re.search(r"[\"'`“«].{6,}", cause):
-            sys.exit("ledger: --case prohibition needs the tool's error quoted in --cause")
+        if case == "prohibition" and not any(re.search(pat, cause) for pat in QUOTE_PATTERNS):
+            sys.exit("ledger: --case prohibition needs the tool's error quoted in --cause (a closed pair of quotes with the text between)")
+    elif case:
+        sys.exit("ledger: --case is only for --class OPERATOR")
     t["blocked"] = {"class": a.klass, "cause": cause, "at": now(), **({"case": case} if case else {})}
     event(d, "block", task=a.id, klass=a.klass)
     print(f"{a.id} blocked ({a.klass})")

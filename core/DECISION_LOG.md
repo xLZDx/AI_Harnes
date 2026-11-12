@@ -230,3 +230,6 @@
 
 ## 2026-11-12 S9-T6 tests
 - Evidence: tests/test_self_service.py 38 passed (tester run, 18 new cases for the OPERATOR case rule, isolated ledger in a temp dir). Not covered: concurrent block calls, boundary of the quoted-error rule.
+
+## 2026-11-12 S9 review fixes (python-reviewer)
+- Accepted two MAJOR with code facts: (1) secret_store put created the file before writing, so a crash left an empty secret that blocked all later puts; now it writes a temp file and publishes with os.link/rename without overwrite. (2) the ledger quoted-error check matched any single apostrophe; now it needs a closed pair of quotes. Also accepted MINOR: fullmatch plus Windows device names, utf-8 stdin, fail-closed inside-git check, log only for stored names, --case only for OPERATOR. Rejected: none. Evidence: manual run printed created, exists, and refused for NUL. Still open: tester must re-run the file after these changes.
