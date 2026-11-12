@@ -507,3 +507,4 @@ Decisions:
 
 ## 2026-11-12 S14 final test rounds
 - At b5d9af7: 8 named files OK (gates, incident, ci_dirty, s13_enforcement, s13_review_gates, s13_review_tools, ledger_stop_gate, s13_r5_false_positives); new test: child skip logged under python -I. At be12863: gates, incident, ledger_stop_gate, r5, review_gates OK; new tests: python heredoc that starts a shell keeps the substitution check, interim agent notice keeps the agent pending. Every S14 task verified by a functional-test-reviewer run and reviewed by code-reviewer / silent-failure-hunter runs recorded after its last code commit.
+- Backlog B14 (python heredoc shell-start words) and B15 (interim notice matched outside <summary>, no done set) added: single-reviewer MINORs, bounded, for the next sprint.
