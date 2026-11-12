@@ -132,7 +132,10 @@ def strip_heredocs(cmd: str) -> str:
             if interp:
                 # python source keeps its plain lines (a shell-like `npm test` line is still read), but `$(` and
                 # backticks there are Python text, not shell substitution, so they are neutralised
-                out.extend([b.replace("$(", "$ (").replace("`", "'") for b in body] if py_body else body)
+                # ...unless the python code starts a shell (os.system, os.popen, subprocess, shell=True): then a `$(`
+                # in its strings really runs, so the body stays as it is
+                shells_out = re.search(r"os\.(system|popen)|subprocess|shell\s*=\s*True", "\n".join(body))
+                out.extend([b.replace("$(", "$ (").replace("`", "'") for b in body] if py_body and not shells_out else body)
     return "\n".join(out)
 
 

@@ -328,3 +328,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SHORTCOMING 2026-11-12 S14-T6: an older fail-open branch in the push check survived S13 review; fixed with the S14 sweep.
 - SUCCESS 2026-11-12 S14 regression: every accepted review fix has a falsifying test with an allowed twin.
 - SHORTCOMING 2026-11-12 S14-T5: the skip log import relied on the -s launch; found by the test agent.
+- FAILURE 2026-11-12 S14-T2: my python-heredoc fix hid substitutions that os.system runs (found by silent-failure-hunter round 2); and twice a '\n' inside a python heredoc script turned into a real newline and broke a hook file until fixed. Next time: when neutralising input, ask what else executes it; and write code edits with the Edit tool, not through nested heredocs.

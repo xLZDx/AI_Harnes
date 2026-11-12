@@ -498,3 +498,6 @@ Decisions:
 ## 2026-11-12 S14 regression round (functional-test-reviewer)
 - All OK: test_s14_incident, test_s14_gates, test_s14_ci_dirty, test_s13_enforcement, test_s13_review_tools, test_ledger_stop_gate, test_s13_review_gates, test_s13_r5_false_positives. Old fixtures updated to the new contracts (agent entries carry project, approvals carry request_id, judge test uses Popen). New cases for every review fix with allowed twins.
 - run_hook child skip did not log under python -I (test agent observation): the hooks folder is now put on sys.path before importing _agentio.
+
+## 2026-11-12 S14 review round 2 (fixes only): silent-failure-hunter
+- M1 and M2 closed; no BLOCKER/MAJOR. MINOR 3 accepted (code fact, my regression): a python heredoc whose code starts a shell (os.system, os.popen, subprocess, shell=True) really runs a substitution in its strings, so such a body is no longer neutralised. Checked: os.system with an npm suite in a substitution is denied; a plain print of the same text is allowed. MINOR 1, 2, 4, 5 go to the GPT-PM packet.
