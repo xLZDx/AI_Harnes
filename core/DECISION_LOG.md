@@ -381,3 +381,6 @@
 
 ## 2026-11-12 B1 tests
 - tests/test_s11_plan_import.py: 5 heading tests added (S05-Payment flow keeps case, mixed case after dash, bold id, underscore tail, lower-case id still upper-cased), whole file OK: 0 failing (functional-test-reviewer).
+
+## 2026-11-12 closing_claim_gate tests
+- tests/test_s13_closing_claim.py 40 tests OK: 0 failing (functional-test-reviewer): the operator's real complaint message blocked, each open phrase, operator-only exceptions per line, Blockers endings, ledger states, running-agent coverage only for the named whole task id, git dirt rules, subagent skip, kill switch, loop release, Codex transcript read, robustness. Defects found by the tests and fixed at closing_claim_gate.py:186: substring id match (S1-T1 inside S1-T10), then the whole-id regex rejected a sentence-final period.

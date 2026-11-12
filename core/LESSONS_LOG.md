@@ -278,3 +278,4 @@
 - Kind: SHORTCOMING. Facts: a test written before the GPT fix asserted the removed age-based lock takeover and failed after it. Rule: when a fix changes a contract, grep the tests for the old contract in the same change.
 - Kind: SUCCESS. Facts: open items that had lived only in chat answers are now in docs/BACKLOG.md with a closing condition each. Rule: an item named as open in an answer goes to the backlog in the same turn.
 - Kind: SHORTCOMING. Facts: an older test compared the title with .lower() and so hid the upper-case defect for months. Rule: assertions on user-visible text compare it exactly.
+- Kind: FAILURE. Facts: my first fix of the id match broke the sentence-end case the earlier test covered. Root cause: fixed the reported input without re-running the neighbouring cases in my head. Layer that caught it: the test agent's full file run. Rule: a regex fix lists the inputs on both sides of the boundary before editing.

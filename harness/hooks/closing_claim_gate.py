@@ -183,7 +183,7 @@ def collect(data: dict, message: str) -> list[str]:
                 log({"verdict": "ledger-unreadable", "root": str(r)})
             else:
                 for tid, st in tasks:
-                    if running and tid in message:
+                    if running and re.search(r"(?<![\w.-])" + re.escape(tid) + r"(?![\w-])(?!\.[\w-])", message):  # whole id: S1-T1 is not in S1-T10, but 'S1-T1.' at a sentence end counts
                         continue  # own running agent works on it and the message names the task id
                     items.append(f"open ledger task {tid} ({st}) in {r.name}")
         dirty = dirty_files(r)
