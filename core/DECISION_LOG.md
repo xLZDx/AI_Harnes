@@ -417,3 +417,6 @@
 
 ## 2026-11-12 S14-T1 T2 T4 tests
 - tests/test_s14_gates.py 18 tests OK: 0 failing (functional-test-reviewer): T1 deny/allow with exec wrappers and the same verdict as shell_policy_gate, T2 runners, named forms by agent, builds allowed, substitution/backticks/case, quoted data; T4 resolution by ledger id, CI-OFF housekeeping, ack-errors keeps history and a new error shows again, report alerts and hook-error.log lines both ways. Re-run green: test_s13_review_gates, test_s13_enforcement.
+
+## 2026-11-12 S14-T4 applied to the real ledgers
+- ack-errors ran (Harness_v2 tools/ledger.py, cwd each project) where status still warned, after copying the ledgers to D:/Backup/ledger-ack-20261112-193145: AEVE 3 (11 of its 14 were already resolved by ids the sync added), ERP 7, Fitness_App 24; status now prints no warning in any project; hook-error events kept in each ledger (history).
