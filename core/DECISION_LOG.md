@@ -221,3 +221,6 @@
 
 ## 2026-11-12 S9-T4 secret store
 - Decision: tools/secret_store.py stores agent-issued secrets outside git (HARNESS_SECRET_DIR or ~/.harness-secrets), value only from stdin, exclusive create so a retry or a concurrent run never makes a second value, refuses a folder inside a git work tree, log subcommand writes a value-free line. Not yet shown: behaviour under test (tester in /verify) and a Windows ACL on the folder (the file mode bits are weak on Windows).
+
+## 2026-11-12 S9 agent plays the operator role
+- Decision (operator instruction, all projects): the agent makes every non-destructive, non-money decision itself and records decision, reason and rejected options here; OPERATOR blocks must name one of the operator-only cases. Written into harness/rules/CORE.md, which build.py copies to both the Claude CLAUDE.md and the Codex AGENTS.md. Evidence: tests/test_self_service.py 20 passed (tester run). Open: S9-T6 makes ledger.py enforce the named case; not built yet. Observed: this checkout has no core.hooksPath, so the post-commit hook did not record S9 commits; I replayed ledger commit-hook by hand for each commit.

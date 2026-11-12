@@ -67,6 +67,10 @@ instruction wins; platform permission and safety controls always apply.
   the smallest working content; (5) store the result outside git (environment variable or a store outside the repository) and
   write one value-free line to `core/DECISION_LOG.md` (what was created, where, never the value); `tools/secret_store.py`
   does this safely (value from stdin, create-if-absent, refuses a folder inside git); (6) only then ask.
+- The agent plays the operator's role (operator 2026-11-12, all projects): every decision that is not destructive and does not
+  touch money is made by the agent itself, not asked. Choices such as "temporary staging provisioning or a test-only route" are
+  decided by the agent on the evidence it has, and the decision, its reason and the rejected options go to `core/DECISION_LOG.md`.
+  Ask only for the operator-only cases below. A block with class OPERATOR must name which of those cases applies.
 - Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
   trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
   production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.

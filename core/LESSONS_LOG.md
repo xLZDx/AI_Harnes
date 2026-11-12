@@ -206,3 +206,5 @@
 - Kind: SHORTCOMING. Facts: S9-T3 as planned assumed Codex wiring and prose asks were missing; reading registry.json and out/codex/hooks.json showed both exist. Root cause: the plan was written before reading the gate. Layer that missed it: author. Rule: read the existing code before splitting a task.
 
 - Kind: SHORTCOMING. Facts: S9-T4 helper was committed without being run once; only the tester will run it in /verify. Rule: the tester run decides, but read the code path of concurrent create once more before verify.
+
+- Kind: SHORTCOMING. Facts: four S9 commits were made without the ledger post-commit hook installed (core.hooksPath empty in Harness_v2), so verify refused them. Root cause: the harness repo itself is not installed as a project. Layer that missed it: author. Rule: after the first commit of a task run ledger.py status and check the commit was recorded.
