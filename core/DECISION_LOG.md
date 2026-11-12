@@ -212,3 +212,6 @@
 - Decision: the operator is the last resort. CORE.md now orders the steps: check prohibition, search env/config/CLI, use found, create or issue the missing item, store it outside git with a value-free log line, then ask. Evidence: operator message of 2026-11-12 (a Terraform stack was asked for all day, then created by the agent after hours). Operator-only cases kept: prohibition with quoted error, money, personal secret, CAPTCHA, account creation, unrecoverable deletion, force-push, production data.
 
 - Lessons entry for S9-T1 was missing from the first commit (the gate stopped the command before it ran); added by amending the local, unpushed commit.
+
+## 2026-11-12 S9-T2 /unblock command
+- Decision: one source file harness/commands/unblock.md; build.py already copies commands to Claude commands and Codex prompts, so no installer change. Evidence: build output lists unblock.md in out/claude/commands and out/codex/prompts. Not yet shown: that the installed Codex session offers the prompt (needs a new Codex session after install).
