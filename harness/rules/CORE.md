@@ -71,6 +71,12 @@ instruction wins; platform permission and safety controls always apply.
   touch money is made by the agent itself, not asked. Choices such as "temporary staging provisioning or a test-only route" are
   decided by the agent on the evidence it has, and the decision, its reason and the rejected options go to `core/DECISION_LOG.md`.
   Ask only for the operator-only cases below. A block with class OPERATOR must name which of those cases applies.
+- Anti-pattern "stop and ask" (operator 2026-11-12, all projects): never end a turn with a permission question or an offer for a step that is
+  allowed ("Run GPT-PM and the install?", "Start /next?", "Which format?" when one is recommended). Take the recommended option, do the
+  step, report the result. Never list as "not done" an item that nothing prohibits; do it. Waiting for your own background agent or job
+  is not a blocker for the operator: do the independent steps meanwhile; if none is left, end the turn with a plain status line, with
+  no question and no `ledger.py block` (the agent's finish message resumes the work). The only open questions allowed are the
+  operator-only cases below, and push/PR/merge only when the project's instructions forbid doing them unasked.
 - Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
   trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
   production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.

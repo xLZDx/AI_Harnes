@@ -216,3 +216,5 @@
 - Kind: FAILURE. Facts: secret_store and the ledger quote check shipped with a crash window and a one-apostrophe loophole. Root cause: I wrote them without running them once and without a failure-half-way thought. Layer that missed it: author and tests; python-reviewer found it. Rule: for any create-then-write step, answer "what if it dies in between" before commit.
 
 - Kind: SUCCESS. Facts: three independent reviewers found the same two defects and the fix was confirmed by 48 tests. Rule: run reviewers on risky create-then-write code before the tester, not after.
+
+- Kind: FAILURE. Facts: I ended the S9 turn with "Not verified and not done" plus a permission question for steps that were allowed, and used ledger block EXTERNAL to wait for my own agents; the operator pointed it out twice in the day. Root cause: the safe-looking habit of asking, no rule against it. Layer that missed it: author; no gate catches it. Rule: allowed means do it; ask only the operator-only cases.
