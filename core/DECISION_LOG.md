@@ -501,3 +501,6 @@ Decisions:
 
 ## 2026-11-12 S14 review round 2 (fixes only): silent-failure-hunter
 - M1 and M2 closed; no BLOCKER/MAJOR. MINOR 3 accepted (code fact, my regression): a python heredoc whose code starts a shell (os.system, os.popen, subprocess, shell=True) really runs a substitution in its strings, so such a body is no longer neutralised. Checked: os.system with an npm suite in a substitution is denied; a plain print of the same text is allowed. MINOR 1, 2, 4, 5 go to the GPT-PM packet.
+
+## 2026-11-12 S14-T5 interim agent notice keeps the agent pending
+- The Stop gate blocked again while the final test agent ran: its notice said 'is waiting on its own background work', and the gate took any task-notification as the end. Now such an interim notice keeps the agent pending from the notice time (the 30-minute limit still applies, so an agent that misreports itself stops counting after 30 minutes). B14 added to the backlog (python heredoc shell-start words), review of S14-T2 recorded from silent-failure-hunter round 3.
