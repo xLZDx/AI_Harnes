@@ -350,3 +350,6 @@
 
 ## 2026-11-12 S13 audit checks every GitHub remote
 - db-test-tool-analysis origin (xLZDx/DB-test-tool) does not exist (404) but remote cleannew (xLZDx/db_test_tool_clean) had 'Gate 2 evidence' active on push and pull request; disabled with gh workflow disable (added to D:/Backup/ci_disabled_20261112.tsv). The audit now checks every GitHub remote, reads the workflow text GitHub runs, and reports a missing repository as n.a.
+
+## 2026-11-12 S13 CI-off tool tests
+- tests/test_s13_ci_off.py 16 passed (functional-test-reviewer): ci_triggers_off block/flow/multi-line/schedule forms, deploy kept unless --include-deploy, dirty log and detached HEAD skipped, CRLF kept, dry run inert, second run clean, marketing folder never touched, failing commit hook restores files; audit checks every GitHub remote (404 n.a., other errors FAIL, auto trigger on a second remote FAIL). test_s13_audit 24 passed.

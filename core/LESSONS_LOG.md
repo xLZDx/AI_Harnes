@@ -269,3 +269,4 @@
 - Kind: SUCCESS. Facts: the audit test built from the real settings format caught the args defect independently of the live audit run. Rule: tool tests use fixtures copied from the real installed files.
 - Kind: SUCCESS. Facts: the restore script of install_claude was run for real in a temp home and put the old CLAUDE.md back. Rule: every installer's rollback path is executed in a test, not only written.
 - Kind: FAILURE. Facts: the CI switch-off and the first audit looked only at origin; a second remote of db-test-tool-analysis still ran CI on push. Root cause: one remote assumed per project. Layer that missed it: author. Rule: GitHub checks cover every remote of a repository.
+- Kind: SUCCESS. Facts: the CI-off tool was proved on temp repositories by a test agent, including a failing commit hook, before anyone relied on its real run. Rule: a cross-repo write tool gets a failure-path test (hook refusal) as well as the happy path.
