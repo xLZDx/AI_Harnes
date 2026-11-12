@@ -173,9 +173,10 @@ def _words(seg: str) -> list[tuple[str, int]]:
 
 
 _EXEC_VALUE_FLAGS = {
-    "docker": {"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file", "--detach-keys"},
+    "docker": {"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file", "--detach-keys",
+               "-H", "--host", "--context", "-c", "--config", "-l", "--log-level"},  # global flags with a value
     "kubectl": {"-n", "--namespace", "-c", "--container", "-f", "--filename", "--context", "--kubeconfig", "--pod-running-timeout"},
-    "ssh": set("-" + c for c in "bcDEeFIiJLlmOopQRSWw"),
+    "ssh": set("-" + c for c in "BbcDEeFIiJLlmOopQRSWw"),
     "wsl": {"-d", "--distribution", "-u", "--user", "--cd", "--distribution-id"},
     "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid", "-w", "--wd"},
     "chroot": {"--userspec", "--groups"},
@@ -197,6 +198,8 @@ def _skip_flags(words: list[tuple[str, int]], idx: int, kind: str) -> int:
     while idx < len(words) and words[idx][0].startswith("-") and words[idx][0] != "--":
         w = words[idx][0]
         idx += 2 if (w in values) else 1
+    if idx < len(words) and words[idx][0] == "--":  # end of options: the next word is the host/container/command
+        idx += 1
     return idx
 
 

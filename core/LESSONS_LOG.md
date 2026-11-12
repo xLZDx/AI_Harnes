@@ -323,3 +323,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - FAILURE 2026-11-12 S14-T6: approve accepted an APPROVE that a later REVISE replaced; three reviewers found it. Next time: a verdict check reads the latest verdict only.
 - SHORTCOMING 2026-11-12 S14-T7: the agent-run record had no project, so a run anywhere on the machine counted. Next time: evidence records carry the scope they prove.
 - SUCCESS 2026-11-12 S14-T5: a live judge call with the isolated flags returned a correct verdict, closing the 'flags unproven' note of two reviewers.
+- SHORTCOMING 2026-11-12 S14-T1: the wrapper flag tables missed global value flags; two reviewers found the same bypass. Next time: take wrapper flag lists from the tool's own help output.
