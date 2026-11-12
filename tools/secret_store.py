@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -32,18 +33,65 @@ def store_dir() -> Path:
     return Path(os.environ.get("HARNESS_SECRET_DIR") or (Path.home() / ".harness-secrets")).resolve()
 
 
+def has_git_marker(p: Path) -> bool:
+    """A .git file or folder in p or any parent. Used when git itself cannot run."""
+    return any((q / ".git").exists() for q in (p, *p.parents))
+
+
 def inside_git(p: Path) -> bool:
-    """True when p is inside a git work tree. Fails closed: any git error other than "not a git repository" counts as inside."""
+    """True when p is inside a git work tree. Fails closed: if git cannot give a clear "not a git repository" answer, the parent
+    folders are searched for a .git marker; a marker or an unclear git error means inside."""
     probe = p if p.exists() else p.parent
     while not probe.exists():
         probe = probe.parent
+    if has_git_marker(probe):
+        return True
     try:
         r = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
     except OSError:
-        return False  # git is not installed, so there is no work tree to leak into
+        return False  # git is not installed and no .git marker exists above the folder
     if r.returncode == 0:
         return r.stdout.strip() == "true"
     return "not a git repository" not in (r.stderr or "").lower()
+
+
+def _publish(tmp: str, target: Path) -> str:
+    """Move the finished temp file to target without ever replacing an existing target."""
+    try:
+        os.link(tmp, target)  # fails with FileExistsError when target exists, on every platform
+        return "created"
+    except FileExistsError:
+        return "exists"
+    except OSError:
+        pass  # hard links unsupported here: publish under an exclusive lock, because os.rename replaces on POSIX
+    lock = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
+            break
+        except FileExistsError:
+            if target.exists():
+                return "exists"
+            try:
+                if time.time() - lock.stat().st_mtime > 30:
+                    os.unlink(lock)  # a crashed run left a stale lock
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise SystemExit("refused: could not take the publish lock")
+            time.sleep(0.05)
+    try:
+        if target.exists():
+            return "exists"
+        os.replace(tmp, target)
+        return "created"
+    finally:
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
 
 
 def put(name: str, value: str) -> str:
@@ -64,17 +112,7 @@ def put(name: str, value: str) -> str:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(value.encode("utf-8"))
-        try:
-            os.link(tmp, target)
-        except FileExistsError:
-            return "exists"
-        except OSError:
-            try:
-                os.rename(tmp, target)  # no-overwrite on Windows; where the link is unsupported
-                tmp = ""
-            except FileExistsError:
-                return "exists"
-        return "created"
+        return _publish(tmp, target)
     finally:
         if tmp and os.path.exists(tmp):
             os.unlink(tmp)

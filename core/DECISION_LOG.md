@@ -248,3 +248,6 @@
 
 ## 2026-11-12 S9 anti-pattern extended
 - Operator correction: the pattern appeared again in disguise right after the rule was written (a status table ending the turn with EXTERNAL for my own tester, and an operator click handed over as the Codex hook step). CORE.md now names the disguised forms and requires re-reading the rule list before ending a turn. Rejected: leaving it as one sentence. Open: a Stop gate that detects it (S10).
+
+## 2026-11-12 S9 GPT-PM round 1 (HEAD 352dfc4): REVISE, 2 MAJOR
+- F1 real: the no-link fallback used os.rename, which replaces an existing file on POSIX, so two concurrent puts could both say created and lose the first value. Fixed: publish under an exclusive lock file, stale lock removed after 30 s. F2 real: when git could not start, inside_git returned False and a secret could be written inside a work tree. Fixed: parents are searched for a .git marker first, git errors that are not "not a git repository" count as inside. Rejected: none. Evidence: manual check printed "default store inside git: False" and "repo inside git: True"; tests for both fixes are being written by the tester. Round 2 must check only these two fixes.
