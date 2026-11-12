@@ -341,3 +341,6 @@
 
 ## 2026-11-12 S13 gate regression tests
 - tests/test_s13_review_gates.py 21 passed (functional-test-reviewer): every accepted gate finding both ways, real hook processes and real git repos; re-run green: test_s13_enforcement 18, test_s13_r5_false_positives 12, test_decision_explain_gate 16, test_ledger_stop_gate 37.
+
+## 2026-11-12 S13 audit tests
+- tests/test_s13_audit.py 24 passed (functional-test-reviewer): stale/current cells, gates_live through the real rules_gate, read-only proof, --json and --project; the args-format defect it found is fixed in 25b17be.
