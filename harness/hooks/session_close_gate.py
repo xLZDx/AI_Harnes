@@ -286,7 +286,7 @@ def ledger_open_tasks(root: Path, mine: set) -> list[tuple[str, str]] | None:
         return None
 
 
-def ledger_stop(data: dict, msg: str) -> bool:
+def ledger_stop(data: dict, msg: str, waiting: list | None = None) -> bool:
     """Tasks-left check on the Harness v2 ledger (S7-T2). True = handled (blocked or released), caller stops."""
     roots, mine = ledger_projects(data)
     if not roots:
@@ -309,6 +309,11 @@ def ledger_stop(data: dict, msg: str) -> bool:
             continue
         if msg.endswith("?"):
             log({"event": "stop", "verdict": "allow-question", "project": key, "open": len(tasks)})
+            continue
+        if waiting:  # an own FRESH agent is running: ending the turn is valid, so the open tasks are logged, not blocked
+            for aid, age in waiting[:6]:
+                log({"event": "stop", "verdict": "allow-waiting-for-agent", "project": key, "open": len(tasks),
+                     "detail": f"waiting for agent {aid}, age {age}s"})
             continue
         sig = "|".join(f"{i}:{s}" for i, s in sorted(tasks))
         rec = streaks.get(key) or {}
@@ -353,7 +358,7 @@ def ledger_stop(data: dict, msg: str) -> bool:
 ASYNC_LAUNCH_RE = re.compile(r"Async agent launched successfully", re.I)
 AGENT_ID_RE = re.compile(r"agentId:\s*([A-Za-z0-9_-]+)")
 NOTIF_ID_RE = re.compile(r"<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>")
-PENDING_MAX_AGE = 3 * 3600  # a launch older than this without a notification is treated as dead, not as "still running"
+PENDING_MAX_AGE = 30 * 60  # a launch older than this without a notification is treated as dead, not as "still running"
 
 
 def _row_texts(row: dict) -> list[tuple[str, str]]:
@@ -376,8 +381,8 @@ def _row_texts(row: dict) -> list[tuple[str, str]]:
     return out
 
 
-def pending_agents(transcript_path: str) -> list[str]:
-    """Ids of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
+def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
+    """[(id, age in seconds)] of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
     later <task-notification> with the same <task-id>. Transcript only; [] when unreadable or on any error."""
     try:
         from _turn import _rows
@@ -391,18 +396,22 @@ def pending_agents(transcript_path: str) -> list[str]:
                 if role == "result" and ASYNC_LAUNCH_RE.search(text):
                     m = AGENT_ID_RE.search(text)
                     if m:
-                        ts = now
                         try:
                             ts = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))  # stamps are UTC
-                        except (ValueError, TypeError):
-                            pass
-                        pending[m.group(1)] = ts
+                            pending[m.group(1)] = ts
+                        except (ValueError, TypeError, OverflowError):
+                            pending.pop(m.group(1), None)  # no usable launch time: cannot prove it is fresh, so it is NOT pending
                 if "<task-notification>" in text:
                     for m in NOTIF_ID_RE.finditer(text):
                         pending.pop(m.group(1), None)
-        return [a for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE]
+        return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE]
     except Exception:  # noqa: BLE001  detection must never break a gate
         return []
+
+
+def pending_agents(transcript_path: str) -> list[str]:
+    """Ids only of pending_agents_aged()."""
+    return [a for a, _ in pending_agents_aged(transcript_path)]
 
 
 def _norm(p) -> str:
@@ -467,14 +476,17 @@ def agents_running(data: dict) -> list[str]:
 
 
 def on_stop(data: dict) -> None:
-    running = agents_running(data)
-    if running:  # waiting for an own background agent is not a stall: a short status line is a valid end of turn
-        log({"event": "stop", "verdict": "waiting-for-own-agents", "agents": running[:6]})
-        return
+    aged = pending_agents_aged(data.get("transcript_path") or "")
+    running = [a for a, _ in aged]
+    if running:  # waiting for an own fresh background agent is not a stall: a short status line is a valid end of turn
+        log({"event": "stop", "verdict": "waiting-for-own-agents", "agents": running[:6],
+             "ages_s": {a: age for a, age in aged[:6]}})
     msg0 = data.get("last_assistant_message") or ""
     if not msg0 and _CODEX:
         msg0 = _agentio.last_assistant_text(data)
-    if ledger_stop(data, msg0.rstrip()):
+    if ledger_stop(data, msg0.rstrip(), waiting=aged):
+        return
+    if running:  # stall/ask verdicts are skipped while an own agent runs
         return
     plan_dir = find_plan_dir(data.get("cwd") or "")
     if not plan_dir:

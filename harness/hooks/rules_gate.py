@@ -36,12 +36,128 @@ FILE_RE = re.compile(r"\.(py|[cm]?[jt]sx?|dart|go|rs|java|kt|cs|rb|php)(::|:\d+|
 VERIFY_FILE_RE = re.compile(r"^verify([_.-][\w.-]*)?\.(py|sh|ps1|js|mjs|cjs|bat|cmd)$", re.I)
 PY_BASES = {"python", "python3", "py", "pypy", "pypy3"}
 SHELLS = {"bash", "sh", "zsh", "dash", "pwsh", "powershell", "cmd"}
-WRAPPERS = {"env", "time", "call", "nohup", "sudo", "command", "exec", "start-process", "poetry", "pipenv", "uv", "uvx",
-            "pipx", "hatch", "rye", "conda", "npx", "pnpx", "bunx"}
+WRAPPERS = {"env", "time", "call", "nohup", "sudo", "doas", "command", "exec", "start-process", "poetry", "pipenv", "uv",
+            "uvx", "pipx", "hatch", "rye", "conda", "npx", "pnpx", "bunx", "timeout", "nice", "ionice", "stdbuf", "xargs",
+            "cross-env", "dotenv", "dotenvx", "setsid", "unbuffer", "winpty", "chronic"}
 PKG = {"npm", "pnpm", "yarn", "bun"}
+# flags that take the NEXT token as their value, per wrapper
+WRAP_VFLAGS = {
+    "env": {"-u", "--unset", "-C", "--chdir"},
+    "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--user", "--group", "--host", "--prompt", "--chdir"},
+    "doas": {"-u", "-C"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "xargs": {"-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a", "--max-args", "--max-procs", "--delimiter", "--arg-file"},
+    "uv": {"--with", "--with-requirements", "--with-editable", "--python", "-p", "--project", "--directory", "--extra",
+           "--group", "--env-file", "--index", "--default-index", "--from", "-w", "--package", "--only-group"},
+    "uvx": {"--with", "--python", "-p", "--from", "--with-requirements", "--env-file", "--index"},
+    "poetry": {"-C", "--directory", "-P", "--project"},
+    "pipx": {"--python", "--spec", "--pip-args"},
+    "dotenv": {"-e", "-f", "-p", "-c", "-o"},
+    "dotenvx": {"-f", "--env-file", "-fk", "--env-keys-file"},
+    "start-process": {"-filepath", "-workingdirectory", "-argumentlist"},
+}
+PKG_VFLAGS = {"-C", "--prefix", "--cwd", "--filter", "-F", "-w", "--workspace", "--include", "--exclude", "-p", "--package",
+              "--loglevel", "--registry", "--userconfig", "--cache", "--reporter", "--cwd"}
+# flags of test runners that take the next token as a value (a config / plugin / setup file is not a named test file)
+TEST_VFLAGS = {"-c", "--config", "--configLoader", "-p", "--plugin", "--rootdir", "--root", "--confcutdir", "--setupFiles",
+               "--setupFilesAfterEnv", "--setup-files", "--setupFile", "--globalSetup", "--project", "--projects", "-o",
+               "--override-ini", "--ignore", "--ignore-glob", "--deselect", "-k", "-m", "--cov", "--cov-report",
+               "--cov-config", "--basetemp", "--junitxml", "--log-file", "--log-level", "-n", "--numprocesses", "--workers",
+               "-w", "--maxWorkers", "--testTimeout", "--environment", "--outputFile", "--output-file", "--testPathIgnorePatterns",
+               "--testNamePattern", "-t", "--testPathPattern", "--shard", "--dir", "--browser", "--pool", "--mode",
+               "--cache-dir", "--cacheDirectory", "--import", "--require", "-r", "--reporter", "--reporters", "--tsconfig",
+               "--tb", "--durations", "--maxfail", "-W", "--rootDir", "--roots", "--env", "--transform", "--moduleNameMapper",
+               "--coverage-dir", "--coverageDirectory", "--changed", "--dom", "--watch-ignore", "--logHeapUsage"}
+LEAD_KW = {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "(", "}", ")", "fi", "done", "esac", ";;"}
+TEST_DIRS = {"tests", "__tests__"}
+VAR_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:\"([^\"]+)\"|'([^']+)'|\\?([A-Za-z_][\w.-]*))")
+
+
+class Cwd(str):
+    """A working directory; `.given` is True when it came from a cd / git -C target in the command (not the session cwd)."""
+    given = False
+
+
+def mk_cwd(path: str, given: bool) -> Cwd:
+    c = Cwd(path)
+    c.given = given
+    return c
 
 
 # ---- parsing -----------------------------------------------------------------------------------------------------
+
+def _in_quote(line: str, pos: int) -> bool:
+    q = ""
+    for ch in line[:pos]:
+        if q:
+            if ch == q:
+                q = ""
+        elif ch in "\"'":
+            q = ch
+    return bool(q)
+
+
+def strip_heredocs(cmd: str) -> str:
+    """Heredoc bodies are data: drop them through the terminator line. Keep the body (as ordinary lines, to be analysed)
+    only when the heredoc feeds a shell or python interpreter."""
+    if "<<" not in cmd:
+        return cmd
+    lines = cmd.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        out.append(line)
+        ms = [m for m in HEREDOC_RE.finditer(line) if not _in_quote(line, m.start())]
+        if not ms:
+            continue
+        pre = split_segments(line[:ms[0].start()])
+        last = tokenize(pre[-1]) if pre else []
+        interp = any(base(t) in SHELLS or base(t) in PY_BASES for t in last[:4])
+        for m in ms:
+            tag = m.group(2) or m.group(3) or m.group(4)
+            body: list[str] = []
+            while i < len(lines):
+                l = lines[i]
+                i += 1
+                if l.strip() == tag:
+                    break
+                body.append(l)
+            if interp:
+                out.extend(body)
+    return "\n".join(out)
+
+
+def clean_tokens(toks: list[str]) -> list[str]:
+    """Drop grouping characters and shell keywords around a command: (cmd), { cmd; }, then cmd, do cmd, ! cmd."""
+    t = list(toks)
+    while t:
+        s = t[0].lstrip("({")
+        if s != t[0]:
+            if s:
+                t[0] = s
+            else:
+                t.pop(0)
+            continue
+        if t[0].lower() in LEAD_KW:
+            t.pop(0)
+            continue
+        break
+    while t:
+        e = t[-1].rstrip(")}")
+        if e == t[-1]:
+            break
+        if e:
+            t[-1] = e
+            break
+        t.pop()
+    return t
+
 
 def split_segments(cmd: str) -> list[str]:
     """Split on unquoted ; & | and newlines (a '&' inside a redirection such as 2>&1 does not split)."""
@@ -78,8 +194,98 @@ def is_flag(t: str) -> bool:
     return t.startswith("-") and len(t) > 1
 
 
+def looks_like_test(a: str) -> bool:
+    """A path that names a test file: test_*.py, *_test.*, *.test.*, *.spec.*, or a file under tests/ or __tests__/."""
+    if not FILE_RE.search(a):
+        return False
+    p = re.sub(r"(::.*|:\d+)$", "", a.replace("\\", "/"))
+    parts = p.split("/")
+    name = parts[-1].lower()
+    if re.match(r"test_[^/]*\.\w+$", name) or re.search(r"_test\.\w+$", name) or re.search(r"\.(test|spec)\.\w+$", name):
+        return True
+    return any(d.lower() in TEST_DIRS for d in parts[:-1])
+
+
 def has_file(args: list[str]) -> bool:
-    return any(not is_flag(a) and FILE_RE.search(a) for a in args)
+    """True when a test-looking path appears that is not the value of a flag (a config / plugin / setup file is no test)."""
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            continue
+        if is_flag(a):
+            if "=" not in a and a in TEST_VFLAGS:
+                skip = True
+            continue
+        if looks_like_test(a):
+            return True
+    return False
+
+
+def skip_flags(args: list[str], vflags: set) -> list[str]:
+    r = list(args)
+    while r:
+        a = r[0]
+        if a == "--":
+            r = r[1:]
+        elif is_flag(a):
+            r = r[2:] if ("=" not in a and a in vflags) else r[1:]
+        else:
+            break
+    return r
+
+
+def strip_wrapper(b: str, rest: list[str]) -> list[str]:
+    """The wrapped command of env / timeout / nice / sudo -u x / uv run --with p / cross-env VAR=1 / dotenv -- ..."""
+    r = list(rest)
+    if b in ("poetry", "pipenv", "uv", "hatch", "rye", "conda", "pipx"):
+        if b == "uv" and r[:2] == ["tool", "run"]:
+            r = r[2:]
+        elif r and r[0] in ("run", "exec"):
+            r = r[1:]
+    vf = WRAP_VFLAGS.get(b, set())
+    duration = b != "timeout"
+    while r:
+        a = r[0]
+        if a == "--":
+            r = r[1:]
+        elif is_flag(a):
+            if b == "command" and a.lower() in ("-v", "-V"):
+                return []
+            r = r[2:] if ("=" not in a and a in vf) else r[1:]
+        elif VAR_ASSIGN_RE.fullmatch(a):
+            r = r[1:]
+        elif not duration and re.fullmatch(r"\d+(\.\d+)?[smhd]?", a):
+            duration = True
+            r = r[1:]
+        else:
+            break
+    return r
+
+
+# ---- directories (Git Bash, ~, $HOME) -----------------------------------------------------------------------------
+
+def msys_path(s: str) -> str:
+    s = s.strip().strip("\"'")
+    m = re.match(r"^/(?:mnt/|cygdrive/)?([A-Za-z])(?:/(.*))?$", s)  # Git Bash /d/Repo -> D:/Repo
+    return f"{m.group(1).upper()}:/{m.group(2) or ''}" if m else s
+
+
+def resolve_dir(target: str, cur: str) -> Cwd:
+    """The directory a cd / git -C target points to. A target that cannot be expanded keeps its raw text (it will not be a
+    directory, so the push check treats it as an unresolved target)."""
+    t = target.strip().strip("\"'")
+    home = os.path.expanduser("~")
+    t = re.sub(r"\$\{?(?:env:)?(?:HOME|USERPROFILE)\}?|%USERPROFILE%", lambda m: home.replace("\\", "/"), t, flags=re.I)
+    t = re.sub(r"\$\{?(?:PWD)\}?", str(cur).replace("\\", "/"), t)
+    if t == "~" or t.startswith(("~/", "~\\")):
+        t = home + t[1:]
+    if re.search(r"[$`%]", t) or t == "-":
+        return mk_cwd(t, True)  # cannot be resolved
+    t = msys_path(t)
+    return mk_cwd(os.path.normpath(os.path.join(str(cur), t)), True)
 
 
 def script_kind(name: str) -> str:
@@ -118,19 +324,9 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 return analyze(" ".join(rest[i + 1:]), cwd, depth + 1)
         return []
     if b in WRAPPERS and b not in ("npx", "pnpx", "bunx"):
-        r = [a for a in rest]
-        if b in ("poetry", "pipenv", "uv", "hatch", "rye", "conda", "pipx") and r and r[0] in ("run", "exec"):
-            r = r[1:]
-        while r and is_flag(r[0]):
-            r = r[1:]
-        return classify(r, cwd, depth + 1)
+        return classify(strip_wrapper(b, rest), cwd, depth + 1)
     if b in ("npx", "pnpx", "bunx"):
-        r = list(rest)
-        while r and is_flag(r[0]):
-            if r[0] in ("-p", "--package") and len(r) > 1:
-                r = r[1:]
-            r = r[1:]
-        return classify(r, cwd, depth + 1)
+        return classify(skip_flags(rest, {"-p", "--package", "-c", "--call"}), cwd, depth + 1)
 
     if b == "gh":
         subs, skip = [], False
@@ -155,7 +351,7 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
         while i < len(rest):
             a = rest[i]
             if a == "-C" and i + 1 < len(rest):
-                gcwd = os.path.normpath(os.path.join(gcwd, rest[i + 1]))
+                gcwd = resolve_dir(rest[i + 1], gcwd)
                 i += 2
             elif a in ("-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(rest):
                 i += 2
@@ -173,15 +369,16 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
         return []
 
     if b in PKG:
-        args, i = list(rest), 0
-        while i < len(args) and is_flag(args[i]):
-            i += 2 if args[i] in ("-C", "--prefix", "--cwd", "--filter", "-F", "-w", "--workspace") else 1
-        if i >= len(args):
+        args = skip_flags(rest, PKG_VFLAGS)
+        if not args:
             return []
-        sub, after = args[i].lower(), args[i + 1:]
+        sub, after = args[0].lower(), args[1:]
         if sub in ("test", "t", "tst"):
             return [("named-test" if has_file(after) else "full-test", f"{b} test", cwd)]
-        if sub in ("run", "run-script", "run-s", "run-p") and after:
+        if sub in ("run", "run-script", "run-s", "run-p"):
+            after = skip_flags(after, PKG_VFLAGS)
+            if not after:
+                return []
             script = after[0]
             k = script_kind(script)
             if k == "test":
@@ -190,13 +387,20 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 return [(k, f"{b} run {script}", cwd)]
             return []
         if sub in ("exec", "dlx", "x"):
-            return classify(after, cwd, depth + 1)
+            return classify(skip_flags(after, PKG_VFLAGS), cwd, depth + 1)
+        if sub == "workspace" and after:  # yarn workspace <name> <command...>
+            return classify([b, *after[1:]], cwd, depth + 1)
+        if sub == "workspaces":  # yarn workspaces foreach [flags] run test
+            a2 = skip_flags(after, PKG_VFLAGS)
+            if a2 and a2[0].lower() == "foreach":
+                a2 = skip_flags(a2[1:], PKG_VFLAGS)
+            return classify([b, *a2], cwd, depth + 1) if a2 else []
         k = script_kind(sub)
         if k == "test":
             return [("named-test" if has_file(after) else "full-test", f"{b} {sub}", cwd)]
         if k:
             return [(k, f"{b} {sub}", cwd)]
-        return classify(args[i:], cwd, depth + 1) if b in ("pnpm", "yarn", "bun") else []
+        return classify(args, cwd, depth + 1) if b in ("pnpm", "yarn", "bun") else []
 
     # python family: python -m mod ..., python script.py
     if b in PY_BASES:
@@ -239,15 +443,17 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
 def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
     found: list[tuple] = []
     cur = cwd
-    for seg in split_segments(command):
-        toks = tokenize(seg)
+    for seg in split_segments(strip_heredocs(command)):
+        toks = clean_tokens(tokenize(seg))
         if not toks:
             continue
         b = base(toks[0])
         if b in ("cd", "pushd", "set-location", "sl", "chdir") and len(toks) > 1:
-            target = next((t for t in toks[1:] if not is_flag(t) and t.lower() != "-path"), "")
-            if target:
-                cur = os.path.normpath(os.path.join(cur, os.path.expanduser(target)))
+            vals = [t for t in toks[1:] if not is_flag(t)]
+            if len(vals) > 1 and vals[0].lower() == "/d":  # cmd.exe `cd /d D:\x`
+                vals = vals[1:]
+            if vals:
+                cur = resolve_dir(vals[0], cur)
             continue
         found.extend(classify(toks, cur, depth))
     return found
@@ -278,20 +484,52 @@ def find_ledger(cwd: str):
     return (led if led.is_file() else None), ("" if led.is_file() else "no ledger file")
 
 
-def push_problems(cwd: str) -> list[str] | None:
-    """What is missing for a push or PR; [] = allowed; None = no harness ledger (allowed, logged)."""
-    import _agentio
-    led, why = find_ledger(cwd)
+def _safe_find_ledger(cwd: str):
+    if not os.path.isdir(str(cwd)):
+        return None, "not a git repository"
+    try:
+        return find_ledger(str(cwd))
+    except Exception:  # noqa: BLE001 - a git failure is "not a repository", decided by the caller
+        return None, "not a git repository"
+
+
+def push_problems(cwd: str, fallback: str = "") -> list[str] | None:
+    """What is missing for a push or PR; [] = allowed; None = no harness ledger (allowed, logged).
+    A target given in the command (cd / git -C) that is not a git repository falls back to the session cwd; if that is no
+    harness repo either, the push is denied (an unresolved target is never "no harness")."""
+    led, why = _safe_find_ledger(cwd)
+    if led is None and why == "not a git repository" and getattr(cwd, "given", False):
+        led, why2 = _safe_find_ledger(fallback) if fallback else (None, "")
+        if led is None:
+            return [f"the push target `{str(cwd)[:120]}` cannot be resolved to a git repository (use a plain absolute path "
+                    "or run the command from the repository)"]
+        cwd = fallback
     if led is None:
         return None
     try:
+        return _ledger_problems(str(cwd), led)
+    except Exception:  # noqa: BLE001 - a broken ledger fails closed
+        return ["ledger unreadable or malformed"]
+
+
+def _ledger_problems(cwd: str, led: Path) -> list[str]:
+    import _agentio
+    try:
         data = json.loads(led.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as e:
-        raise RuntimeError(f"ledger unreadable: {e}")
+    except (OSError, ValueError):
+        return ["ledger unreadable or malformed"]
+    if not isinstance(data, dict):
+        return ["ledger unreadable or malformed"]
+    approval = data.get("approval")
+    sprints = data.get("sprints", [])
+    if (approval is not None and not isinstance(approval, dict)) or not isinstance(sprints, list):
+        return ["ledger unreadable or malformed"]
     problems: list[str] = []
     h = _agentio.run_git(["rev-parse", "--verify", "HEAD^{commit}"], cwd=cwd)
     head = h.stdout.strip() if h.returncode == 0 else ""
-    ap = ((data.get("approval") or {}).get("head") or "")
+    ap = ((approval or {}).get("head") or "")
+    if not isinstance(ap, str):
+        return ["ledger unreadable or malformed"]
     if not ap:
         problems.append("no GPT-PM approval is recorded in the ledger (run the gpt-pm-gate skill, then `ledger.py approve`)")
     elif head and ap != head:
@@ -334,7 +572,7 @@ def decide(data: dict) -> str | None:
     if not command.strip():
         return None
     agent = str(data.get("agent_type") or "")
-    cwd = str(data.get("cwd") or os.getcwd())
+    cwd = mk_cwd(str(data.get("cwd") or os.getcwd()), False)
     findings = analyze(command, cwd)
     for kind, detail, fcwd in findings:
         if kind == "full-test":
@@ -355,7 +593,7 @@ def decide(data: dict) -> str | None:
                     f"subagent `{agent}`. " + ALTERNATIVE)
     for kind, detail, fcwd in findings:
         if kind in ("push", "pr-create"):
-            probs = push_problems(fcwd)
+            probs = push_problems(fcwd, cwd)
             if probs is None:
                 log({"verdict": "allow-no-ledger", "kind": kind, "cwd": fcwd})
                 continue

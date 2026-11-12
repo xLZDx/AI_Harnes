@@ -10,7 +10,9 @@ Program = merge_plan_and_ledger(plan, genuine ledger records):
     (in place), plan tasks of the same sprint that the ledger lacks are appended; ledger-only tasks with no plan row are kept;
   * a sprint with no genuine task keeps only its ledger-only tasks (no plan row); everything else comes from the plan;
   * ids are compared with spaces removed ('ST-DEL-01.01 #1' == 'ST-DEL-01.01#1'); a kept ledger task takes the plan's spelling of its id.
-Approval and events of the old ledger are kept. Write = backup to D:\\Backup\\ledger-sync-<project>-<YYYYMMDD-HHMMSS>.json, then an
+A non-genuine task that carries ledger-written evidence (`blocked`, `tokens`, real `routing`, state `in_progress`) keeps those fields
+on its refreshed plan row. A write that would shrink the ledger is refused unless --allow-shrink.
+Approval and events of the old ledger are kept. Write = unique backup to D:\\Backup\\ledger-sync-<project>-<YYYYMMDD-HHMMSS-us>-<pid>.json, then an
 atomic replace under the ledger lock. Idempotent: no timestamps are written, a second run reports 'unchanged'.
 Usage: ledger_sync.py --project DIR [--plan FILE] [--dry-run] | --all [--root D:\\Repo] [--dry-run]
 Virtual_marketing_company is never touched. Stdlib only.
@@ -141,6 +143,20 @@ def looks_like_copy(t: dict) -> bool:
     return any(m in txt for m in COPY_MARKERS)
 
 
+CARRIED = ("blocked", "tokens", "routing")  # fields only ledger.py writes (block / tokens / route)
+
+
+def evidence_fields(t: dict, p: dict | None) -> dict:
+    """Ledger-written evidence of a non-genuine task that the plan row cannot reproduce: `blocked`, `tokens`, a real `routing`
+    (not an imported-copy note), and state `in_progress` (ledger.py start) where the plan row is still `todo`."""
+    out = {k: copy.deepcopy(t[k]) for k in CARRIED if t.get(k) and not (k == "routing" and looks_like_copy({"routing": t[k]}))}
+    if "blocked" in out and not (out["blocked"] or {}).get("at"):
+        del out["blocked"]  # plan_ledger builds `blocked` (at: null) from BLOCKED_* / PARKED plan statuses; only ledger.py block sets `at`
+    if t.get("state") == "in_progress" and (p is None or p.get("state") == "todo"):
+        out["state"] = "in_progress"
+    return out
+
+
 def build(plan: dict, old: dict) -> tuple[dict, dict]:
     pidx: dict[str, tuple[str, dict]] = {}
     for sp in plan["sprints"]:
@@ -165,11 +181,16 @@ def build(plan: dict, old: dict) -> tuple[dict, dict]:
                     t2["id"] = p[1]["id"]  # plan spelling, so the report's own plan merge does not count it twice
                 out_tasks.append(t2)
                 stats["genuine_tasks"] += 1
+            elif p and evidence_fields(t, p[1]):
+                row = from_plan(p[1])  # plan row, with the fields ledger.py wrote copied onto it; kept even in a non-genuine sprint
+                row.update(evidence_fields(t, p[1]))
+                out_tasks.append(row)
+                stats["carried"] = stats.get("carried", 0) + 1
             elif p:
                 stats["replaced"] += 1
                 if genuine_sprint:
                     out_tasks.append(from_plan(p[1]))  # refreshed from the plan, same place
-            elif looks_like_copy(t):
+            elif looks_like_copy(t) and not evidence_fields(t, None):
                 stats["replaced"] += 1  # an imported copy of a plan row the plan no longer spells the same way: the plan's count rules
             else:
                 out_tasks.append(copy.deepcopy(t))  # ledger-only task (planned in the ledger, no plan row)
@@ -220,6 +241,24 @@ def counts(d: dict) -> dict:
             "sizes": [(sp["id"], len(sp.get("tasks", []))) for sp in d.get("sprints", [])]}
 
 
+def make_backup(path: Path, project: str) -> Path:
+    """Unique backup (microseconds + pid, exclusive create), checked readable and equal in size before the ledger is replaced."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    data = path.read_bytes()
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = BACKUP_DIR / f"ledger-sync-{project}-{stamp}-{os.getpid()}.json"
+    with open(backup, "xb") as f:  # FileExistsError (an OSError) if the name is taken: never overwrite another backup
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        if backup.stat().st_size != len(data) or json.loads(backup.read_text(encoding="utf-8")) is None:
+            raise RuntimeError(f"backup {backup} failed verification (size mismatch)")
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"backup {backup} is not readable: {e}")
+    return backup
+
+
 def write(path: Path, old_exists: bool, old: dict, new: dict, project: str) -> str | None:
     """Backup + atomic replace under the ledger lock. Returns the backup path."""
     backup = None
@@ -227,12 +266,12 @@ def write(path: Path, old_exists: bool, old: dict, new: dict, project: str) -> s
     os.environ["HARNESS_LEDGER"] = str(path)
     try:
         with ledger.locked() as cur:
+            if not old_exists and path.exists():
+                raise RuntimeError("the ledger was created while the sync ran; nothing written, run again")
             if old_exists and cur != old:
                 raise RuntimeError("the ledger changed while the sync ran; nothing written, run again")
             if old_exists:
-                BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-                backup = BACKUP_DIR / f"ledger-sync-{project}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-                shutil.copy2(path, backup)
+                backup = make_backup(path, project)
             cur.clear()
             cur.update(new)
     finally:
@@ -243,7 +282,7 @@ def write(path: Path, old_exists: bool, old: dict, new: dict, project: str) -> s
     return str(backup) if backup else None
 
 
-def sync_project(d: Path, dry: bool, plan_override: str | None = None) -> dict:
+def sync_project(d: Path, dry: bool, plan_override: str | None = None, allow_shrink: bool = False) -> dict:
     d = d.resolve()
     root = main_root_of(d)
     name = root.name
@@ -277,6 +316,12 @@ def sync_project(d: Path, dry: bool, plan_override: str | None = None) -> dict:
         return res
     if new == old:
         res["status"] = "unchanged"
+        return res
+    old_ids = {norm(t["id"]): t["id"] for sp in old.get("sprints", []) for t in sp.get("tasks", [])}
+    dropped = [v for k, v in old_ids.items() if k not in set(ids)]
+    if res["new"]["tasks"] < res["old"]["tasks"] and not allow_shrink:
+        res["status"] = (f"ERROR new ledger is smaller ({res['new']['tasks']} < {res['old']['tasks']} tasks); nothing written; "
+                         f"dropped ids ({len(dropped)}): {', '.join(dropped[:20])}{', ...' if len(dropped) > 20 else ''}; pass --allow-shrink to write")
         return res
     verb = "would change" if old_exists else "would create"
     if dry:
@@ -322,6 +367,7 @@ def main(argv=None) -> int:
     ap.add_argument("--root", default=r"D:\Repo")
     ap.add_argument("--plan", help="plan file override (single project only), e.g. a converted master plan")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-shrink", action="store_true", help="write even when the new ledger has fewer tasks than the old one")
     ap.add_argument("--states", action="store_true", help="print per-sprint state counts for every project")
     a = ap.parse_args(argv)
     if a.project:
@@ -333,7 +379,7 @@ def main(argv=None) -> int:
         if a.plan:
             ap.error("--plan works with --project only")
         projects = discover(Path(a.root))
-    results = [sync_project(p, a.dry_run, a.plan) for p in projects]
+    results = [sync_project(p, a.dry_run, a.plan, a.allow_shrink) for p in projects]
     hdr = ["project", "plan tasks", "old ledger", "new ledger", "accepted", "superseded", "placeholders", "genuine sprints", "status"]
     rows = []
     for r in results:

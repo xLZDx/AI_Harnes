@@ -46,7 +46,10 @@ def deny(reason: str) -> None:
 
 
 _HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
-_WRAPPER_WORDS = {"sh", "bash", "zsh", "ksh", "dash", "pwsh", "powershell", "powershell.exe", "cmd", "cmd.exe", "eval", "source", ".", "xargs"}
+_WRAPPER_WORDS = {"sh", "bash", "zsh", "ksh", "dash", "pwsh", "powershell", "powershell.exe", "cmd", "cmd.exe", "eval", "source", ".", "xargs",
+                  "wsl", "wsl.exe", "ssh", "su", "runuser", "docker", "podman", "kubectl", "nsenter", "chroot"}
+# A quoted span right after a -c / -e / -Command style flag is code for another shell: keep it raw.
+_CODE_FLAG_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*[ce]|--command|-Command|-EncodedCommand|/[ckCK])\s+$")
 
 
 def _is_wrapper(raw: str) -> bool:
@@ -88,12 +91,15 @@ def _sanitize(cmd: str) -> str:
                 raw.append(cmd[i:i + 2]); san.append(cmd[i:i + 2]); i += 2
                 continue
             if ch in "'\"":
-                j = i + 1
-                while j < n and cmd[j] != ch:
-                    j += 2 if (ch == '"' and cmd[j] == "\\") else 1
+                # The span ends at the first matching quote, backslash or not: `"C:\proj\" && git clean -fdx` must not swallow the
+                # command. A backslash-escaped quote could only keep a string open that already closes, so when in doubt the span
+                # stays short and the old quote-blind scan still sees what follows.
+                j = cmd.find(ch, i + 1)
+                if j < 0:
+                    j = n
                 span = cmd[i:j + 1] if j < n else cmd[i:]
                 i = j + 1 if j < n else n
-                keep = ch == '"' and ("$(" in span or "`" in span)
+                keep = (ch == '"' and ("$(" in span or "`" in span)) or bool(_CODE_FLAG_RE.search("".join(raw)))
                 raw.append(span); san.append(span if keep else re.sub(r"[;|&\r\n]", " ", span))
                 continue
             if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):

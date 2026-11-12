@@ -13,6 +13,7 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import shutil
@@ -250,6 +251,47 @@ def atomic_write(path: Path, text: str, expected: bytes | None = None, retries: 
         raise
 
 
+@contextlib.contextmanager
+def plan_lock(path: Path, timeout: float = 30.0, stale_after: float = 120.0):
+    """Exclusive lock file `<plan>.lock` (O_EXCL create) held from the read of the plan to the replace, like ledger.locked().
+    A lock older than `stale_after` seconds (killed process) is taken over. Also removes orphaned `<plan>.*.tmp` files older
+    than 10 minutes. Raises TimeoutError (an OSError) when the lock stays held."""
+    lock = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            break
+        except (FileExistsError, PermissionError):  # Windows: PermissionError while the holder deletes it
+            try:
+                if time.time() - lock.stat().st_mtime > stale_after:
+                    lock.unlink(missing_ok=True)
+                    continue
+            except (FileNotFoundError, PermissionError):
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"plan lock {lock} held for more than {int(timeout)} s")
+            time.sleep(0.05)
+    try:
+        cutoff = time.time() - 600
+        for orphan in path.parent.glob(path.name + ".*.tmp"):
+            try:
+                if orphan.stat().st_mtime < cutoff:
+                    orphan.unlink()
+            except OSError:
+                pass
+        yield
+    finally:
+        for _ in range(20):
+            try:
+                lock.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(0.05)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ledger", required=True, help="markdown task ledger, e.g. docs/sdlc/s01-task-ledger.md")
@@ -259,6 +301,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="print the counts, write nothing")
     ap.add_argument("--allow-skipped", action="store_true", help="do not fail when status-table rows were not imported")
     a = ap.parse_args(argv)
+    if a.dry_run:
+        return run(a)
+    try:
+        with plan_lock(Path(a.plan)):
+            return run(a)
+    except OSError as e:
+        print(f"plan_import_ledger_md: {e}", file=sys.stderr)
+        return 1
+
+
+def run(a: argparse.Namespace) -> int:
     sid = a.sprint.strip().strip("*[] ").upper()
     try:
         ledger_text = Path(a.ledger).read_text(encoding="utf-8-sig")

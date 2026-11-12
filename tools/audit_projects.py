@@ -211,6 +211,9 @@ def chk_ledger_whole(d: Path):
     led_n = (res.get("old") or {}).get("tasks", 0)
     if plan_n == led_n:
         return OK, f"plan {plan_n} = ledger {led_n}" + (f" ({st})" if st and st != "unchanged" else "")
+    if st == "unchanged" and led_n > plan_n:
+        # the sync keeps genuine harness-flow tasks the plan does not list (Fitness_App VOICE): the ledger is the plan plus them
+        return OK, f"plan {plan_n} + {led_n - plan_n} genuine ledger task(s) = ledger {led_n} (in sync)"
     return FAIL, f"plan {plan_n} tasks, ledger {led_n} tasks ({st})"
 
 
@@ -237,8 +240,15 @@ def registered_handlers(cfg: dict, event: str, tool: str | None):
         for h in g.get("hooks", []):
             cmd = (h.get("commandWindows") if os.name == "nt" else None) or h.get("command")
             if cmd:
-                out.append((cmd, int(h.get("timeout") or 30)))
+                args = h.get("args") if isinstance(h.get("args"), list) else []
+                out.append((subprocess.list2cmdline([cmd, *map(str, args)]) if args else cmd, int(h.get("timeout") or 30)))
     return out
+
+
+def handler_text(h: dict) -> str:
+    """Command line of one hook handler: Claude keeps the script name in an `args` list, Codex in the command string."""
+    args = h.get("args") if isinstance(h.get("args"), list) else []
+    return " ".join([str(h.get("command", "")), str(h.get("commandWindows", "")), *map(str, args)])
 
 
 def split_cmd(cmd: str) -> list[str]:
@@ -355,7 +365,7 @@ def chk_claude_cfg():
         for g in (cfg.get("hooks", {}).get(event) or []):
             if matcher_part and matcher_part not in (g.get("matcher") or "").split("|"):
                 continue
-            if any(script in (h.get("command", "") + h.get("commandWindows", "")) for h in g.get("hooks", [])):
+            if any(script in handler_text(h) for h in g.get("hooks", [])):
                 return True
         return False
 

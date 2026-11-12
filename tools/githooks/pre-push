@@ -26,7 +26,8 @@ REFS="$(cat)"
 if [ -f "$T/workflow_guard.py" ]; then
   printf '%s\n' "$REFS" | run_py "$T/workflow_guard.py" || exit 1
 else
-  log_err "pre-push: workflow_guard.py missing in $T (re-run build.py --install-project); workflow check skipped"
+  log_err "pre-push: workflow_guard.py missing in $T, push refused (install it with: python build.py --install-project)"
+  exit 1
 fi
 # Push only commits covered by a GPT-PM approval (gpt-pm-gate skill).
 printf '%s\n' "$REFS" | run_py "$T/ledger.py" check-approval

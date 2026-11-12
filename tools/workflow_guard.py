@@ -9,7 +9,8 @@ import re
 import subprocess
 import sys
 
-BAD = ("push", "pull_request", "pull_request_target", "schedule")
+UNPARSABLE = "<unparsable on: value>"
+BAD = ("push", "pull_request", "pull_request_target", "schedule", UNPARSABLE)
 ON_RE = re.compile(r"""^(?:on|"on"|'on')\s*:(.*)$""")
 
 
@@ -25,6 +26,14 @@ def triggers(text: str) -> set[str]:
         if not m:
             continue
         rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        if rest[:1] in ("[", "{"):  # flow style may span lines: accumulate until the brackets balance
+            acc, k = rest, i
+            while acc.count("[") + acc.count("{") > acc.count("]") + acc.count("}"):
+                k += 1
+                if k >= len(lines):
+                    return {UNPARSABLE}
+                acc += " " + re.sub(r"(^|\s)#.*$", "", lines[k]).strip()
+            rest = acc
         if rest:
             return {t for t in re.split(r"[\s,\[\]{}:]+", rest) if t}
         events: set[str] = set()
@@ -44,7 +53,7 @@ def triggers(text: str) -> set[str]:
             name = re.split(r"[\s:]", body, 1)[0].strip("\"'")
             if name:
                 events.add(name)
-        return events
+        return events or {UNPARSABLE}  # an `on:` with no readable value counts as a hit
     return set()
 
 
@@ -58,13 +67,17 @@ def main() -> int:
     for sha in shas:
         r = git("ls-tree", "-r", "--name-only", sha, "--", ".github/workflows")
         if r.returncode != 0:
-            continue
+            print(f"push blocked: git ls-tree failed for {sha[:12]} ({r.stderr.strip()[:200]}); cannot check .github/workflows.",
+                  file=sys.stderr)
+            return 1
         for path in r.stdout.splitlines():
             if not path.lower().endswith((".yml", ".yaml")):
                 continue
             s = git("show", f"{sha}:{path}")
             if s.returncode != 0:
-                continue
+                print(f"push blocked: git show {sha[:12]}:{path} failed ({s.stderr.strip()[:200]}); cannot check the workflow.",
+                      file=sys.stderr)
+                return 1
             hit = sorted(triggers(s.stdout) & set(BAD))
             if hit:
                 bad.append((sha, path, hit))
