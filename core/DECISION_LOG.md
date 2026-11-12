@@ -566,4 +566,5 @@ Decisions:
 ## 2026-11-13 S15-T3 audit client-row push probe
 - B19 root cause: `audit_client()` called `chk_gates_live(HARNESS, ..., is_project_dir=False)`, so `git push` was evaluated from the actual Harness checkout. If approval matched that HEAD, rules_gate correctly allowed the push and the audit falsely reported `not denied: git push`.
 - Client rows now create a temporary local Harness repo with an empty approval and no remote; `run_gate()` probes commands from that cwd, and the repo is removed after the concurrent hook calls finish. Project rows keep the existing approval-on-HEAD skip. A failed repo creation returns `FAIL`; no actual push is executed.
-- Rejected: skipping the `git push` probe for client rows would hide a broken rules gate. Verification is pending `tests/test_s15_audit_gates.py`.
+- Rejected: skipping the `git push` probe for client rows would hide a broken rules gate. Verification uses `tests/test_s15_audit_gates.py`.
+- Sprint-end functional-test-reviewer run at HEAD `f835cde`: `test_s15_audit_gates.py` 3 PASS, `test_s15_codex_audit.py` 6 PASS, `test_s13_audit.py` 24 PASS, `test_s15_codex_live_gates.py` 5 PASS, and `test_hooks_dual.py` 42 PASS; each named file exited 0. No actual push was performed. Ledger verification remains unrecorded because the agent visibility record has an empty project path.
