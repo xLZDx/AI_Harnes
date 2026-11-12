@@ -325,3 +325,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-12 S14-T5: a live judge call with the isolated flags returned a correct verdict, closing the 'flags unproven' note of two reviewers.
 - SHORTCOMING 2026-11-12 S14-T1: the wrapper flag tables missed global value flags; two reviewers found the same bypass. Next time: take wrapper flag lists from the tool's own help output.
 - SUCCESS 2026-11-12 S14: the test agent found the runaway's dead tests and the S13 fixtures broken by the new approval contract before GPT-PM did.
+- SHORTCOMING 2026-11-12 S14-T6: an older fail-open branch in the push check survived S13 review; fixed with the S14 sweep.

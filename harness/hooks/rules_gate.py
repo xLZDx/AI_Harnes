@@ -633,7 +633,9 @@ def _ledger_problems(cwd: str, led: Path) -> list[str]:
     elif not (approval or {}).get("request_id"):
         problems.append("the recorded approval has no PM Bridge request id, so it was never checked against a GPT-PM "
                         "reply; record it again with `ledger.py approve --request-id <id>`")
-    elif head and ap != head:
+    elif not head:
+        problems.append("HEAD cannot be resolved, so the approval cannot be checked against it")
+    elif ap != head:
         problems.append(f"the GPT-PM approval is bound to {ap[:12]}, not to the current HEAD {head[:12]} "
                         "(a new commit removes the approval; run gpt-pm-gate again)")
     sprint = next((s for s in data.get("sprints", []) if s.get("state") != "closed"), None)
