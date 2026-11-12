@@ -263,3 +263,6 @@
 
 ## 2026-11-12 S9 GPT-PM round 3 (HEAD a56a036): REVISE, 1 MAJOR
 - F1 closed. F2 remains and is real: with git unstartable the default folder was accepted without proof, but a work tree with GIT_DIR/GIT_WORK_TREE pointing at it has no .git marker. Fixed: with git unstartable every folder, the default one too, is refused (inside_git returns True). Trade-off accepted: no secret store without git; the harness runs only where git is installed. Test test_h2_git_not_startable_default_dir_still_works is replaced by a refusal test plus the GPT-PM failing input (GIT_WORK_TREE = default folder, external GIT_DIR).
+
+## 2026-11-12 S9 tests for GPT-PM round 3 fix
+- Evidence: tests/test_self_service.py 68 passed (tester a1f7e247): default folder refused with git unstartable (also with empty PATH), the GPT-PM failing input (GIT_WORK_TREE = default folder, external GIT_DIR) refused with nothing written, and a working git with a default folder outside any repo still gives created. Not shown: the new regression fails on the pre-fix code.

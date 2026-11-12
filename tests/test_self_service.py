@@ -506,18 +506,65 @@ def test_h2_empty_path_no_marker_custom_dir_refused_creates_nothing():
     assert not sdir.exists()
 
 
-def test_h2_git_not_startable_default_dir_still_works():
-    w = _wrapper(PATCH_NO_GIT)
-    home = _no_marker_base("h2_home_")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+def _home_env(home):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_") and not k.startswith("GIT_")}
     env["USERPROFILE"] = str(home)
     env["HOME"] = str(home)
     env.pop("HOMEDRIVE", None)
     env.pop("HOMEPATH", None)
-    r = subprocess.run([PY, "-I", str(w), "put", "DEF_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    return env
+
+
+def test_h2_git_not_startable_default_dir_refused_creates_nothing():
+    w = _wrapper(PATCH_NO_GIT)
+    home = _no_marker_base("h2_home_")
+    r = subprocess.run([PY, "-I", str(w), "put", "DEF_KEY"], input=DUMMY1, capture_output=True, text=True, env=_home_env(home), timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not (home / ".harness-secrets").exists()
+    assert os.listdir(home) == []
+    assert DUMMY1 not in r.stdout + r.stderr
+
+
+def test_h2_empty_path_default_dir_refused_creates_nothing():
+    home = _no_marker_base("h2_homepath_")
+    env = _home_env(home)
+    env["PATH"] = ""
+    r = subprocess.run([PY, "-I", str(STORE), "put", "DEF_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert os.listdir(home) == []
+
+
+def test_h2_default_dir_outside_any_repo_with_working_git_still_created():
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    home = _no_marker_base("h2_homegit_")
+    r = subprocess.run([PY, "-I", str(STORE), "put", "DEF_KEY"], input=DUMMY1, capture_output=True, text=True, env=_home_env(home), timeout=60)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "created"
     assert (home / ".harness-secrets" / "DEF_KEY").read_bytes() == DUMMY1.encode("utf-8")
+
+
+def test_h2_gptpm_default_dir_is_external_git_work_tree_git_not_startable_refused():
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git not installed, cannot create the external bare repository")
+    w = _wrapper(PATCH_NO_GIT)
+    home = _no_marker_base("h2_gptpm_home_")
+    bare_base = _no_marker_base("h2_gptpm_bare_")
+    bare = bare_base / "bare.git"
+    subprocess.run([git, "init", "--bare", str(bare)], check=True, capture_output=True, timeout=60)
+    tree = home / ".harness-secrets"
+    env = _home_env(home)
+    env["GIT_DIR"] = str(bare)
+    env["GIT_WORK_TREE"] = str(tree)
+    assert not any((q / ".git").exists() for q in (tree, *tree.parents))
+    r = subprocess.run([PY, "-I", str(w), "put", "GPTPM_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not tree.exists() or os.listdir(tree) == []
+    assert DUMMY1 not in r.stdout + r.stderr
 
 
 def test_h2_external_git_dir_work_tree_git_not_startable_refused():

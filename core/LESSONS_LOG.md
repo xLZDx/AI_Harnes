@@ -234,3 +234,5 @@
 - Kind: SUCCESS. Facts: the tests now assert the strict contract in both findings and the old fail-open test was removed. Rule: when a review changes a contract, rewrite the test that encoded the old one first.
 
 - Kind: SHORTCOMING. Facts: my round-2 exception for the default folder repeated the round-1 mistake (an assumed-safe location without proof). Root cause: I patched the named input, not the class "git unavailable". Layer that missed it: author and tester; GPT-PM round 3. Rule: when a check cannot run, refuse for the whole class, never add an exception.
+
+- Kind: SUCCESS. Facts: the exact failing input from the reviewer is now a test. Rule: every review finding becomes a test with the reviewer's own input.
