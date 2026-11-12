@@ -204,7 +204,126 @@ def no_progress(state: dict, key: str, sig: str) -> int:
     return count
 
 
+LEDGER_MAX_BLOCKS = 5          # no-progress blocks before the release
+LEDGER_MAX_SECONDS = 30 * 60   # or this long since the first block of the streak
+MINE_RE = re.compile(r"ledger\.py\s+(?:start|verify|review|tokens|block)\s+['\"]?([A-Za-z0-9_.-]+)|Task:\s*([A-Za-z0-9_.-]+)")
+OPEN_STATES_SKIP = ("done",)
+
+
+def _ledger_root_of(path: str) -> Path | None:
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            return None
+        p = p.resolve()
+        for d in [p, *p.parents][:12]:
+            if (d / ".harness" / "ledger.json").is_file():
+                return d
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def ledger_projects(data: dict) -> tuple[dict, set]:
+    """({root: worked}, my task ids). Priority (GPT-PM plan round 1, MAJOR-05): the git/ledger root of the session cwd, then the
+    ledger roots of ABSOLUTE paths in this session's Edit/Write/NotebookEdit calls. Shell text is used only to find task ids
+    this session started or reported (ledger.py start|verify|review <ID>, `Task: <ID>` trailers), never to pick a project."""
+    roots: dict[Path, bool] = {}
+    mine: set[str] = set()
+    cwd_root = _ledger_root_of(data.get("cwd") or "")
+    if cwd_root:
+        roots[cwd_root] = True
+    tp = data.get("transcript_path") or ""
+    for r in (_agentio.records(tp) if tp else []):
+        if r.get("kind") != "tool_use":
+            continue
+        inp = r.get("input") if isinstance(r.get("input"), dict) else {}
+        if r.get("name") not in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+            inp = {k: v for k, v in inp.items() if k == "command"}  # reading a file does not tie the session to its project
+        for key in ("file_path", "notebook_path"):
+            if inp.get(key):
+                root = _ledger_root_of(str(inp[key]))
+                if root:
+                    roots[root] = True
+        cmd = str(inp.get("command") or "")
+        for m in MINE_RE.finditer(cmd):
+            mine.add(m.group(1) or m.group(2))
+    return roots, mine
+
+
+def ledger_open_tasks(root: Path, mine: set) -> list[tuple[str, str]] | None:
+    """Open tasks of the first non-closed sprint that this session should finish; None = ledger unreadable."""
+    try:
+        led = json.loads((root / ".harness" / "ledger.json").read_text(encoding="utf-8"))
+        sprint = next((s for s in led["sprints"] if s.get("state") != "closed"), None)
+        if sprint is None:
+            return []
+        out = []
+        for t in sprint["tasks"]:
+            if t.get("state") in OPEN_STATES_SKIP or t.get("blocked"):
+                continue
+            if t.get("state") == "in_progress" and t["id"] not in mine and mine:
+                continue  # started by another session (this one started other tasks): not blocked on it
+            out.append((str(t["id"]), str(t["state"])))
+        return out
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StopIteration):
+        return None
+
+
+def ledger_stop(data: dict, msg: str) -> bool:
+    """Tasks-left check on the Harness v2 ledger (S7-T2). True = handled (blocked or released), caller stops."""
+    roots, mine = ledger_projects(data)
+    if not roots:
+        log({"event": "stop", "verdict": "no-ledger-project", "cwd": data.get("cwd")})
+        return False
+    state = load_state()
+    streaks = state.setdefault("ledger", {})
+    for root in roots:
+        tasks = ledger_open_tasks(root, mine)
+        key = str(root)
+        if tasks is None:
+            log({"event": "stop", "verdict": "ledger-unreadable", "project": key})
+            warn(f"the ledger of {root} cannot be read; the tasks-left check is skipped (fix .harness/ledger.json)")
+            continue
+        if not tasks:
+            streaks.pop(key, None)
+            continue
+        if msg.endswith("?"):
+            log({"event": "stop", "verdict": "allow-question", "project": key, "open": len(tasks)})
+            continue
+        sig = "|".join(f"{i}:{s}" for i, s in sorted(tasks))
+        rec = streaks.get(key) or {}
+        now_ts = time.time()
+        if rec.get("sig") == sig:
+            rec["n"] = rec.get("n", 0) + 1
+        else:
+            rec = {"sig": sig, "n": 1, "first": now_ts}
+        streaks[key] = rec
+        if not save_state(state):
+            warn("state file not writable; not blocking on open ledger tasks")
+            continue
+        listing = ", ".join(f"{i} ({s})" for i, s in tasks)
+        if rec["n"] > LEDGER_MAX_BLOCKS or now_ts - rec["first"] > LEDGER_MAX_SECONDS:
+            reason = "no-progress-blocks" if rec["n"] > LEDGER_MAX_BLOCKS else "30-minutes"
+            log({"event": "stop", "verdict": "ESCALATE", "why": "ledger-release", "release_reason": reason, "project": key, "open": listing})
+            warn(f"{len(tasks)} open task(s) in {root} and no progress ({reason}); releasing the session: {listing}")
+            continue
+        log({"event": "stop", "verdict": "block" if mode() == "live" else "would-block", "why": "ledger-open-tasks",
+             "project": key, "open": listing, "no_progress": rec["n"]})
+        if mode() == "live":
+            block(f"TASKS LEFT in {root.name}: {listing}. Continue with the next open task now. A task that cannot proceed is marked with "
+                  f"`ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause \"<verified cause>\"` (a cause you checked), never by "
+                  f"stopping. (Release after {LEDGER_MAX_BLOCKS} blocks without progress or 30 minutes.)")
+            return True
+    return False
+
+
 def on_stop(data: dict) -> None:
+    msg0 = data.get("last_assistant_message") or ""
+    if not msg0 and _CODEX:
+        msg0 = _agentio.last_assistant_text(data)
+    if ledger_stop(data, msg0.rstrip()):
+        return
     plan_dir = find_plan_dir(data.get("cwd") or "")
     if not plan_dir:
         log({"event": "stop", "verdict": "no-plan", "cwd": data.get("cwd")})
@@ -244,8 +363,9 @@ def on_stop(data: dict) -> None:
             else:
                 log({**base, "verdict": "block" if enforce else "would-block", "why": "report-after-pr"})
                 if enforce:
-                    block(f"PROGRAM REPORT OWED after the PR: run `python {TOOL.as_posix()} render <project>` and hand over the "
-                          "Russian reports/*_PROJECT_PLAN.ru.html (whole-program status, not just the finished sprint).")
+                    block("PROGRAM REPORT OWED after the PR: run `python .harness-tools/report.py` (or tools/report.py in Harness_v2) and hand over "
+                          "reports/<PROJECT>_PROGRAM_STATUS_LIVE.ru.html, the ONE global report format (operator order 2026-11-11/12). "
+                          "Do not use project_plan.py render or any other layout.")
                     return
 
     # 2. open tasks in the active sprint

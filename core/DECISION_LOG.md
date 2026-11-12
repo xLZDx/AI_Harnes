@@ -180,3 +180,6 @@
 
 ## 2026-11-12 S7-T8 committed
 - plan_ledger.py lets report.py render the one global report from PROJECT_PLAN.md (no ledger, or a ledger without sprints). Mapping and exclusions are in the module docstring; SUPERSEDED tasks are left out like in the old plan formula. Limit: only the Task/Title/Acceptance/Status/Evidence/Commit columns are read; sprint dates and durations are not available for plan projects.
+
+## 2026-11-12 S7-T2 committed
+- session_close_gate reads .harness/ledger.json: open tasks of the first non-closed sprint block the stop for the project found from cwd or from absolute Edit/Write paths (reads do not count); release after 5 no-progress blocks or 30 minutes; ledger.py block needs a class and a cause. Same commit: backspace-character fix in keep_going_gate and session_supervisor_gate (the fixed keep-going gate now releases an English all-done/committed/pushed message, documented divergence from the old oracle), all hooks registered in registry.json, parity and ledger tests updated. Limit: task ownership is inferred from ledger.py start/verify/review ids and Task: text in the session.

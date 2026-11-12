@@ -57,11 +57,58 @@
   },
   {
    "event": "PreToolUse",
+   "script": "ask_last_gate.py",
+   "timeout": 15,
+   "status": "ask last gate",
+   "claude": "AskUserQuestion"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "secret_guard.py",
+   "timeout": 15,
+   "status": "secret guard",
+   "claude": "Bash|PowerShell|Read",
+   "codex": "Bash"
+  },
+  {
+   "event": "PostToolUse",
+   "script": "secret_guard.py",
+   "timeout": 15,
+   "status": "secret scan",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "Stop",
+   "script": "ask_last_gate.py",
+   "timeout": 15,
+   "status": "ask last check",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "PreToolUse",
    "script": "go_gate.py",
    "timeout": 30,
    "status": "GO gate",
    "claude": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell",
    "codex": "Bash|apply_patch"
+  },
+  {
+   "event": "PreToolUse",
+   "script": "plan_first_gate.py",
+   "timeout": 15,
+   "status": "plan first gate",
+   "claude": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell",
+   "codex": "Bash|apply_patch"
+  },
+  {
+   "event": "Stop",
+   "script": "plan_first_gate.py",
+   "timeout": 15,
+   "status": "plan first check",
+   "claude": "",
+   "codex": ""
   },
   {
    "event": "PreToolUse",
@@ -160,6 +207,14 @@
    "codex": ""
   },
   {
+   "event": "SubagentStop",
+   "script": "agent_visibility.py",
+   "timeout": 10,
+   "status": "agent stop line",
+   "claude": "",
+   "codex": ""
+  },
+  {
    "event": "UserPromptSubmit",
    "script": "decision_log_reminder.py",
    "timeout": 15,
@@ -202,7 +257,7 @@
   {
    "event": "PermissionRequest",
    "script": "question_policy.py",
-   "timeout": 400,
+   "timeout": 720,
    "status": "pending question policy",
    "claude": "AskUserQuestion"
   },

@@ -48,7 +48,7 @@ ASK_OPERATOR = re.compile(
     r"напишите|скажите|подтвердите|выберите|awaiting|waiting for (the )?(operator|user|go)|"
     r"need your|please confirm|operator[- ]only|требуется (ваш|go)|"
     r"могу (сделать|проверить|выполнить|продолжить|запустить|начать)|если (хотите|скажете|нужно|откроете|разрешите)|"
-    r"пришлите|дайте (знать|go|го)|го|GO|ваше решение|на ваш выбор|"
+    r"пришлите|дайте (знать|go|го\b)|\bго\b|\bGO\b|ваше решение|на ваш выбор|"
     r"let me know|would you like|if you (want|like|say)|i can (do|run|check|continue))",
     re.IGNORECASE | re.MULTILINE,
 )

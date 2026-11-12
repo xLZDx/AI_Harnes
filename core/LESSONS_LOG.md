@@ -172,3 +172,5 @@
 - Kind: SHORTCOMING. Facts: I first accepted an ExitPlanMode plan without looking at its result, so a plan the operator rejected counted as presented; the test agent caught it. Rule: every proof of presentation reads the tool result, not only the call.
 
 - Kind: SUCCESS. Facts: the first render of the AEVE plan matched the plan counts exactly (14 accepted rows of 34 tasks). Rule: compare an adapter output with an independent count before wiring it in.
+
+- Kind: FAILURE. Facts: two production hooks carried literal backspace characters in word-boundary regexes for weeks (English done/committed/pushed never matched), so the keep-going release in English never worked. Root cause: a non-raw string with backslash-b; no test used an English closing message. Layer that missed it: tests. Rule: every regex gets one positive test per alternative group.

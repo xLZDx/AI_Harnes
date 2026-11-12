@@ -694,12 +694,22 @@ def test_keep_going_gate_blocks_deferral_until_closing_line():
     cases = ((DEFER * 2, "block"),
              (DEFER * 2 + "\nВыполнимых задач не осталось", "allow"),
              (DEFER * 2 + "\nБлокеры: OPERATOR - needs your decision on the key", "allow"),
-             (DEFER * 2 + " All done: committed and pushed to origin.", "block"),  # the original blocks it too
+             (DEFER * 2 + " All done: committed and pushed to origin.", "diverge"),  # see below
              ("remaining: nothing much", "allow"),
              ("Plain status update. " * 25, "block"))  # 400+ chars without a closing line
     for i, (msg, expect) in enumerate(cases):
         put_tx(sb, [("user", "work"), ("assistant", msg)])
         c, x = pl(sb, "Stop", msg=msg, xnull=True, sid=f"kgsess{i:02d}")
+        if expect == "diverge":
+            # Documented divergence: the original oracle has literal backspace characters (a broken \b) in DONE_RE/COMMIT_RE/PUSH_RE
+            # and still blocks this message; the fixed gate correctly recognises "All done: committed and pushed" and releases it.
+            o = run_hook(sb, "old", "keep_going_gate.py", c)
+            n = run_hook(sb, "new", "keep_going_gate.py", c)
+            nx = run_hook(sb, "newx", "keep_going_gate.py", x)
+            assert o.kind == "block", o.dump()
+            assert n.kind == "allow" and nx.kind == "allow", n.dump() + nx.dump()
+            assert not codex_out_problems(nx), nx.dump()
+            continue
         trio(sb, "keep_going_gate.py", c, x, expect)
     c, x = pl(sb, "Stop", msg=DEFER * 2, agent_type="code-reviewer")
     trio(sb, "keep_going_gate.py", c, x, "allow")
@@ -792,7 +802,18 @@ def test_agent_model_gate_claude_parity():
              (_agent(None, "good"), {}, "allow"), (_agent(None, "badeff"), {}, "deny")]
     for ti, env, expect in cases:
         c, _ = pl(sb, PRE, tool="Agent", ti=ti, cwd=proj)
-        trio(sb, "agent_model_gate.py", c, None, expect, env=env)
+        if expect == "deny":
+            trio(sb, "agent_model_gate.py", c, None, "deny", env=env)  # deny behavior is unchanged
+            continue
+        # S7-T6 intended difference: the original is silent on an allowed spawn, the new gate also prints
+        # {"systemMessage": "[agent START] ..."} (same decision: nothing denied, rc 0)
+        o = run_hook(sb, "old", "agent_model_gate.py", c, env)
+        n = run_hook(sb, "new", "agent_model_gate.py", c, env)
+        assert o.kind == "allow" and o.rc == 0 and o.out.strip() == "", "original must stay silent\n" + o.dump()
+        assert n.kind == "message" and n.rc == 0, "new gate must announce the start\n" + n.dump()
+        msg = json.loads(n.out)
+        assert set(msg) == {"systemMessage"} and msg["systemMessage"].startswith("[agent START] "), n.dump()
+        assert "do it" not in msg["systemMessage"], "the prompt text must never be shown\n" + n.dump()
     c, _ = pl(sb, PRE, tool="Bash", ti=bash("git status"), cwd=proj)
     trio(sb, "agent_model_gate.py", c, None, "allow")
     o = run_hook(sb, "old", "agent_model_gate.py", None, raw="{broken")

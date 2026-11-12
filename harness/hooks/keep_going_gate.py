@@ -48,9 +48,9 @@ CLOSING_RE = re.compile(
     r"^\W*блокеры\s*:[^\n]*(?:operator|external|prohibited|оператор|внешн|запрещ))",
     re.IGNORECASE | re.MULTILINE)
 MAX_BLOCKS = 8  # consecutive blocks per session before the safety valve releases the turn
-DONE_RE = re.compile(r"(заверш|выполнен|сделан|готов|все\s+задачи|всё\s+сделано|all\s+done|complete[d]?)", re.IGNORECASE)
-COMMIT_RE = re.compile(r"(закоммич|закомич|коммит\w*\s+(?:создан|сделан)|committed)", re.IGNORECASE)
-PUSH_RE = re.compile(r"(запуш|pushed|отправлен\w*\s+в\s+(?:origin|remote|репозитор)|pr\s+(?:открыт|создан|opened|created))", re.IGNORECASE)
+DONE_RE = re.compile(r"(заверш|выполнен|сделан|готов|все\s+задачи|всё\s+сделано|\ball\s+done|\bcomplete[d]?\b)", re.IGNORECASE)
+COMMIT_RE = re.compile(r"(закоммич|закомич|коммит\w*\s+(?:создан|сделан)|\bcommitted\b)", re.IGNORECASE)
+PUSH_RE = re.compile(r"(запуш|\bpushed\b|отправлен\w*\s+в\s+(?:origin|remote|репозитор)|pr\s+(?:открыт|создан|opened|created))", re.IGNORECASE)
 
 
 def _counts(data: dict, reset: bool = False) -> int:

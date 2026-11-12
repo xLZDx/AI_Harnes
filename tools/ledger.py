@@ -239,8 +239,22 @@ def c_start(a, d):
         sys.exit(f"ledger: one task at a time; {', '.join(busy)} is in progress")
     if not t["commits"]:
         t["state"] = "in_progress"
+    t.pop("blocked", None)  # starting a task lifts an earlier block
     event(d, "start", task=a.id)
     print(f"{a.id} {t['state']}")
+
+
+def c_block(a, d):
+    """Mark a task as blocked for a verified reason. The tasks-left Stop gate ignores blocked tasks (S7-T2)."""
+    _, t = find_task(d, a.id)
+    if t["state"] == "done":
+        sys.exit(f"ledger: {a.id} is already done")
+    cause = (a.cause or "").strip()
+    if len(cause) < 10:
+        sys.exit("ledger: --cause must state the verified cause (at least 10 characters)")
+    t["blocked"] = {"class": a.klass, "cause": cause, "at": now()}
+    event(d, "block", task=a.id, klass=a.klass)
+    print(f"{a.id} blocked ({a.klass})")
 
 
 def c_commit_hook(a, d):
@@ -383,6 +397,8 @@ def main(argv=None) -> int:
     x.add_argument("--risk", choices=RISKS, default="local"); x.add_argument("--journey", action="store_true")
     sub.add_parser("next")
     x = sub.add_parser("start"); x.add_argument("id")
+    x = sub.add_parser("block"); x.add_argument("id"); x.add_argument("--class", dest="klass", choices=["OPERATOR", "EXTERNAL", "PROHIBITED"], required=True)
+    x.add_argument("--cause", required=True, help="the verified cause")
     sub.add_parser("commit-hook")
     x = sub.add_parser("verify"); x.add_argument("id"); x.add_argument("--result", choices=["pass", "fail", "NOT_RUN"], required=True); x.add_argument("--evidence", required=True)
     x = sub.add_parser("review"); x.add_argument("id"); x.add_argument("--result", choices=["accepted", "changes"], required=True); x.add_argument("--findings", type=int, default=0)

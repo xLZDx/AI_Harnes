@@ -61,12 +61,24 @@ def test_task_add_unknown_sprint_refused_and_run_field_stored():
     assert h.task(r, "S1-T1")["run"] == "python app.py --serve"
 
 
-def test_start_refuses_second_task_while_one_in_progress():
+def test_start_second_task_succeeds_by_default():
     r = h.mk_repo("led_start")
     h.setup_tasks(r)
     assert h.ledger(r, "start", "S1-T1").rc == 0
     assert h.task(r, "S1-T1")["state"] == "in_progress"
-    assert h.ledger(r, "start", "S1-T2").rc != 0, "second task started while S1-T1 in progress"
+    res = h.ledger(r, "start", "S1-T2")
+    assert res.rc == 0, res.all
+    assert h.task(r, "S1-T2")["state"] == "in_progress"
+    assert h.task(r, "S1-T1")["state"] == "in_progress"
+
+
+def test_start_second_task_refused_with_harness_one_task_env():
+    r = h.mk_repo("led_start_one")
+    h.setup_tasks(r)
+    env = {"HARNESS_ONE_TASK": "1"}
+    assert h.ledger(r, "start", "S1-T1", env=env).rc == 0
+    res = h.ledger(r, "start", "S1-T2", env=env)
+    assert res.rc != 0 and "one task at a time" in res.all, res.all
     assert h.task(r, "S1-T2")["state"] == "todo"
     assert h.task(r, "S1-T1")["state"] == "in_progress"
 
