@@ -57,18 +57,18 @@ assert len(FILLER) >= 200
 # is_decision_ref direct
 check("is_decision_ref 7-hex hash is False", _mod.is_decision_ref("(dc47d8a)") is False)
 check("is_decision_ref 40-hex hash is False", _mod.is_decision_ref("(" + HASH40 + ")") is False)
-check("is_decision_ref 6-hex is True", _mod.is_decision_ref("(abc123)") is True)
-check("is_decision_ref 41-hex is True", _mod.is_decision_ref("(" + HASH40 + "0)") is True)
+check("is_decision_ref 6-hex is False (not D-n/Dn/DEC-n, not in a DECISION_LOG)", _mod.is_decision_ref("(abc123)") is False)
+check("is_decision_ref 41-hex is False", _mod.is_decision_ref("(" + HASH40 + "0)") is False)
 check("is_decision_ref (D-1) is True", _mod.is_decision_ref("(D-1)") is True)
-check("is_decision_ref (S4) is True", _mod.is_decision_ref("(S4)") is True)
+check("is_decision_ref (S4) is False (sprint id)", _mod.is_decision_ref("(S4)") is False)
 
 # hook behaviour
 expect_silent("short hash dc47d8a ignored", FILLER + "see commit (dc47d8a) for now")
 expect_silent("short hash e9c683d ignored", FILLER + "see commit (e9c683d) for now")
 expect_silent("40-hex hash ignored", FILLER + "see commit (" + HASH40 + ") for now")
-expect_block("6-hex (abc123) flagged when unexplained", FILLER + "see the item (abc123) for now")
+expect_silent("6-hex (abc123) is not a decision ref", FILLER + "see the item (abc123) for now")
 expect_block("(D-1) unexplained blocks", FILLER + "we go with this (D-1) for now")
-expect_block("(S4) unexplained blocks", FILLER + "we go with this (S4) for now")
+expect_silent("(S4) sprint id does not block", FILLER + "we go with this (S4) for now")
 expect_silent("(D-1: ...) explained passes",
               FILLER + "we go with this (D-1: where to merge - recommend phase2) for now")
 expect_block("hash plus unexplained (D-2) blocks", FILLER + "commit (dc47d8a) and also (D-2) for now")

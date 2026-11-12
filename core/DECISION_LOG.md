@@ -313,3 +313,6 @@
 
 ## 2026-11-12 S13-R5 tests
 - tests/test_s13_r5_false_positives.py: 12 passed (functional-test-reviewer a47c05e1): permission questions pass and value asks are denied; task and sprint ids alone pass while an unexplained D-ref blocks and a third identical stop is released; the plan gate ignores a repo only visited and blocks a repo edited; both Stop gates wait for a pending own agent and block again after its notification; quoted text with destructive words passes and eight real destructive commands are denied. Two older files are stale by design: tests/test_ledger_stop_gate.py (OPERATOR block now needs --case, S9) and tests/test_decision_explain_gate.py (sprint ids and short hex are no longer decision refs).
+
+## 2026-11-12 S13-R5 stale tests updated
+- tests/test_ledger_stop_gate.py now blocks with --class OPERATOR --case money (S9 rule); tests/test_decision_explain_gate.py now expects short hex and sprint ids such as (S4) not to be decision refs; both pass (functional-test-reviewer a47c05e1).
