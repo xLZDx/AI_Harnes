@@ -168,3 +168,5 @@
 - Kind: FAILURE. Facts: a literal backspace in the money regex (a  typed in a normal string) made every English money word unmatched; found by a test agent, not by me. Rule: scan new files for control characters.
 
 - Kind: SUCCESS. Facts: the test agent drove 3 real defects out of the gate (English money words, a file listing counted as a failed try, a call without result counted as proof) by running the incident asks. Rule: test a gate with the incident text itself.
+
+- Kind: SHORTCOMING. Facts: I first accepted an ExitPlanMode plan without looking at its result, so a plan the operator rejected counted as presented; the test agent caught it. Rule: every proof of presentation reads the tool result, not only the call.

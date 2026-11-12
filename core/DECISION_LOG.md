@@ -174,3 +174,6 @@
 
 ## 2026-11-12 S7-T4 committed
 - ask_last_gate: an ask for credentials, state or access passes only when the turn tool results show relevant env-name, config/file and CLI-status probes plus a non-transient failed try-action (or all probes not found); money and operator-only classes are exempt. A call without a result proves nothing. Limit: evidence is taken from the current turn only; the 60-minute cross-turn allowance of the plan is not implemented.
+
+## 2026-11-12 S7-T3 committed
+- plan_first_gate: the first change of a turn is denied until the transcript shows a presented valid plan (plan tool with a success result, several TaskCreate calls, an ExitPlanMode plan that was not rejected, or a numbered list in the assistant text before the change); three denies per turn release as plan-first-exception; a Stop backup blocks once. Limit: a one-liner operator message ending with a question mark skips the gate.
