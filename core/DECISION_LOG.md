@@ -242,3 +242,6 @@
 
 ## 2026-11-12 Codex hook trust (finding)
 - Observed: codex-cli 0.167.0 has no hooks command. Stored hashes in config.toml [hooks.state] are trusted_hash (and a newer trusted_content_hash). I tried 13824 serializations of the old hooks.json entry and none reproduced the stored hash, so I do not write hashes myself. Strings in codex.exe show the two real paths: the startup screen "Hooks need review ... Trust all and continue" (tui startup_hooks_review) and the flag --dangerously-bypass-hook-trust (documented as DANGEROUS, automation only). Decision: do not set the bypass flag or edit hashes; that weakens a security check the platform owns. The new S7/S9 hooks run in Codex after the operator picks "Trust all and continue" once at the next Codex start. This is the one operator-only step, with the reason: a platform-enforced hook approval.
+
+## 2026-11-12 S9 stdin fix
+- The earlier fix to read stdin as UTF-8 had not been applied (a string replace did not match and I did not check); the tester found it at secret_store.py:117. Now sys.stdin.buffer is decoded as utf-8-sig. Evidence: dummy "cafe-with-accent" piped as bytes stored as 11 bytes. Tests: 54 passed before this fix; re-run pending.

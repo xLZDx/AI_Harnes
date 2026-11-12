@@ -114,7 +114,7 @@ def main(argv: list[str]) -> int:
             return 2
         log_line(name, Path.cwd())
         return 0
-    print(put(name, sys.stdin.read().rstrip("\r\n")))
+    print(put(name, sys.stdin.buffer.read().decode("utf-8-sig").rstrip("\r\n")))
     return 0
 
 

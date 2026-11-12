@@ -318,3 +318,90 @@ def test_f_external_with_case_refused(ledger_env):
     r = run("block", "ST-T1", "--class", "EXTERNAL", "--case", "money", "--cause", "service returned HTTP 503 twice")
     assert r.returncode != 0
     assert blocked() is None
+
+
+# ---------- G: secret_store without os.link, git errors, log, crash, non-ASCII ----------
+def _load_store():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("secret_store_under_test", str(STORE))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run_store_cwd(args, d, cwd, stdin=b""):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    env["HARNESS_SECRET_DIR"] = str(d)
+    return subprocess.run([PY, "-I", str(STORE)] + args, input=stdin, capture_output=True, env=env, cwd=str(cwd), timeout=60)
+
+
+def test_g_put_without_os_link_still_publishes_and_never_overwrites(sdir, monkeypatch):
+    mod = _load_store()
+    monkeypatch.setenv("HARNESS_SECRET_DIR", str(sdir))
+
+    def no_link(*a, **k):
+        raise OSError("link not supported")
+    monkeypatch.setattr(os, "link", no_link)
+    assert mod.put("NOLINK_KEY", DUMMY1) == "created"
+    assert mod.put("NOLINK_KEY", DUMMY2) == "exists"
+    assert (sdir / "NOLINK_KEY").read_bytes() == DUMMY1.encode("utf-8")
+    assert not [n for n in os.listdir(sdir) if n.startswith(".put-")]
+
+
+def test_g_git_error_other_than_not_a_repo_refuses_and_writes_nothing(sdir, monkeypatch):
+    mod = _load_store()
+    monkeypatch.setenv("HARNESS_SECRET_DIR", str(sdir))
+
+    def fake_run(*a, **k):
+        return subprocess.CompletedProcess(a[0], 128, stdout="", stderr="fatal: detected dubious ownership")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(SystemExit) as ei:
+        mod.put("GITERR_KEY", DUMMY1)
+    assert ei.value.code not in (0, None)
+    assert not sdir.exists() or os.listdir(sdir) == []
+
+
+def test_g_log_unknown_name_fails_and_leaves_decision_log_untouched(sdir, tmp_path):
+    (tmp_path / "core").mkdir()
+    log = tmp_path / "core" / "DECISION_LOG.md"
+    log.write_bytes(b"# Decisions\n")
+    r = _run_store_cwd(["log", "NEVER_STORED"], sdir, tmp_path)
+    assert r.returncode != 0
+    assert log.read_bytes() == b"# Decisions\n"
+
+
+def test_g_log_twice_on_stored_name_appends_exactly_one_line(sdir, tmp_path):
+    (tmp_path / "core").mkdir()
+    log = tmp_path / "core" / "DECISION_LOG.md"
+    log.write_bytes(b"# Decisions\n")
+    assert _run_store_cwd(["put", "LOGGED_KEY"], sdir, tmp_path, DUMMY1.encode()).stdout.strip() == b"created"
+    assert _run_store_cwd(["log", "LOGGED_KEY"], sdir, tmp_path).returncode == 0
+    assert _run_store_cwd(["log", "LOGGED_KEY"], sdir, tmp_path).returncode == 0
+    lines = [l for l in log.read_text(encoding="utf-8").splitlines() if "LOGGED_KEY" in l]
+    assert len(lines) == 1, lines
+    assert DUMMY1 not in log.read_text(encoding="utf-8")
+
+
+def test_g_crash_between_temp_write_and_publish_leaves_nothing(sdir, monkeypatch):
+    mod = _load_store()
+    monkeypatch.setenv("HARNESS_SECRET_DIR", str(sdir))
+    with monkeypatch.context() as m:
+        def boom(*a, **k):
+            raise RuntimeError("simulated crash")
+        m.setattr(os, "link", boom)
+        m.setattr(os, "rename", boom)
+        with pytest.raises(RuntimeError):
+            mod.put("CRASH_KEY", DUMMY1)
+    assert os.listdir(sdir) == []
+    assert mod.put("CRASH_KEY", DUMMY2) == "created"
+    assert (sdir / "CRASH_KEY").read_bytes() == DUMMY2.encode("utf-8")
+
+
+def test_g_non_ascii_utf8_value_stored_byte_exact_and_not_printed(sdir, tmp_path):
+    raw = "секрет-ключ-ÄÖ-日本語-\u20ac".encode("utf-8")
+    r = _run_store_cwd(["put", "UNI_KEY"], sdir, tmp_path, raw + b"\n")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == b"created"
+    assert (sdir / "UNI_KEY").read_bytes() == raw
+    assert raw not in r.stdout + r.stderr
+    assert "секрет".encode("utf-8") not in r.stdout + r.stderr

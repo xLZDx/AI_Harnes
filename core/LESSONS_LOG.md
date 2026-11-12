@@ -220,3 +220,5 @@
 - Kind: FAILURE. Facts: I ended the S9 turn with "Not verified and not done" plus a permission question for steps that were allowed, and used ledger block EXTERNAL to wait for my own agents; the operator pointed it out twice in the day. Root cause: the safe-looking habit of asking, no rule against it. Layer that missed it: author; no gate catches it. Rule: allowed means do it; ask only the operator-only cases.
 
 - Kind: SHORTCOMING. Facts: an earlier message of mine asked the operator to approve hooks via /hooks, a command that does not exist in 0.167. Root cause: I answered from memory, not from the binary. Rule: before naming a CLI command to the operator, run --help or search the binary.
+
+- Kind: FAILURE. Facts: a scripted edit silently did not apply and I reported the fix as done. Root cause: no grep after the replace. Layer that missed it: author; the tester caught it. Rule: after a scripted replace, grep the result before saying it is fixed.
