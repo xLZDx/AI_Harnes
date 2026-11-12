@@ -461,8 +461,12 @@ def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
 
 # ---- R2: ledger ----------------------------------------------------------------------------------------------------
 
+MISSING_LEDGER = "harness installed but ledger missing"
+
+
 def find_ledger(cwd: str):
-    """(ledger_path, why) using the same discovery as the project pre-push hook; ledger_path None = no harness."""
+    """(ledger_path, why) using the same discovery as the project pre-push hook; ledger_path None with why
+    'no harness tools in the repository' = no harness (allowed); None with MISSING_LEDGER = installed, ledger absent (deny)."""
     import _agentio
     top = _agentio.run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
     com = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd)
@@ -470,18 +474,21 @@ def find_ledger(cwd: str):
         return None, "not a git repository"
     top_p, common_dir = Path(top.stdout.strip()), Path(com.stdout.strip())
     common = common_dir.parent if common_dir.name == ".git" else common_dir
-    if (common / ".harness-tools" / "ledger.py").is_file():
-        pass
-    else:
+    installed = (common / ".harness-tools" / "ledger.py").is_file() or (common / ".harness").is_dir()
+    if not installed:
         lp = top_p / "tools" / "ledger.py"
         try:
-            ok = "single source of sprint and task state" in lp.read_text(encoding="utf-8", errors="replace")
+            installed = "single source of sprint and task state" in lp.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            ok = False
-        if not ok:
-            return None, "no harness tools in the repository"
+            installed = False
+    if not installed:
+        hp = _agentio.run_git(["config", "--get", "core.hooksPath"], cwd=cwd)
+        hooks = hp.stdout.strip().replace("\\", "/").lower() if hp.returncode == 0 else ""
+        installed = ".harness-tools" in hooks
+    if not installed:
+        return None, "no harness tools in the repository"
     led = Path(os.environ.get("HARNESS_LEDGER") or common / ".harness" / "ledger.json")
-    return (led if led.is_file() else None), ("" if led.is_file() else "no ledger file")
+    return (led if led.is_file() else None), ("" if led.is_file() else MISSING_LEDGER)
 
 
 def _safe_find_ledger(cwd: str):
@@ -504,6 +511,9 @@ def push_problems(cwd: str, fallback: str = "") -> list[str] | None:
             return [f"the push target `{str(cwd)[:120]}` cannot be resolved to a git repository (use a plain absolute path "
                     "or run the command from the repository)"]
         cwd = fallback
+        why = why2
+    if led is None and why == MISSING_LEDGER:
+        return ["harness installed but .harness/ledger.json missing; restore it (ledger_sync) before push"]
     if led is None:
         return None
     try:
