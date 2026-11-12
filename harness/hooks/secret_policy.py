@@ -198,15 +198,16 @@ def load_records(state_dir: Path) -> list[dict]:
         return []
 
 
-def add_record(state_dir: Path, rec: dict) -> None:
+def add_record(state_dir: Path, rec: dict) -> bool:
     from _agentio import atomic_write_text, file_lock
     f = _store(state_dir)
     with file_lock(f, wait=1.0) as got:
         if not got:
-            return
+            return False
         rows = load_records(state_dir)
         rows.append({**rec, "at": time.time()})
         atomic_write_text(f, json.dumps(rows[-MAX_RECORDS:]))
+        return True
 
 
 def fresh(rec: dict, now: float | None = None) -> bool:
@@ -227,6 +228,27 @@ def auth_evidence_ok(rows: list[dict], cred: str, service: str, project: str, st
         return False, "no fresh auth check for credential %s / service %s / project %s (found: %s)" % (
             cred or "?", service or "?", project or "?", ", ".join(sorted({f"{r.get('credential_id')}@{r.get('service')}" for r in near})[:4]))
     return False, "no fresh auth check of this credential in this session"
+
+
+def open_rotations(rows: list[dict], service: str, project: str) -> list[dict]:
+    """Verified rotations (created -> verified) of this service and project from the last 24 h whose old credential was not revoked yet."""
+    now = time.time()
+    revoked = {r.get("rotation_id") for r in rows if r.get("kind") == "rotation" and r.get("step") == "old_revoked"}
+    return [r for r in rows if r.get("kind") == "rotation" and r.get("step") == "verified" and r.get("service") == service
+            and (r.get("project") or "") == project and r.get("rotation_id") not in revoked and now - float(r.get("at", 0)) < 86400]
+
+
+def rotation_for_delete(rows: list[dict], cred: str, service: str, project: str) -> dict | None:
+    """The verified rotation (one transaction: old credential -> new credential -> verified) that a delete of `cred` belongs to.
+    A delete names either the old credential (its env/file name), the verified new one, or only a key id that cannot be resolved to a
+    name; the last case is accepted only when exactly one rotation of this service and project is open (two open ones are ambiguous)."""
+    opens = open_rotations(rows, service, project)
+    pair = [v for v in opens if cred and cred in (v.get("old_credential_id"), v.get("credential_id"))]
+    if pair:
+        return pair[-1]
+    if cred.startswith(("keyid:", "default:")) and len(opens) == 1:
+        return opens[0]
+    return None
 
 
 def exposure_state(rows: list[dict], cred: str) -> str:

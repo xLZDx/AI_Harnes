@@ -112,7 +112,7 @@ def plan_presented(turn: dict) -> tuple[bool, str]:
         return True, "task-create"
     # (b) the plan written as text before the first change
     first_change = next((i for i, c in enumerate(turn["calls"]) if c["name"] not in PLAN_TOOLS and
-                         (c["name"] in _agentio.EDIT_TOOLS or c["name"] in ("Bash", "PowerShell", "shell", "shell_command"))), None)
+                         is_mutation({"tool_name": c["name"], "tool_input": c["input"]})), None)  # same test as the PreToolUse gate: reading is not a change
     limit = turn["calls"][first_change]["texts_before"] if first_change is not None else len(turn["assistant_texts"])
     for t in turn["assistant_texts"][:max(limit, 0)] if first_change is not None else turn["assistant_texts"]:
         if valid_steps([m.group(1) for m in LIST_RE.finditer(t)]):

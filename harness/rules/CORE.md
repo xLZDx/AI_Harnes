@@ -63,7 +63,9 @@ instruction wins; platform permission and safety controls always apply.
 - A turn does not end while its ledger tasks are open (`session_close_gate`); a task that cannot proceed is marked with
   `ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause "<verified cause>"`.
 - Never print secret values; change or delete a credential only with proof bound to that same credential (`secret_guard`).
-- Every agent start and stop is printed with the agent type; `python tools/metrics.py` shows what the hooks did.
+- Every agent start and stop is recorded with the agent type and shown where the client allows: Claude Code prints a hook message and the
+  status line lists the active agents (the live check of the on-screen result is still open); Codex gets the line on stderr only, which is
+  logged but NOT confirmed to be visible to the operator. `python tools/metrics.py` shows what the hooks did.
 - A recommended option of a question the operator leaves unanswered for 10 minutes is accepted, except risk-class questions.
 
 ## Safety

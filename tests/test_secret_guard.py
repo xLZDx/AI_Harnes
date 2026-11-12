@@ -212,11 +212,13 @@ DEL_D = "gcloud iam service-accounts keys disable --iam-account x --project p"  
 out = expect("c) delete with invalid evidence but no rotation record is denied", "deny", st, DEL_D)
 check("c) reason mentions verified replacement", "verified replacement" in reason(out), reason(out))
 rows = load_records(st)
-rows.append({"kind": "rotation", "service": "gcp", "step": "created", "at": time.time() - 30})
+rows.append({"kind": "rotation", "service": "gcp", "project": "p", "step": "created", "rotation_id": "gcp:1",
+             "old_credential_id": "file:a.json", "credential_id": "file:a.json", "at": time.time() - 30})
 save_records(st, rows)
 expect("c) created but not verified still denied", "deny", st, DEL_D)
 rows = load_records(st)
-rows.append({"kind": "rotation", "service": "gcp", "step": "verified", "at": time.time() - 10})
+rows.append({"kind": "rotation", "service": "gcp", "project": "p", "step": "verified", "rotation_id": "gcp:1",
+             "old_credential_id": "file:a.json", "credential_id": "file:a2.json", "at": time.time() - 10})
 save_records(st, rows)
 expect("c) created then verified allows delete", "", st, DEL_D)
 

@@ -169,11 +169,10 @@ def change_problem(cmd: str, kind: str, data: dict) -> str:
                 f"{note}{extra}. First test the EXISTING key with a read-only call and fix the cause (project, scope, endpoint); "
                 "re-create a key only after it is proven invalid for this exact credential")
     if kind == "delete":
-        done = [r for r in rows if r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "verified"
-                and time.time() - float(r.get("at", 0)) < 86400]
-        if not done:
-            return ("deleting or revoking the old credential needs a verified replacement: create the new one, switch the consumers, "
-                    "run a successful read-only call with the NEW one, then delete the old")
+        if sp.rotation_for_delete(rows, cred, svc, proj) is None:
+            return ("deleting or revoking the old credential needs a verified replacement of THIS rotation (same service and project): create the "
+                    "new one, switch the consumers, run a successful read-only call with the NEW one, then delete the old; with two open "
+                    "rotations name the key by its env/file name")
     return ""
 
 
@@ -255,15 +254,21 @@ def on_post(data: dict, failure: bool = False) -> None:
             _add(d, {"kind": "auth", "credential_id": cred, "service": svc, "project": proj, "operation": kind or "call", "class": "ok"})
             rows = sp.load_records(d)
             if kind in ("create", "roll"):
-                _add(d, {"kind": "rotation", "credential_id": cred, "old_credential_id": cred, "service": svc, "step": "created"})
+                _add(d, {"kind": "rotation", "credential_id": cred, "old_credential_id": cred, "service": svc, "project": proj,
+                         "step": "created", "rotation_id": f"{svc}:{int(time.time() * 1000)}"})
+            elif kind == "delete":
+                rot = sp.rotation_for_delete(rows, cred, svc, proj)
+                if rot:
+                    _add(d, {"kind": "rotation", "service": svc, "project": proj, "step": "old_revoked", "rotation_id": rot.get("rotation_id")})
             elif not kind and not cred.startswith("default:"):
-                # verified = a successful call with an EXPLICIT credential other than the one that was replaced (R3-2)
+                # verified = a successful call with an EXPLICIT credential other than the one that was replaced, for the same project
+                verified_ids = {r.get("rotation_id") for r in rows if r.get("kind") == "rotation" and r.get("step") == "verified"}
                 created = [r for r in rows if r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "created"
-                           and r.get("old_credential_id") != cred]
-                last_created = max((r.get("at", 0) for r in created), default=0)
-                if created and not any(r.get("kind") == "rotation" and r.get("service") == svc and r.get("step") == "verified"
-                                       and r.get("at", 0) > last_created for r in rows):
-                    _add(d, {"kind": "rotation", "credential_id": cred, "service": svc, "step": "verified"})
+                           and (r.get("project") or "") == proj and r.get("old_credential_id") != cred and r.get("rotation_id") not in verified_ids]
+                if len(created) == 1:  # two unverified rotations of one service/project: which one this call proves is unknown, so record nothing
+                    c = created[0]
+                    _add(d, {"kind": "rotation", "credential_id": cred, "old_credential_id": c.get("old_credential_id"), "service": svc,
+                             "project": proj, "step": "verified", "rotation_id": c.get("rotation_id")})
     hits = sp.find_secrets(text)
     if not hits:
         return

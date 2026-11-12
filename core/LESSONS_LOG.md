@@ -180,3 +180,9 @@
 - Kind: SHORTCOMING. Facts: secret_guard recorded evidence only for PostToolUse, but Claude Code sends a non-zero Bash exit to PostToolUseFailure, so failed credential checks were never recorded. Rule: read the event table of the host before wiring a hook to success only.
 
 - Kind: SUCCESS. Facts: running the strict plan parser on all nine real PROJECT_PLAN.md files before committing showed ERP_MCP uses about a dozen own statuses; they were mapped explicitly instead of defaulting to todo. Rule: run a stricter parser on every real input before it ships.
+
+- Kind: FAILURE. Facts: GPT-PM found that rotation evidence was matched by service only, so one verified key could unlock deleting another; my tests had one rotation at a time. Root cause: no concurrent-transaction case. Layer that missed it: author and tests. Rule: test two parallel instances of every transaction-shaped state.
+
+- Kind: SHORTCOMING. Facts: the plan-first text proof used any shell call as the first change although the PreToolUse gate used is_mutation; the two gates disagreed. Rule: one predicate for one concept, shared by all gates.
+
+- Kind: SUCCESS. Facts: the test agent found two further defects while writing the round 1 tests (add_record returned None so every write logged a false failure; a verification could attach to the wrong open rotation); both fixed before the commit. Rule: have the test author read the call sites of every changed helper.
