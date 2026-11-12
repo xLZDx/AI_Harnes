@@ -335,3 +335,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - FAILURE 2026-11-12 S14-T3: the recovery I designed restored backups blindly; four agent reviewers saw it only as a MINOR, GPT-PM as a MAJOR (lost user work). Next time: any restore of user files compares current bytes with an expected state first.
 - FAILURE 2026-11-12 S14-T3: my first MAJOR-1 fix kept merging in place, so it guarded the wrong states; reliability-reviewer found two MAJOR in it. Next time: compute every change to user files off to the side and swap it in atomically, then the only states on disk are 'before' and 'after'.
 - SUCCESS 2026-11-12 S14-T3: the temp-file merge with an atomic swap closed both reliability MAJORs in one design change.
+- SUCCESS 2026-11-12 S14-T3: the MAJOR-1 regression test fails on the old blind rollback (reasoned) and passes now.

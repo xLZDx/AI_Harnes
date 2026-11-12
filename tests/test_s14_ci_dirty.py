@@ -223,6 +223,12 @@ def test_conflict_on_on_block_rolls_back_everything():
     assert " A newfile.txt" in after["status"]
     no_leftovers(repo, scratch)
     assert_no_ci_off_refs(repo)
+    assert not (repo / ".git" / "ci_triggers_off.journal.json").exists()  # conflict is found before any journal/branch move
+    assert b"changed during the run" not in res.out.encode()
+    assert [p.name for p in scratch.iterdir() if p.name.startswith("cioff-backup-")] == []  # failed-early run cleans its backup dir
+    # every file (not only the workflow) is byte-identical, including the untouched-by-conflict logs
+    for rel in (DL, LL):
+        assert rd(repo / rel) == before["files"][rel], rel
 
 
 def test_branch_moved_before_update_ref_errors_and_changes_nothing():
@@ -289,6 +295,80 @@ def test_crash_after_each_phase_blocks_rerun_and_recover_restores_exact_state():
         again = run_tool(root, scratch, "--dirty-ok")
         assert "CHANGED" in again.out, (phase, again.all)
         assert commits(repo) == before["n"] + 1
+
+
+def _crash_at(root, scratch, phase):
+    res = hv2.run([hv2.PY, "-I", str(TOOL), "--root", str(root), "--scratch", str(scratch), "--dirty-ok"], root,
+                  env={"HARNESS_CI_OFF_FAIL_AFTER": phase})
+    assert res.rc == 70, (phase, res.all)
+
+
+def test_recover_never_overwrites_edit_made_after_interrupted_run():
+    import json
+    for phase in ("branch-moved", "files-merged"):
+        for rel in (LL, WF):
+            root, scratch, repo = dirty_repo("e_" + phase.replace("-", "_") + "_" + rel[-6:-3].strip("./"))
+            before = snapshot(repo)
+            _crash_at(root, scratch, phase)
+            jp = repo / ".git" / JOURNAL
+            bdir = Path(json.loads(jp.read_text(encoding="utf-8"))["backup_dir"])
+            assert bdir.is_dir()
+            crashed_head = hv2.head(repo)
+            assert crashed_head != before["head"]
+            merged = rd(repo / rel)
+            extra = b"\nLATER-EDIT-AFTER-CRASH\n"
+            _w(repo / rel, merged + extra)
+            edited = snapshot(repo)
+            rec = run_tool(root, scratch, "--recover")
+            tag = (phase, rel, rec.all)
+            assert rec.rc == 1 and "ERROR" in rec.out and "RECOVERED" not in rec.out and rel in rec.out, tag
+            assert rd(repo / rel) == merged + extra, tag
+            assert snapshot(repo) == edited, tag  # nothing at all changed: files, head, stage, status
+            assert hv2.head(repo) == crashed_head, tag
+            assert jp.is_file() and bdir.is_dir(), tag
+            # a repeat is just as safe
+            rec2 = run_tool(root, scratch, "--recover")
+            assert rec2.rc == 1 and "ERROR" in rec2.out and rd(repo / rel) == merged + extra, rec2.all
+            # undo the outside edit: recovery now restores the exact pre-run state
+            _w(repo / rel, merged)
+            ok = run_tool(root, scratch, "--recover")
+            assert ok.rc == 0 and "RECOVERED" in ok.out, (phase, rel, ok.all)
+            after = snapshot(repo)
+            assert after == before, (phase, rel, {k: (before[k], after[k]) for k in before if before[k] != after[k]})
+            assert not jp.exists() and not bdir.exists()
+            no_leftovers(repo, scratch)
+            assert_no_ci_off_refs(repo)
+
+
+def test_recover_same_phase_without_outside_edit_restores_exact_state():
+    for phase in ("branch-moved", "files-merged"):
+        root, scratch, repo = dirty_repo("t_" + phase.replace("-", "_"))
+        before = snapshot(repo)
+        _crash_at(root, scratch, phase)
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 0 and "RECOVERED" in rec.out and "ERROR" not in rec.out, (phase, rec.all)
+        assert snapshot(repo) == before, phase
+        assert not (repo / ".git" / JOURNAL).exists()
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
+def test_recover_refuses_journal_without_hashes_and_changes_nothing():
+    import json
+    for drop in (("pre_hash",), ("pre_hash", "merged_hash")):
+        root, scratch, repo = dirty_repo("h_" + str(len(drop)))
+        _crash_at(root, scratch, "files-merged")
+        jp = repo / ".git" / JOURNAL
+        j = json.loads(jp.read_text(encoding="utf-8"))
+        for k in drop:
+            j.pop(k, None)
+        jp.write_text(json.dumps(j), encoding="utf-8", newline="\n")
+        jbytes = jp.read_bytes()
+        mid = snapshot(repo)
+        rec = run_tool(root, scratch, "--recover")
+        assert rec.rc == 1 and "ERROR" in rec.out and "RECOVERED" not in rec.out, (drop, rec.all)
+        assert snapshot(repo) == mid, drop
+        assert jp.read_bytes() == jbytes and Path(j["backup_dir"]).is_dir()
 
 
 def test_recover_without_journal_is_a_noop_skip():
