@@ -9,6 +9,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -56,13 +57,21 @@ def _handler(cmd, timeout=20):
 def _claude_home(rules_gate=True, full=True, rules_block=True, pre_cmds=None):
     home = hv2.fresh("home")
     cmds = pre_cmds if pre_cmds is not None else ([_hook_cmd("rules_gate.py")] if rules_gate else [_noop_cmd()])
-    hooks = {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [_handler(c) for c in cmds]}]}
+    hooks = {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [_handler(c) for c in cmds]},
+                            {"matcher": "Agent", "hooks": [_handler(_hook_cmd("agent_visibility.py"))]}]}
     if full:
         hooks["PreToolUse"].append({"matcher": "Agent|Task", "hooks": [_handler(_hook_cmd("agent_visibility.py"))]})
         hooks["SubagentStart"] = [{"hooks": [_handler(_hook_cmd("agent_visibility.py"))]}]
         hooks["SubagentStop"] = [{"hooks": [_handler(_hook_cmd("agent_visibility.py"))]}]
     _w(home / ".claude" / "settings.json", json.dumps({"hooks": hooks}))
     _w(home / ".claude" / "CLAUDE.md", "# rules\n## Operator development rules (x)\n" if rules_block else "# nothing\n")
+    _w(home / ".codex" / "hooks.json", json.dumps({"hooks": {
+        "PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"command": "rules_gate.py"}]},
+            {"matcher": "spawn_agent", "hooks": [{"command": "agent_visibility.py"}]},
+        ]
+    }}))
+    _w(home / ".codex" / "AGENTS.md", "Operator development rules\n")
     return home
 
 
@@ -120,7 +129,23 @@ def _mk_project(root, name, current=True, tools="current", prepush="current", wo
     return p
 
 
-def _audit(root, home, *args, project=None):
+def _fake_codex_hooks(cwds, home, records=None):
+    if records is not None:
+        return records, None
+    hp = home / ".codex" / "hooks.json"
+    hooks = []
+    if hp.is_file():
+        cfg = json.loads(hp.read_text(encoding="utf-8"))
+        for event, groups in cfg.get("hooks", {}).items():
+            for group in groups:
+                for handler in group.get("hooks", []):
+                    hooks.append({"source": "user", "trustStatus": "trusted", "event": event.lower(),
+                                  "statusMessage": handler.get("statusMessage", "hook"), "sourcePath": str(hp)})
+    return {au.norm_path(cwd): {"cwd": str(cwd), "hooks": hooks, "warnings": [], "errors": []}
+            for cwd in cwds}, None
+
+
+def _audit(root, home, *args, project=None, codex_records=None):
     au.HOME = home
     au.AUDIT_TMP = hv2.fresh("auditscratch")
     ledger_sync.BACKUP_DIR = hv2.fresh("backup")
@@ -128,7 +153,8 @@ def _audit(root, home, *args, project=None):
     if project:
         argv += ["--project", project]
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    with patch.object(au, "codex_hooks_list", side_effect=lambda cwds: _fake_codex_hooks(cwds, home, codex_records)), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         rc = au.main(argv)
     return rc, out.getvalue(), err.getvalue()
 
@@ -152,7 +178,7 @@ def test_current_project_cells_ok():
     for col in ("hooks_path", "tools_current", "prepush_current", "ci_local", "ledger_whole", "gates_live"):
         assert c[col]["status"] == "OK", (col, c[col])
     assert c["ci_github"]["status"] == "n.a."  # --no-github
-    assert c["client_cfg"]["status"] == "n.a."
+    assert c["client_cfg"]["status"] == "OK"
     assert rc == 0, (rc, c)
 
 
@@ -343,9 +369,16 @@ def test_client_rows_codex_home_ok_and_untrusted_fail():
     _, c = _cells(root, _codex_home(), "codex-home")
     assert c["gates_live"]["status"] == "OK", c["gates_live"]
     assert c["client_cfg"]["status"] == "OK", c["client_cfg"]
-    rc, c = _cells(root, _codex_home(trusted=False, rules_block=False), "codex-home")
+    home = _codex_home(trusted=False, rules_block=False)
+    hooks = [
+        {"source": "user", "trustStatus": "modified", "event": "pre_tool_use", "statusMessage": "rules_gate", "sourcePath": str(home / ".codex" / "hooks.json")},
+        {"source": "user", "trustStatus": "untrusted", "event": "subagent_start", "statusMessage": "agent_visibility", "sourcePath": str(home / ".codex" / "hooks.json")},
+    ]
+    record = {au.norm_path(au.HARNESS): {"cwd": str(au.HARNESS), "hooks": hooks, "warnings": [], "errors": []}}
+    rc, out, _ = _audit(root, home, "--json", project="codex-home", codex_records=record)
+    c = {row["project"]: row["cells"] for row in json.loads(out)}["codex-home"]
     d = c["client_cfg"]["detail"]
-    assert c["client_cfg"]["status"] == "FAIL" and "untrusted 2 of 2" in d and "AGENTS.md lacks" in d, d
+    assert c["client_cfg"]["status"] == "FAIL" and "rules_gate" in d and "untrusted" in d and "AGENTS.md lacks" in d, d
     assert rc == 1
 
 
@@ -376,7 +409,8 @@ def test_audit_does_not_touch_real_claude_and_codex_files():
     au.HOME = Path.home()
     au.AUDIT_TMP = hv2.fresh("auditscratch")
     out = io.StringIO()
-    with contextlib.redirect_stdout(out):
+    with patch.object(au, "codex_hooks_list", side_effect=lambda cwds: _fake_codex_hooks(cwds, au.HOME)), \
+            contextlib.redirect_stdout(out):
         au.main(["--root", str(root), "--no-github"])
     assert "claude-home" in out.getvalue() and "codex-home" in out.getvalue()
     assert snap() == before
