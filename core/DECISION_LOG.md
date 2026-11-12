@@ -353,3 +353,6 @@
 
 ## 2026-11-12 S13 CI-off tool tests
 - tests/test_s13_ci_off.py 16 passed (functional-test-reviewer): ci_triggers_off block/flow/multi-line/schedule forms, deploy kept unless --include-deploy, dirty log and detached HEAD skipped, CRLF kept, dry run inert, second run clean, marketing folder never touched, failing commit hook restores files; audit checks every GitHub remote (404 n.a., other errors FAIL, auto trigger on a second remote FAIL). test_s13_audit 24 passed.
+
+## 2026-11-12 S13-R4 agent START and STOP registration
+- Code in 78c9d17: tools/build.py HOOK_EVENTS gains SubagentStart for Claude, registry.json registers agent_visibility for SubagentStart, SubagentStop and PreToolUse Agent|Task, duplicates removed. Installed 2026-11-12 18:01 (snapshot D:/Backup/claude-hooks-s13fix-20261112-1801); audit claude-home client_cfg OK confirms all three registrations. Live on-screen check: NOT_RUN in this session (hooks apply to new sessions); it is the first step of the next new session.
