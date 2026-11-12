@@ -286,3 +286,6 @@
 
 ## 2026-11-12 S11 correction: Codex /hooks does exist (operator pasted the Codex text)
 - The S9 finding and the S10 installer text said Codex 0.167 has no /hooks command. Wrong: I checked only the subcommands of codex --help; /hooks is a slash command inside the interactive CLI, and the Codex app has Settings -> Hooks and a Review hooks button. The installer now names both routes and says a new Codex session is needed (AGENTS.md and hooks are read at session start). Evidence of the stale session: ~/.codex/AGENTS.md carries the ladder (16:02) but the operator's Codex session started about 15 hours earlier; config.toml holds 33 trust entries for the old hooks while hooks.json now has 30 handlers.
+
+## 2026-11-12 S11-T2 whole ERP program in the report
+- Decision: a Roadmap row of the form N task placements without a task list becomes N planned tasks (placeholders), a ledger sprint with the same id replaces the placeholder sprint, and S00/S01 come from docs/sdlc ledgers through tools/plan_import_ledger_md.py. Rejected: asking the operator for the data (it was in the repo and in git), and a fallback to ledger-only on a broken plan (brings the 2 of 2 bug back). Evidence: dry run on ERP s01 ledger gave 48 tasks, ACCEPTED 39, PARTIAL 3, SUPERSEDED 6.

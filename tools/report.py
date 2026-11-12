@@ -597,8 +597,11 @@ def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
     if not led_sprints:  # no ledger tasks to add, but the ledger's approval and events still belong to the report
         return {**plan, "approval": led.get("approval") or plan.get("approval"), "events": led.get("events") or plan.get("events", [])}
     led_ids = {t.get("id") for sp in led_sprints for t in sp["tasks"]}
+    led_sprint_ids = {sp.get("id") for sp in led_sprints}
     merged = []
     for sp in plan.get("sprints", []):
+        if sp.get("expanded") is False and sp.get("id") in led_sprint_ids:
+            continue  # a placeholder sprint (roadmap row, task list not expanded) is replaced by the ledger sprint with the same id
         kept = [t for t in sp.get("tasks", []) if t.get("id") not in led_ids]
         if kept:
             merged.append({**sp, "tasks": kept})

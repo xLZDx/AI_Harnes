@@ -43,6 +43,34 @@ def _table(lines: list[str], start: int) -> tuple[list[dict], int]:
     return rows, i
 
 
+PLACEMENT_RE = re.compile(r"(\d+)\s+task placements")
+
+
+def _placeholder_sprints(lines: list[str], have: set[str]) -> list[dict]:
+    """Roadmap rows that only announce 'N task placements ... not expanded' and have no '## Sprint <id>' section become a sprint of
+    N placeholder tasks (state todo), so the program total counts the whole plan. Sprint state is 'planned' (not 'closed'/'open'):
+    ledger.active_sprint still takes the first sprint that is not closed, and merged reports list ledger sprints first."""
+    start = next((n for n, ln in enumerate(lines) if re.match(r"^##\s+Roadmap", ln, re.I)), None)
+    if start is None:
+        return []
+    rows, _ = _table(lines, start + 1)
+    out = []
+    for r in rows:
+        sid = (r.get("sprint") or "").strip()
+        goal = r.get("goal") or ""
+        m = PLACEMENT_RE.search(goal)
+        if not sid or sid in have or not m or "not expanded" not in goal.lower():
+            continue
+        n = int(m.group(1))
+        tasks = [{"id": f"{sid}-PLACEHOLDER-{k}", "title": f"Planned placement {k} of {n} (task list not expanded in PROJECT_PLAN.md)",
+                  "criteria": [], "run": "", "risk": "local", "journey": False, "state": "todo", "commits": [],
+                  "verify": None, "review": None, "routing": None, "tokens": None} for k in range(1, n + 1)]
+        out.append({"id": sid, "title": (r.get("title") or "").strip(), "branch": "", "state": "planned", "opened": None,
+                    "closed": None, "tasks": tasks, "expanded": False})
+        have.add(sid)
+    return out
+
+
 def parse(text: str) -> dict:
     lines = text.splitlines()
     meta: dict[str, str] = {}
@@ -90,9 +118,10 @@ def parse(text: str) -> dict:
             tasks.append(t)
         done = bool(tasks) and all(t["state"] == "done" for t in tasks)
         sprints.append({"id": sid, "title": title, "branch": "", "state": "closed" if done else "open",
-                        "opened": None, "closed": None, "tasks": tasks})
+                        "opened": None, "closed": None, "tasks": tasks, "expanded": True})
     if not sprints:
         raise ValueError("no '## Sprint <id>' sections found in the plan")
+    sprints.extend(_placeholder_sprints(lines, {sp["id"] for sp in sprints}))
     return {"version": 1, "project": meta.get("project") or "", "sprints": sprints, "approval": None, "events": [],
             "source": "PROJECT_PLAN.md"}
 
