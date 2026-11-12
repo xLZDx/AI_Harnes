@@ -295,7 +295,7 @@ def prepush_push(name, with_guard):
     (repo / ".harness").mkdir()
     (repo / ".harness" / "ledger.json").write_text(json.dumps(
         {"version": 1, "project": name, "sprints": [], "events": [],
-         "approval": {"head": hv2.head(repo), "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test"}}), encoding="utf-8")
+         "approval": {"head": hv2.head(repo), "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test", "request_id": "11111111-2222-4333-8444-555555555555", "reply_id": "r1"}}), encoding="utf-8")
     assert hv2.git(repo, "config", "core.hooksPath", hooks.as_posix()).rc == 0
     r = hv2.git(repo, "push", "origin", "main", env={"HARNESS_PYTHON": PY})
     remote = hv2.git(bare, "rev-parse", "--verify", "-q", "refs/heads/main")

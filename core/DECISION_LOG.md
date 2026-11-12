@@ -494,3 +494,6 @@ Decisions:
 ## 2026-11-12 S14 tests by functional-test-reviewer
 - New tests/test_s14_incident.py (26: T5 judge argv and child skip, pending-agent rows, T6 approve/check-approval/rules_gate/reopen, T7 verify/review agent runs and docs-only freshness); test_s14_ci_dirty.py +1 (real content edit in a rewritten file is never lost); test_s14_gates.py: two dead, broken tests written by the runaway session removed (cases covered in test_s14_ci_dirty.py); test_s13_enforcement.py fixtures carry request_id plus a twin denied without it. All OK: gates 18, ci_dirty 17, s13_enforcement 19, incident 26.
 - Accepted (silent-failure m5, rule 'every gate error denies'): rules_gate skipped the HEAD comparison when git rev-parse failed; now that is a push problem.
+
+## 2026-11-12 S14 regression round (functional-test-reviewer)
+- All OK: test_s14_incident, test_s14_gates, test_s14_ci_dirty, test_s13_enforcement, test_s13_review_tools, test_ledger_stop_gate, test_s13_review_gates, test_s13_r5_false_positives. Old fixtures updated to the new contracts (agent entries carry project, approvals carry request_id, judge test uses Popen). New cases for every review fix with allowed twins.

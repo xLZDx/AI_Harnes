@@ -4,6 +4,7 @@ Every refused case has an accepted twin. All state is temp: a temp git repo, and
 HARNESS_PM_BRIDGE_MESSAGES point at temp files under D:\\tmp\\harness_v2_tests. No real claude is run.
 Run: C:\\Python314\\python.exe -I tests/test_s14_incident.py"""
 import calendar
+import shutil
 import json
 import os
 import subprocess
@@ -59,9 +60,11 @@ class Proj:
         return self.data()["sprints"][0]["tasks"][0]
 
     def agents(self, *runs):
+        """Write the agent state; an entry without a "project" key gets this repo (the hook records it since S14-T7)."""
         d = self.state / "agents"
         d.mkdir(parents=True, exist_ok=True)
-        (d / "active.json").write_text(json.dumps({"agents": list(runs)}), encoding="utf-8")
+        full = [{"project": str(self.repo.resolve()), **r} for r in runs]
+        (d / "active.json").write_text(json.dumps({"agents": full}), encoding="utf-8")
 
     def head(self):
         return hv2.head(self.repo)
@@ -108,26 +111,58 @@ def test_t5_run_hook_with_child_env_runs_no_hook():
     assert r.rc == 0 and '"block"' in r.out, (r.out, r.err)
 
 
-def test_t5_ask_judge_builds_a_toolless_settingless_child_in_a_temp_dir():
+class FakeProc:
+    """Stands in for subprocess.Popen: records argv/kwargs, returns canned output or raises TimeoutExpired once."""
+    seen = {}
+    out = '[{"id": 1, "verdict": "supports", "why": "x"}]'
+    err = ""
+    rc = 0
+    timeout_first = False
+    pid = 4242
+
+    def __init__(self, argv, **kw):
+        FakeProc.seen["argv"], FakeProc.seen["kw"] = list(argv), kw
+        self.returncode = FakeProc.rc
+        self.calls = 0
+
+    def communicate(self, inp=None, timeout=None):
+        self.calls += 1
+        if FakeProc.timeout_first and self.calls == 1:
+            FakeProc.seen["timeout"] = timeout
+            raise subprocess.TimeoutExpired("claude", timeout)
+        return FakeProc.out, FakeProc.err
+
+    def kill(self):
+        FakeProc.seen["killed"] = True
+
+
+def _judge(out=None, rc=0, err="", timeout_first=False):
     sys.path.insert(0, str(HOOKS))
     import citation_judge as cj
-    seen = {}
-
-    class Done:
-        stdout = '[{"id": 1, "verdict": "supports", "why": "x"}]'
+    FakeProc.seen = {}
+    FakeProc.out, FakeProc.rc, FakeProc.err, FakeProc.timeout_first = (
+        out if out is not None else '[{"id": 1, "verdict": "supports", "why": "x"}]', rc, err, timeout_first)
+    taskkills = []
 
     def fake_run(argv, **kw):
-        seen["argv"], seen["kw"] = list(argv), kw
-        return Done()
+        taskkills.append(list(argv))
+        class D:
+            returncode = 0
+        return D()
 
-    old_run, old_cmd = cj.subprocess.run, cj.CLAUDE_CMD
-    cj.subprocess.run, cj.CLAUDE_CMD = fake_run, r"C:\fake\claude.exe"
+    old = (cj.subprocess.Popen, cj.subprocess.run, cj.CLAUDE_CMD)
+    cj.subprocess.Popen, cj.subprocess.run, cj.CLAUDE_CMD = FakeProc, fake_run, r"C:ake\claude.exe"
     try:
-        out = cj.ask_judge("claim", [{"id": 1, "raw": "a.py:1", "path": "a.py", "line": 1, "window": "1> x"}])
+        res = cj.ask_judge("claim", [{"id": 1, "raw": "a.py:1", "path": "a.py", "line": 1, "window": "1> x"}])
     finally:
-        cj.subprocess.run, cj.CLAUDE_CMD = old_run, old_cmd
+        cj.subprocess.Popen, cj.subprocess.run, cj.CLAUDE_CMD = old
+    return cj, res, taskkills
+
+
+def test_t5_ask_judge_builds_a_toolless_settingless_child_in_a_temp_dir():
+    cj, out, _ = _judge()
     assert out and out[0]["verdict"] == "supports", out  # the parsed reply is returned
-    argv = seen["argv"]
+    argv = FakeProc.seen["argv"]
 
     def after(flag):
         return argv[argv.index(flag) + 1]
@@ -136,9 +171,55 @@ def test_t5_ask_judge_builds_a_toolless_settingless_child_in_a_temp_dir():
     assert after("--tools") == "" and after("--setting-sources") == "" and after("--max-turns") == "1"
     for flag in ("--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands"):
         assert flag in argv, (flag, argv)
-    assert seen["kw"]["env"]["HARNESS_HOOK_CHILD"] == "1"
-    cwd = Path(seen["kw"]["cwd"]).resolve()
+    assert FakeProc.seen["kw"]["env"]["HARNESS_HOOK_CHILD"] == "1"
+    cwd = Path(FakeProc.seen["kw"]["cwd"]).resolve()
     assert cwd == Path(tempfile.gettempdir()).resolve() and cwd != Path.cwd().resolve(), cwd
+    assert cj.LAST_FAIL == {}, cj.LAST_FAIL  # a good call leaves no failure note
+
+
+def test_t5_ask_judge_timeout_kills_the_process_tree_and_records_why():
+    cj, out, kills = _judge(timeout_first=True)
+    assert out is None, out
+    assert FakeProc.seen["timeout"] == cj.CALL_TIMEOUT, FakeProc.seen
+    if os.name == "nt":
+        assert kills and kills[0][:3] == ["taskkill", "/T", "/F"] and "4242" in kills[0], kills
+    else:
+        assert FakeProc.seen.get("killed"), FakeProc.seen
+    assert "timeout" in cj.LAST_FAIL.get("error", ""), cj.LAST_FAIL
+
+
+def test_t5_ask_judge_nonzero_exit_records_exit_code_and_stderr():
+    cj, out, kills = _judge(out="", rc=3, err="boom: no auth")
+    assert out is None and not kills, (out, kills)
+    e = cj.LAST_FAIL.get("error", "")
+    assert "exit 3" in e and "boom: no auth" in e, cj.LAST_FAIL
+    # twin: the next good call clears the failure note
+    cj2, out2, _ = _judge()
+    assert out2 and cj2.LAST_FAIL == {}, (out2, cj2.LAST_FAIL)
+
+
+def test_t5_evaluate_puts_the_judge_failure_into_the_call_failed_log():
+    sys.path.insert(0, str(HOOKS))
+    import citation_judge as cj
+    snip = [{"id": 1, "raw": "a.py:1", "path": "a.py", "line": 1, "window": "1> x"}]
+    old = (cj.build_snippets, cj.ask_judge)
+
+    def failing(claim, snippets):
+        cj.LAST_FAIL.clear()
+        cj.LAST_FAIL.update(error="exit 3: boom")
+        return None
+
+    cj.build_snippets = lambda gate, message, cwd: snip
+    cj.ask_judge = failing
+    try:
+        reason, info = cj.evaluate(None, {"last_assistant_message": "a.py:1 sets x", "cwd": "."})
+        assert reason is None and info.get("judge") == "call-failed" and info.get("error") == "exit 3: boom", (reason, info)
+        # twin: a working judge says "supports" and the log carries no failure text
+        cj.ask_judge = lambda claim, snippets: [{"id": 1, "verdict": "supports", "why": "ok"}]
+        reason, info = cj.evaluate(None, {"last_assistant_message": "a.py:1 sets x", "cwd": "."})
+        assert reason is None and info.get("judge") != "call-failed" and "error" not in info, (reason, info)
+    finally:
+        cj.build_snippets, cj.ask_judge = old
 
 
 def _pending(rows):
@@ -321,6 +402,84 @@ def test_t7_a_commit_mixing_docs_and_code_counts_as_code():
     assert refused(r), r.all
 
 
+def test_t7_a_run_recorded_for_another_project_does_not_count():
+    p = Proj("t7-proj")
+    p.commit("a.py", "x=1\n", T0)
+    other = str(hv2.mk_repo("t7-proj-other").resolve())
+    d = p.state / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    runs = [run_entry("functional-test-reviewer", T0 + 100) | {"project": other},
+            run_entry("code-reviewer", T0 + 100) | {"project": ""},
+            run_entry("tdd-guide", T0 + 100)]  # an old entry with no project key at all
+    (d / "active.json").write_text(json.dumps({"agents": runs}), encoding="utf-8")
+    r = p.led("verify", "S1-T1", "--result", "pass", "--evidence", "e", "--by", "functional-test-reviewer", ok=False)
+    assert refused(r) and p.task()["verify"] is None, r.all
+    r = p.led("verify", "S1-T1", "--result", "pass", "--evidence", "e", "--by", "tdd-guide", ok=False)
+    assert refused(r) and p.task()["verify"] is None, r.all
+    r = p.led("review", "S1-T1", "--result", "accepted", "--by", "code-reviewer", ok=False)
+    assert refused(r) and p.task()["review"] is None, r.all
+    # twin: the same runs recorded for this project are accepted (spelled in upper case: normcase on Windows)
+    mine = str(p.repo.resolve())
+    spelled = mine.upper() if os.name == "nt" else mine
+    runs = [run_entry("functional-test-reviewer", T0 + 100) | {"project": spelled},
+            run_entry("code-reviewer", T0 + 100) | {"project": mine}]
+    (d / "active.json").write_text(json.dumps({"agents": runs}), encoding="utf-8")
+    p.led("verify", "S1-T1", "--result", "pass", "--evidence", "e", "--by", "functional-test-reviewer")
+    p.led("review", "S1-T1", "--result", "accepted", "--by", "code-reviewer")
+    assert p.task()["verify"]["result"] == "pass" and p.task()["review"]["result"] == "accepted"
+
+
+def test_t7_tests_only_commit_after_the_run_keeps_it_valid_but_a_code_commit_does_not():
+    for rel in ("tests/test_a.py", "src/test_b.py", "web/app.test.ts", "web/app.spec.js"):
+        p = Proj("t7-tests")
+        p.commit("a.py", "x=1\n", T0)
+        p.commit(rel, "t\n", T0 + 2000)  # the test agent commits its tests after its run
+        p.agents(run_entry("functional-test-reviewer", T0 + 100))
+        p.led("verify", "S1-T1", "--result", "pass", "--evidence", "e", "--by", "functional-test-reviewer")
+        assert p.task()["verify"]["result"] == "pass", rel
+    # twin: a file that only looks like a test (wrong folder and name) is code and makes the run stale
+    for rel in ("src/contest.py", "latest.py", "src/attest.js"):
+        q = Proj("t7-looks")
+        q.commit("a.py", "x=1\n", T0)
+        q.commit(rel, "t\n", T0 + 2000)
+        q.agents(run_entry("functional-test-reviewer", T0 + 100))
+        r = q.led("verify", "S1-T1", "--result", "pass", "--evidence", "e", "--by", "functional-test-reviewer", ok=False)
+        assert refused(r), (rel, r.all)
+
+
+def test_t7_review_by_allow_list():
+    names_ok = ["code-reviewer", "python-reviewer", "security-reviewer", "silent-failure-hunter", "architect", "code-architect",
+                "type-design-analyzer", "comment-analyzer", "pr-test-analyzer", "a11y-architect"]
+    names_bad = ["functional-test-reviewer", "planner", "doc-updater", "build-error-resolver", "reviewer-bot", "code-reviewer-x"]
+    p = Proj("t7-allow")
+    p.commit("a.py", "x=1\n", T0)
+    p.agents(*[run_entry(n, T0 + 100) for n in names_ok + names_bad])
+    for n in names_bad:
+        r = p.led("review", "S1-T1", "--result", "accepted", "--by", n, ok=False)
+        assert refused(r) and p.task()["review"] is None, (n, r.all)
+    for n in names_ok:
+        p.led("review", "S1-T1", "--result", "accepted", "--by", n)
+        assert p.task()["review"]["by"] == n, n
+
+
+def test_t7_agent_visibility_project_root_and_400_run_cap():
+    sys.path.insert(0, str(HOOKS))
+    import agent_visibility as av
+    assert av.CAP == 400
+    repo = hv2.mk_repo("t7-av")
+    sub = repo / "pkg"
+    sub.mkdir()
+    assert av.project_root(str(sub)) == str(repo.resolve())  # git common-dir root of a subfolder
+    assert av.project_root(str(hv2.fresh("t7-av-nogit"))) == ""  # twin: not a repo
+    os.environ["HARNESS_HOOK_STATE"] = str(hv2.fresh("t7-av-state"))
+    try:
+        av.save({"agents": [{"type": "x", "start": i, "stop": i + 1} for i in range(450)]})
+        got = av.load()["agents"]
+        assert len(got) == 400 and got[0]["start"] == 50, (len(got), got[0])
+    finally:
+        os.environ.pop("HARNESS_HOOK_STATE", None)
+
+
 # ------------------------------------------------------------------ T6
 RID = "11111111-2222-4333-8444-555555555555"
 OTHER_RID = "99999999-2222-4333-8444-555555555555"
@@ -413,15 +572,51 @@ def test_t6_missing_message_log_is_refused():
     assert refused(r) and p.data()["approval"] is None, r.all
 
 
-def test_t6_head_taken_from_the_outbound_request_when_the_reply_names_none():
+def test_t6_head_only_in_our_outbound_request_is_refused_the_reply_must_name_it():
     p = Proj("t6-out")
     h = p.head()
     msg(p, "outbound", f"Review request\nHEAD: {h}\n")
     msg(p, "inbound", "APPROVE\n")
+    r = approve(p)
+    assert refused(r) and p.data()["approval"] is None, r.all
+    # twin: a reply that names the HEAD is accepted
+    msg(p, "inbound", f"HEAD: {h}\nAPPROVE\n")
     assert approve(p).rc == 0 and p.data()["approval"]["head"] == h
-    q = Proj("t6-out-bad")  # twin: the request names another head
-    msg(q, "outbound", f"Review request\nHEAD: {'b' * 40}\n")
-    msg(q, "inbound", "APPROVE\n")
+    q = Proj("t6-out-bad")  # a reply naming another head stays refused whatever the request said
+    msg(q, "outbound", f"Review request\nHEAD: {q.head()}\n")
+    msg(q, "inbound", f"HEAD: {'b' * 40}\nAPPROVE\n")
+    assert refused(approve(q)) and q.data()["approval"] is None
+
+
+def test_t6_only_the_newest_reply_decides():
+    p = Proj("t6-newest")
+    h = p.head()
+    msg(p, "inbound", f"HEAD: {h}\nAPPROVE\n", mid="reply-1")
+    msg(p, "inbound", f"HEAD: {h}\nREVISE\nFix the lock.\n", mid="reply-2")
+    r = approve(p)
+    assert refused(r) and p.data()["approval"] is None, r.all
+    # twin: REVISE first, a later APPROVE for the same HEAD is accepted and its reply id is recorded
+    q = Proj("t6-newest-twin")
+    h = q.head()
+    msg(q, "inbound", f"HEAD: {h}\nREVISE\n", mid="reply-1")
+    msg(q, "inbound", f"HEAD: {h}\nAPPROVE\n", mid="reply-2")
+    assert approve(q).rc == 0 and q.data()["approval"]["reply_id"] == "reply-2"
+
+
+def test_t6_records_without_a_matching_project_are_skipped_even_if_newest():
+    p = Proj("t6-proj")
+    h = p.head()
+    msg(p, "inbound", f"HEAD: {h}\nAPPROVE\n", mid="reply-mine")
+    # a newer REVISE that names another project must not veto this project's approval
+    msg(p, "inbound", f"HEAD: {h}\nREVISE\n", project="some-other-project", mid="reply-other")
+    assert approve(p).rc == 0 and p.data()["approval"]["reply_id"] == "reply-mine"
+    # a record with no project field at all is skipped too
+    q = Proj("t6-proj-none")
+    h = q.head()
+    row = {"direction": "inbound", "reviewRequestId": RID, "correlated": True, "text": f"HEAD: {h}\nAPPROVE\n",
+           "messageId": "m1", "replyId": "r-noproj"}
+    with open(q.messages, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row) + "\n")
     assert refused(approve(q)) and q.data()["approval"] is None
 
 
@@ -456,7 +651,7 @@ def test_t6_approve_then_check_approval_end_to_end():
 
 
 def test_t6_rules_gate_push_check_reports_an_approval_without_request_id():
-    repo = enf.make_gate_repo("s14-t6-rg", "head", [("done", False)])
+    repo = enf.make_gate_repo("s14-t6-rg", "typed", [("done", False)])
     led_file = repo / ".harness" / "ledger.json"
     denied, reason, r = enf.gate("git push", cwd=repo)
     assert denied and "request id" in reason.lower(), (denied, reason)
@@ -465,6 +660,28 @@ def test_t6_rules_gate_push_check_reports_an_approval_without_request_id():
     led_file.write_text(json.dumps(d), encoding="utf-8")
     denied, reason, r = enf.gate("git push", cwd=repo)
     assert not denied, reason  # twin
+
+
+def test_t6_rules_gate_push_denied_when_head_cannot_be_resolved():
+    repo = hv2.mk_repo("s14-t6-nohead", with_commit=False)  # a repo with no commit: git rev-parse HEAD fails
+    assert hv2.git(repo, "rev-parse", "--verify", "HEAD").rc != 0
+    (repo / ".harness-tools").mkdir()
+    shutil.copy2(hv2.TOOLS / "ledger.py", repo / ".harness-tools" / "ledger.py")
+    ap = {"head": "d" * 40, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "t", "request_id": RID, "reply_id": "r1"}
+    led = {"version": 1, "project": "s14-t6-nohead", "approval": ap, "events": [],
+           "sprints": [{"id": "S1", "title": "s", "state": "open", "tasks": [{"id": "S1-T1", "title": "t", "state": "done"}]}]}
+    (repo / ".harness").mkdir()
+    (repo / ".harness" / "ledger.json").write_text(json.dumps(led), encoding="utf-8")
+    denied, reason, r = enf.gate("git push", cwd=repo)
+    assert denied and "head cannot be resolved" in reason.lower(), (denied, reason)
+    # twin: a normal repo whose approval (with request id) is bound to HEAD and whose tasks are all done is allowed
+    ok = enf.make_gate_repo("s14-t6-withhead", "head", [("done", False)])
+    denied, reason, r = enf.gate("git push", cwd=ok)
+    assert not denied, reason
+    # twin 2: the same normal repo with the approval bound to an older commit is still denied (the comparison runs)
+    bad = enf.make_gate_repo("s14-t6-stale", "stale", [("done", False)])
+    denied, reason, r = enf.gate("git push", cwd=bad)
+    assert denied and "not to the current head" in reason.lower(), (denied, reason)
 
 
 def closed_sprint_project(name, approval):

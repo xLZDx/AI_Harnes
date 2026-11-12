@@ -163,6 +163,130 @@ def test_t2_quoted_text_and_harmless_substitution_stay_data():
     check(fails)
 
 
+# ---- review-fix round: docker/ssh global flags, nesting depth, python heredoc text, hook-child skips
+T1_DENY_FLAGS = [
+    "docker -H tcp://h exec c rm -rf /data",
+    "docker --host tcp://h exec c rm -rf /data",
+    "docker --context prod exec c rm -rf /data",
+    "docker -c prod exec c rm -rf /data",
+    "docker --config /tmp/cfg exec c rm -rf /data",
+    "docker -l debug exec c rm -rf /data",
+    "docker --log-level debug exec c rm -rf /data",
+    "ssh -- host rm -rf /data",
+    "ssh -B eth0 host rm -rf /data",
+]
+T1_ALLOW_FLAGS = [
+    "docker -H tcp://h exec c ls",
+    "docker --context prod exec c ls",
+    "docker --log-level debug ps",
+    "ssh -- host ls",
+    "ssh -B eth0 host ls",
+]
+
+
+def test_t1_docker_global_value_flags_ssh_B_and_double_dash_do_not_hide_the_inner_command():
+    fails = []
+    for cmd in T1_DENY_FLAGS:
+        d, r = dcg(cmd)
+        if not d:
+            fails.append(f"NOT denied: {cmd!r} out={r.out!r}")
+    for cmd in T1_ALLOW_FLAGS:
+        d, r = dcg(cmd)
+        if d:
+            fails.append(f"wrongly denied: {cmd!r} out={r.out[:160]!r}")
+    check(fails)
+
+
+def test_t1_flag_forms_give_the_same_verdict_through_shell_policy_gate():
+    fails = []
+    for cmd in ("docker -H tcp://h exec c rm -rf /data", "ssh -- host rm -rf /data"):
+        d, r = spg(cmd)
+        if not d:
+            fails.append(f"NOT denied: {cmd!r}")
+    for cmd in ("docker -H tcp://h exec c ls", "ssh -- host ls"):
+        d, r = spg(cmd)
+        if d:
+            fails.append(f"wrongly denied: {cmd!r}")
+    check(fails)
+
+
+def nest(cmd, levels):
+    import shlex
+    for _ in range(levels):
+        cmd = "bash -c " + shlex.quote(cmd)
+    return cmd
+
+
+def test_t2_nesting_deeper_than_three_levels_is_denied_shallower_is_judged_on_content():
+    fails = []
+    for n in (1, 2, 3):  # allowed twins: harmless text stays allowed, a full test run inside is still denied
+        d, reason, r = enf.gate(nest("echo hi", n))
+        if d:
+            fails.append(f"depth {n} harmless wrongly denied: {reason[:120]}")
+        d, reason, r = enf.gate(nest("npm test", n), "claude", REVIEWER)
+        if not d:
+            fails.append(f"depth {n} npm test NOT denied")
+    for n in (4, 5, 7):
+        d, reason, r = enf.gate(nest("echo hi", n))
+        if not d:
+            fails.append(f"depth {n} NOT denied (harmless content must not slip past the depth limit)")
+    check(fails)
+
+
+def test_t2_python_heredoc_text_is_not_a_substitution_but_a_shell_heredoc_body_is_judged():
+    py_ok = ["python - <<'EOF'\nprint(\"$(npm test)\")\nEOF", "python - <<'EOF'\nprint('x')\nEOF",
+             "python3 - <<'EOF'\ns = \"run npm test\"\nEOF"]
+    sh_deny = ["bash <<'EOF'\nnpm test\nEOF", "bash <<'EOF'\necho $(npm test)\nEOF", "sh <<'EOF'\nnpm test\nEOF"]
+    plain_ok = ["cat <<'EOF'\nnpm test\nEOF"]
+    fails = []
+    for cmd in py_ok + plain_ok:
+        d, reason, r = enf.gate(cmd)
+        if d:
+            fails.append(f"wrongly denied: {cmd!r}: {reason[:120]}")
+    for cmd in sh_deny:
+        d, reason, r = enf.gate(cmd)
+        if not d:
+            fails.append(f"NOT denied: {cmd!r}")
+    check(fails)
+
+
+def child_call(name, payload, child="1"):
+    root = hv2.fresh("s14-child")
+    env = {"HARNESS_HOOK_STATE": str(root / "state"), "HARNESS_HOOK_CONFIG": str(root / "none.json")}
+    if child is not None:
+        env["HARNESS_HOOK_CHILD"] = child
+    # the command line the installer writes (build.py: -s -X utf8 run_hook.py <script> --harness-client=claude); no -I
+    r = hv2.run([PY, "-s", "-X", "utf8", str(HOOKS / "run_hook.py"), name, "--harness-client=claude"], root, env, json.dumps(payload))
+    return r, root / "state" / "run_hook" / "child_skips.jsonl"
+
+
+def test_t5_child_skips_only_session_steering_events_and_logs_each_skip():
+    for ev in ("Stop", "SubagentStop", "UserPromptSubmit", "SessionStart", "PreCompact", "Notification"):
+        r, log = child_call("session_close_gate.py", {"hook_event_name": ev, "session_id": "c", "cwd": str(hv2.fresh("c"))})
+        assert r.rc == 0 and r.out.strip() == "", (ev, r.all)
+        rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == 1 and rows[0]["event"] == ev and rows[0]["hook"] == "session_close_gate.py", (ev, rows)
+        # twin: without the child flag the hook runs and nothing is logged
+        r2, log2 = child_call("session_close_gate.py", {"hook_event_name": ev, "session_id": "c", "cwd": str(hv2.fresh("c"))}, child=None)
+        assert not log2.exists(), ev
+
+
+def test_t5_child_flag_never_switches_off_the_pretooluse_gates():
+    deny_cmd = {"hook_event_name": "PreToolUse", "session_id": "c", "cwd": str(hv2.fresh("c")), "tool_name": "Bash",
+                "tool_input": {"command": "npm test"}}
+    allow_cmd = dict(deny_cmd, tool_input={"command": "echo hi"})
+    r, log = child_call("rules_gate.py", deny_cmd)  # rules_gate owns the full-suite rule
+    assert r.rc == 0 and _verdict(r), r.all
+    assert not log.exists(), "PreToolUse must not be logged as a skip"
+    r, _ = child_call("rules_gate.py", allow_cmd)  # twin: a harmless command still passes under the child flag
+    assert r.rc == 0 and not _verdict(r), r.all
+    r, _ = child_call("shell_policy_gate.py", allow_cmd)
+    assert r.rc == 0 and not _verdict(r), r.all
+    # a destructive command is still denied for a child (dangerous gate runs inside shell_policy_gate)
+    r, _ = child_call("shell_policy_gate.py", dict(deny_cmd, tool_input={"command": "docker -H tcp://h exec c rm -rf /data"}))
+    assert _verdict(r), r.all
+
+
 # ------------------------------------------------------------------ T4: ledger hook errors
 def led_env(path):
     return {"HARNESS_LEDGER": str(path)}
