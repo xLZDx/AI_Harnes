@@ -307,3 +307,6 @@
 
 ## 2026-11-12 S13-R5 shell gate: quoted text is not a command
 - dangerous_command_gate splits commands on separators without honouring quotes, so a separator inside a quoted log text made the next word look like a command. shell_policy_gate now sanitizes first: separators inside quotes become spaces, heredoc bodies are dropped, except text that runs as code (bash -c, sh, cmd /c, powershell -c, eval, source, xargs, command substitution), which stays raw so the gate is not weaker.
+
+## 2026-11-12 S13-R1 R2 R4 tests
+- tests/test_s13_enforcement.py: 18 passed (functional-test-reviewer a041e695): 21 prohibited commands in 4 wrappings denied in Claude and Codex, allowed cases pass, named test files only for test agents; push and PR denied without approval, with approval on another HEAD, with an open task, allowed when approved and all tasks verified, done or blocked; a real git push with an auto-triggered workflow refused and with workflow_dispatch accepted; build registers SubagentStart and the START line prints once. Not covered: live client screens, Codex exec_command, two pushes at once.
