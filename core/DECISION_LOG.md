@@ -322,3 +322,6 @@
 
 ## 2026-11-12 S13-R6 tests
 - tests/test_s13_ledger_sync.py: 9 passed (functional-test-reviewer ab5132c9): full sync of a temp project with expanded, N/M, placement and accepted-in-report roadmap rows, copies with spaced ids replaced, genuine sprint kept with UNVERIFIED fill-up, approval and events kept, one backup, second run unchanged; state words; sdlc task-ledger import; program_plan master plan; real dry-run rows ERP 443, Fitness 243/229, PDCC 776/168, marketing refused; real ledgers unchanged (mtime and size). Older test files test_s7_gaps, test_s10_report, test_s11_plan_import still pass.
+
+## 2026-11-12 S13-R8 audit over all projects and both clients
+- tools/audit_projects.py prints one table over every project with .harness-tools or .harness/ledger.json plus claude-home and codex-home: hooks_path, tools_current, prepush_current, ci_local (workflow triggers), ci_github (gh workflow list, skippable with --no-github), ledger_whole (ledger_sync dry run), gates_live (installed PreToolUse handlers fed the prohibited commands), client_cfg (registrations and the rules block). Read-only; temp files only under D:/tmp/harness_audit. Baseline before install: every project row FAIL, as expected. Decision: the audit runs the real installed hooks instead of the source, so it proves what a session actually gets; rejected: a static check of settings.json only.
