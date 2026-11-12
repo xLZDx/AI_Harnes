@@ -97,17 +97,43 @@ def _emit(line: str, client: str) -> None:
         sys.stdout.write(json.dumps({"systemMessage": line}, ensure_ascii=False))
 
 
-def announce_start(data: dict, client: str, model: str = "", effort: str = "") -> None:
+CLAIM_WINDOW_S = 120  # a SubagentStart event claims a start line the PreToolUse hook printed at most this long ago
+
+
+def announce_start(data: dict, client: str, model: str = "", effort: str = "", source: str = "pre") -> None:
+    """Print one START line per agent. Two hooks can report the same start (PreToolUse of the Agent/Task tool and the
+    SubagentStart event); the line is printed once: the same tool_use_id is skipped, and a start of the other `source`
+    claims an unclaimed recent entry of the same type and session instead of adding a second one."""
     try:
         ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
         name = str(ti.get("subagent_type") or ti.get("agent_type") or "agent").strip()[:60]
         model = (model or str(ti.get("model") or "") or "policy").strip()[:40]
         effort = (effort or str(ti.get("reasoning_effort") or ti.get("effort") or "") or "policy").strip()[:20]
         task = task_id(str(data.get("cwd") or ""))
+        session = str(data.get("session_id") or "")[:64]
+        tuid = str(data.get("tool_use_id") or "")[:64]
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                 "session": str(data.get("session_id") or "")[:64], "tool_use_id": str(data.get("tool_use_id") or "")[:64]}
-        mutate(lambda d: d["agents"].append(entry))
-        _emit(f"[agent START] {name} | model {model} | effort {effort} | task {task}", client)
+                 "session": session, "tool_use_id": tuid, "sources": [source]}
+        res = {"dup": False}
+
+        def apply(d: dict):
+            now = time.time()
+            for e in d["agents"]:
+                if e.get("stop") or e.get("type") != name:
+                    continue
+                if tuid and e.get("tool_use_id") == tuid:
+                    res["dup"] = True
+                    return False
+                if (source not in e.get("sources", ["pre"]) and now - e.get("start", 0) < CLAIM_WINDOW_S
+                        and e.get("session") in ("", session)):
+                    e.setdefault("sources", ["pre"]).append(source)
+                    res["dup"] = True
+                    return True
+            d["agents"].append(entry)
+        mutate(apply)
+        if not res["dup"]:
+            # role named explicitly: the Agent description may not say which role runs
+            _emit(f"[agent START] {name} | role {name} | model {model} | effort {effort} | task {task}", client)
     except Exception:
         pass
 
@@ -174,7 +200,10 @@ def main() -> int:
             announce_stop(data, client)
         elif event == "SubagentStart":
             announce_start({"tool_input": {"subagent_type": data.get("agent_type")}, "cwd": data.get("cwd"),
-                            "session_id": data.get("session_id")}, client)
+                            "session_id": data.get("session_id")}, client, source="start")
+        elif event == "PreToolUse" and _agentio.is_agent_spawn(data):
+            # fallback START line when SubagentStart is not delivered; deduped against it and against agent_model_gate
+            announce_start(data, client)
     except Exception:
         pass
     return 0

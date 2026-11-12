@@ -11,6 +11,14 @@
   },
   {
    "event": "PreToolUse",
+   "script": "rules_gate.py",
+   "timeout": 20,
+   "status": "operator rules gate",
+   "claude": "Bash|PowerShell",
+   "codex": "Bash"
+  },
+  {
+   "event": "PreToolUse",
    "script": "repeat_work_gate.py",
    "timeout": 45,
    "status": "repeat work gate",
@@ -212,6 +220,21 @@
    "status": "citation judge",
    "claude": "",
    "codex": ""
+  },
+  {
+   "event": "SubagentStart",
+   "script": "agent_visibility.py",
+   "timeout": 10,
+   "status": "agent start line",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "PreToolUse",
+   "script": "agent_visibility.py",
+   "timeout": 10,
+   "status": "agent start line (fallback)",
+   "claude": "Agent|Task"
   },
   {
    "event": "SubagentStop",

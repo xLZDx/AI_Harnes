@@ -395,7 +395,7 @@ def check(manifest: dict) -> list[str]:
 
 HOOK_EVENTS = {
     "claude": {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact", "Stop", "SubagentStop", "UserPromptSubmit",
-               "PermissionRequest", "Notification", "SessionStart", "SessionEnd"},
+               "PermissionRequest", "Notification", "SessionStart", "SessionEnd", "SubagentStart"},
     "codex": {"PreToolUse", "PostToolUse", "PreCompact", "Stop", "SubagentStop", "UserPromptSubmit",
               "PermissionRequest", "SessionStart", "SessionEnd", "SubagentStart"},
 }
@@ -531,7 +531,7 @@ def build(python: str = "") -> int:
     return 0
 
 
-TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py")
+TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py", "workflow_guard.py")
 REPORT_ASSETS = ("report.css", "filter.js", "copy.js")  # harness/report/* -> <project>/.harness-tools/report/
 HOOKS = ("pre-commit", "post-commit", "pre-push", "post-merge")
 
