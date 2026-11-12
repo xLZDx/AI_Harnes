@@ -402,3 +402,6 @@
 
 ## 2026-11-12 S14-T4 old hook errors
 - ledger.py: status and the report show only open hook errors; an 'unknown task X' error is resolved when the ledger now has X (the plan sync added it) or X is a harness housekeeping id (CI-OFF, the ci_triggers_off commits); new command ack-errors --reason appends a hook-error-ack event that hides earlier errors; nothing is deleted (operator rule 5). commit-hook records CI-OFF commits as housekeeping-commit events instead of errors. Read-only check on real ledgers: PDCC 1 -> 0; ERP 7 and Fitness_App 24 remain (ids that never were plan tasks) for ack-errors after tests.
+
+## 2026-11-12 S14-T1 dangerous_command_gate quote-aware and exec-aware
+- dangerous_command_gate sanitizes like shell_policy_gate (quoted spans end at the first matching quote, wrapper spans stay raw, heredoc bodies dropped unless fed to an interpreter, substitutions raw) and segments() looks through exec wrappers (docker/podman exec, kubectl exec --, ssh, wsl -e/--, su/runuser -c, runuser -u --, nsenter --, chroot). Found while doing it: docker exec c sh -c "rm -rf /data" (no semicolon) was allowed by both gates; now denied. Engineer comparison: 40 inputs, both hooks agree, 0 mismatches. No shared module: the helper depends on this file's tables (import cycle).
