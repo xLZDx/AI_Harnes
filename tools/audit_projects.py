@@ -437,6 +437,8 @@ def _codex_rpc_response(proc, output_queue, request_id: int, timeout: int) -> di
             message = json.loads(line)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Codex app-server returned invalid JSON: {exc.msg}") from exc
+        if not isinstance(message, dict):
+            raise RuntimeError("Codex app-server returned a JSON-RPC message that is not an object")
         if message.get("id") == request_id:
             if "error" in message:
                 raise RuntimeError(f"Codex app-server RPC error: {message['error']}")
@@ -478,7 +480,10 @@ def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
         send({"jsonrpc": "2.0", "id": 2, "method": "hooks/list",
               "params": {"cwds": [str(p.resolve()) for p in cwds]}})
         response = _codex_rpc_response(proc, output_queue, 2, 30)
-        data = response.get("result", {}).get("data")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return {}, "Codex app-server hooks/list response has no result object"
+        data = result.get("data")
         if not isinstance(data, list):
             return {}, "Codex app-server hooks/list response has no result.data list"
         by_cwd = {}
