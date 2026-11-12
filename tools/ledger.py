@@ -300,8 +300,24 @@ NOT_REVIEWERS = {"implementation-engineer", "general-purpose", "claude", "explor
                  "build-error-resolver", "code-simplifier", "refactor-cleaner", "doc-updater", "technical-writer"}
 
 
+def _hook_state_base() -> Path:
+    """Same place the hooks write: HARNESS_HOOK_STATE, else that key of the machine config the hooks load
+    (~/.harness-hooks/config.json or HARNESS_HOOK_CONFIG), else ~/.harness-hooks."""
+    v = os.environ.get("HARNESS_HOOK_STATE")
+    if not v:
+        cfg = Path(os.environ.get("HARNESS_HOOK_CONFIG") or Path.home() / ".harness-hooks" / "config.json")
+        try:
+            c = json.loads(cfg.read_text(encoding="utf-8-sig"))
+            x = c.get("HARNESS_HOOK_STATE") if isinstance(c, dict) else None
+            if isinstance(x, str) and x and "<" not in x:
+                v = os.path.expandvars(os.path.expanduser(x))
+        except (OSError, ValueError):
+            pass
+    return Path(v) if v else Path.home() / ".harness-hooks"
+
+
 def _agents_state() -> list:
-    base = Path(os.environ.get("HARNESS_HOOK_STATE") or Path.home() / ".harness-hooks")
+    base = _hook_state_base()
     try:
         d = json.loads((base / "agents" / "active.json").read_text(encoding="utf-8"))
         return d.get("agents", []) if isinstance(d, dict) else []

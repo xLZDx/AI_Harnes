@@ -470,3 +470,6 @@ Decisions:
 
 ## 2026-11-12 S14-T7 docs-only commits do not make an agent run stale
 - require_agent_run walks back from the task's last commit over docs-only commits (route.is_doc) and compares the agent start with the nearest commit that changes code. Found by me: my log commit 020450c landed after the S14 test agent started.
+
+## 2026-11-12 S14-T7 ledger reads the agent runs where the hooks write them
+- Found by me on the first real `verify --by functional-test-reviewer`: every task refused although the run (19:57:13-20:04:52) is in ~/.harness-hooks/state/agents/active.json. ledger.py looked only at HARNESS_HOOK_STATE or ~/.harness-hooks; the hooks also read HARNESS_HOOK_STATE from the machine config ~/.harness-hooks/config.json (value ~/.harness-hooks/state). Now ledger.py reads the same config key.
