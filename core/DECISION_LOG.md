@@ -316,3 +316,6 @@
 
 ## 2026-11-12 S13-R5 stale tests updated
 - tests/test_ledger_stop_gate.py now blocks with --class OPERATOR --case money (S9 rule); tests/test_decision_explain_gate.py now expects short hex and sprint ids such as (S4) not to be decision refs; both pass (functional-test-reviewer a47c05e1).
+
+## 2026-11-12 S13-R6 ledger sync for every project
+- tools/ledger_sync.py rebuilds a project ledger from its plan: PROJECT_PLAN.md, or the profile key program_plan (master plan markdown imported in memory by tools/plan_import_master_md.py); a not-expanded sprint takes its tasks from docs/sdlc/<sprint>-task-ledger.md when present; genuine harness-flow sprints (own commits or verify/review records) are kept; ids are compared without spaces; backup to D:/Backup before a write; idempotent. Roadmap placeholders keep their historical state from the roadmap words (N/M closed or accepted -> done, have source code or code ready -> implemented, N accepted -> done) and a fully done placeholder sprint is closed. Dry run over 17 projects: ERP 443 tasks (S00 60, S01 48, S02 37), 60 accepted; Fitness_App 243 plan tasks, 229 accepted (three suffixed ids excluded as in the approved report); PDCC 776 tasks, 168 accepted. Decision: the Fitness profile gets program_plan; rejected: copying the master plan into the Fitness repo by hand.

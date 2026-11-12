@@ -45,6 +45,12 @@ def _table(lines: list[str], start: int) -> tuple[list[dict], int]:
 
 
 PLACEMENT_RE = re.compile(r"(?<![0-9,.\-–—/])([0-9]+)\s+(?:task\s+)?placements?\b", re.I)
+FRACTION_RE = re.compile(r"(?<![0-9,.\-–—/])[0-9]+/([0-9]+)\s+tasks\b", re.I)  # "36/36 tasks closed": M placements
+PLANNED_RE = re.compile(r"(?<![0-9,.\-–—/])([0-9]+)\s+planned\s+tasks\b", re.I)  # "61 planned tasks": N placements
+DONE_RE = re.compile(r"(?<![0-9,.\-–—/])([0-9]+)/([0-9]+)\s+(?:tasks?\s+)?(?:closed|accepted|done|complete(?:d)?)\b", re.I)
+IMPL_RE = re.compile(r"(?<![0-9,.\-–—/])([0-9]+)/([0-9]+)\s+(?:tasks?\s+)?(?:have\s+source\s+code|implemented|code\s+ready|code\s+complete)", re.I)
+ACCEPTED_RE = re.compile(r"(?<![0-9,.\-–—/])([0-9]+)\s+(?:tasks?\s+)?(?:accepted|closed|done)\b", re.I)  # "3 accepted in the report"
+CLOSED_STATUS = {"CLOSED", "DONE", "ACCEPTED"}
 NOT_EXPANDED_RE = re.compile(r"not\s+(?:yet\s+)?expanded", re.I)
 MAX_PLACEMENTS = 1000
 
@@ -69,7 +75,7 @@ def _roadmap(lines: list[str]) -> dict[str, dict]:
         label = f"roadmap row {(r.get('sprint') or '').strip()!r}: {goal.strip()[:120]!r}"
         if not re.fullmatch(r"S[0-9]+", sid):
             raise ValueError(f"{label}: sprint id must look like S<number>")
-        counts = {int(x) for x in PLACEMENT_RE.findall(goal)}
+        counts = {int(x) for rx in (PLACEMENT_RE, FRACTION_RE, PLANNED_RE) for x in rx.findall(goal)}
         if len(counts) != 1:
             raise ValueError(f"{label}: expected exactly one whole number of task placements, found {sorted(counts) or 'none'}")
         n = counts.pop()
@@ -77,8 +83,30 @@ def _roadmap(lines: list[str]) -> dict[str, dict]:
             raise ValueError(f"{label}: {n} placements is above the limit {MAX_PLACEMENTS}")
         if sid in out:
             raise ValueError(f"{label}: sprint {sid} appears twice in the roadmap")
-        out[sid] = {"n": n, "title": (r.get("title") or "").strip()}
+        # state words of the roadmap row (never a state without such words): 'N/M tasks closed|accepted|done' -> N done;
+        # 'N/M ... have source code|implemented|code ready' -> implemented (code ready, acceptance pending); a CLOSED/DONE/ACCEPTED
+        # Status cell with a single count N and no fraction -> N done
+        done = max([int(m.group(1)) for m in DONE_RE.finditer(goal)] + [int(m.group(1)) for m in ACCEPTED_RE.finditer(goal)] or [0])
+        impl = max([int(m.group(1)) for m in IMPL_RE.finditer(goal)] or [0])
+        status = re.sub(r"[^A-Z]", "", (r.get("status") or "").upper())
+        if not done and not impl and status in CLOSED_STATUS:
+            done = n
+        done = min(done, n)
+        impl = max(0, min(impl, n) - done)  # '30/40 closed, 40/40 have source code' -> done 30, implemented 10
+        out[sid] = {"n": n, "title": (r.get("title") or "").strip(), "done": done, "impl": impl}
     return out
+
+
+def placeholder_states(n: int, done: int, impl: int) -> list[str]:
+    return ["done"] * done + ["implemented"] * impl + ["todo"] * (n - done - impl)
+
+
+def placeholder_task(sid: str, k: int, n: int, state: str, tail: str = "task list not expanded") -> dict:
+    title = {"done": f"Accepted in the roadmap ({tail}): placement {k} of {n}",
+             "implemented": f"Code ready in the roadmap ({tail}; acceptance pending): placement {k} of {n}"}.get(
+        state, f"Planned placement {k} of {n} (task list not expanded in PROJECT_PLAN.md)")
+    return {"id": f"{sid}-PLACEHOLDER-{k}", "title": title, "criteria": [], "run": "", "risk": "local", "journey": False, "state": state,
+            "commits": [], "verify": None, "review": None, "routing": None, "tokens": None}
 
 
 def _placeholder_sprints(announced: dict[str, dict], have: set[str]) -> list[dict]:
@@ -90,11 +118,10 @@ def _placeholder_sprints(announced: dict[str, dict], have: set[str]) -> list[dic
         if sid in have or a["n"] <= 0:
             continue
         n = a["n"]
-        tasks = [{"id": f"{sid}-PLACEHOLDER-{k}", "title": f"Planned placement {k} of {n} (task list not expanded in PROJECT_PLAN.md)",
-                  "criteria": [], "run": "", "risk": "local", "journey": False, "state": "todo", "commits": [],
-                  "verify": None, "review": None, "routing": None, "tokens": None} for k in range(1, n + 1)]
-        out.append({"id": sid, "title": a["title"], "branch": "", "state": "planned", "opened": None,
-                    "closed": None, "tasks": tasks, "expanded": False})
+        tasks = [placeholder_task(sid, k, n, st) for k, st in enumerate(placeholder_states(n, a.get("done", 0), a.get("impl", 0)), 1)]
+        out.append({"id": sid, "title": a["title"], "branch": "", "state": "closed" if all(t["state"] == "done" for t in tasks) else "planned", "opened": None,
+                    "closed": None, "tasks": tasks, "expanded": False,
+                    "roadmap": {"n": n, "done": a.get("done", 0), "impl": a.get("impl", 0)}})
         have.add(sid)
     return out
 
