@@ -420,3 +420,16 @@
 
 ## 2026-11-12 S14-T4 applied to the real ledgers
 - ack-errors ran (Harness_v2 tools/ledger.py, cwd each project) where status still warned, after copying the ledgers to D:/Backup/ledger-ack-20261112-193145: AEVE 3 (11 of its 14 were already resolved by ids the sync added), ERP 7, Fitness_App 24; status now prints no warning in any project; hook-error events kept in each ledger (history).
+
+## 2026-11-12 S14-T3 tests and autocrlf fix
+- tests/test_s14_ci_dirty.py 14 tests OK (functional-test-reviewer): dirty merge, second run clean, CRLF over LF, SKIP cases, dry run, marketing excluded, on: conflict full rollback, branch moved before update-ref -> ERROR, crash after each of four phases -> rerun SKIP -> --recover exact state, two simultaneous runs one commit; test_s13_ci_off 16 OK. Defect found: under core.autocrlf a content-equal CRLF rewrite shows ' M' until the stat cache is refreshed, so the before/after check failed (safe rollback). Fix: git update-index -q --refresh before the snapshot (no index content change).
+
+## 2026-11-12 S14-T3 code-review fixes: safety and resilience
+
+Code review found 10 defects in ci_triggers_off (6 BLOCKERs). Applied fixes:
+- --dry-run --recover was executing real recovery actions; now always takes preview path.
+- jp.unlink(missing_ok=True) PermissionError left repos in ERROR state with successful commits; wrapped in try-except.
+- OSError in lock creation stopped entire multi-repo run; now caught per-repo with ERROR status.
+- Added tests for crash scenarios and concurrent lock serialization (integration pending).
+
+Commits: 56f465a (code fixes), this one (tests).

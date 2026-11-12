@@ -290,3 +290,4 @@
 - Kind: SHORTCOMING. Facts: my T4 change filtered ledger events but the report also merges hook-error.log, so resolved errors would have come back; the planner found it before tests. Rule: when a status is shown from two sources, change both in the same commit.
 - Kind: SUCCESS. Facts: the risky-task questions (two runs, retry, crash half-way) were answered with a lock, a journal and fault injection, each proved by a run. Rule: a tool that moves someone else's branch ships with --recover and a crash test per phase.
 - Kind: SUCCESS. Facts: the T1 test compares both destructive gates on every input, so they cannot drift apart again. Rule: two gates that must agree are tested against each other.
+- Kind: SHORTCOMING. Facts: a before/after git status comparison failed on a stat-dirty file that only line endings separated from the index. Rule: refresh the index stat cache before snapshotting git status for comparison.

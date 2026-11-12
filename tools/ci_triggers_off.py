@@ -395,6 +395,9 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
         return f"SKIP {why}"
     branch = git(repo, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
     old = git(repo, "rev-parse", "HEAD").stdout.strip()
+    # refresh stat info first: with core.autocrlf a file that differs only in line endings shows ' M' until the
+    # index stat cache is refreshed, which made the before/after comparison fail; this never changes index content
+    raw_git(repo, "update-index", "-q", "--refresh")
     snap_status, snap_stage = status_map(repo), stage_map(repo)
     ita = [p for p, c in snap_status.items() if c == " A"]
     scratch.mkdir(parents=True, exist_ok=True)
