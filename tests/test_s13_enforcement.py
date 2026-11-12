@@ -135,10 +135,13 @@ def make_gate_repo(name, approval, tasks):
             t["blocked"] = {"class": "OPERATOR", "cause": "needs operator"}
         ts.append(t)
     ap = None
+    # S14-T6: a real approval carries the PM Bridge request id; "typed" is the same approval without it (never accepted)
     if approval == "head":
-        ap = {"head": cur, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test"}
+        ap = {"head": cur, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test", "request_id": "11111111-2222-4333-8444-555555555555", "reply_id": "r1"}
     elif approval == "stale":
-        ap = {"head": first, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test"}
+        ap = {"head": first, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test", "request_id": "11111111-2222-4333-8444-555555555555", "reply_id": "r1"}
+    elif approval == "typed":
+        ap = {"head": cur, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test"}
     led = {"version": 1, "project": name, "sprints": [{"id": "S1", "title": "s", "state": "open", "tasks": ts}],
            "approval": ap, "events": []}
     (repo / ".harness").mkdir()
@@ -175,6 +178,12 @@ def test_r2_denied_without_approval():
 
 def test_r2_denied_when_approval_bound_to_other_head():
     _expect(make_gate_repo("r2b", "stale", [("done", False)]), True, "HEAD")
+
+
+def test_r2_denied_when_approval_has_no_request_id():
+    _expect(make_gate_repo("r2t", "typed", [("done", False)]), True, "request id")
+    # twin: the same repo with the request id is allowed
+    _expect(make_gate_repo("r2t2", "head", [("done", False)]), False)
 
 
 def test_r2_denied_when_task_todo():
@@ -234,7 +243,7 @@ def push_with_workflow(name, workflow_text):
     (repo / ".harness").mkdir()
     (repo / ".harness" / "ledger.json").write_text(json.dumps(
         {"version": 1, "project": name, "sprints": [], "events": [],
-         "approval": {"head": h, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test"}}), encoding="utf-8")
+         "approval": {"head": h, "by": "GPT-PM", "at": "2026-11-12T00:00:00+00:00", "evidence": "test", "request_id": "11111111-2222-4333-8444-555555555555", "reply_id": "r1"}}), encoding="utf-8")
     assert hv2.git(repo, "config", "core.hooksPath", hooks.as_posix()).rc == 0
     r = hv2.git(repo, "push", "origin", "main", env={"HARNESS_PYTHON": PY})
     remote_has = hv2.git(bare, "rev-parse", "--verify", "-q", "refs/heads/main")

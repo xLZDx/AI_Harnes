@@ -354,6 +354,34 @@ def test_crlf_rewritten_content_equal_log_with_dirty_workflow_is_changed():
     assert_no_ci_off_refs(repo)
 
 
+def test_real_content_edit_in_a_file_the_tool_rewrites_is_never_lost():
+    # the tool rewrites the workflow and appends to the logs; a real (non-EOL) user edit in those files must survive
+    # byte-exact whether the run ends CHANGED (clean merge) or ERROR (conflict, rolled back)
+    for label, rel, edit in (("wf-near-on", WF, lambda b: b.replace(b"branches: [main]", b"branches: [mine]")),
+                             ("wf-far", WF, lambda b: b.replace(b"      - run: echo tail\n", b"      - run: echo MINE\n")),
+                             ("log-append", LL, lambda b: b + b"MY OWN LINE\n"),
+                             ("log-prepend", LL, lambda b: b"MY OWN LINE\n" + b)):
+        root = mk_root()
+        scratch = hv2.fresh("scratch")
+        repo = mk_project(root, "p_edit_" + label.replace("-", "_"), {WF: WF_LONG})
+        original = rd(repo / rel)
+        mine = edit(original)
+        assert mine != original, label
+        _w(repo / rel, mine)
+        res = run_tool(root, scratch, "--dirty-ok")
+        assert ("CHANGED" in res.out) != ("ERROR" in res.out), (label, res.all)  # exactly one of the two outcomes
+        work = rd(repo / rel)
+        marker = {b"branches: [mine]": b"branches: [mine]", b"echo MINE": b"echo MINE", b"MY OWN LINE": b"MY OWN LINE"}
+        key = [m for m in marker if m in mine][0]
+        assert key in work, (label, res.all, work[:300])
+        assert b"<<<<<<<" not in work and b">>>>>>>" not in work, (label, res.all)
+        if "ERROR" in res.out:
+            assert work == mine and res.rc == 1, (label, res.all)  # rolled back byte-exact
+            assert hv2.git(repo, "rev-parse", "HEAD").out.strip() == hv2.git(repo, "rev-parse", "refs/heads/main").out.strip()
+        no_leftovers(repo, scratch)
+        assert_no_ci_off_refs(repo)
+
+
 def test_lock_held_by_another_process_gives_skip_after_timeout():
     import subprocess
     root, scratch, repo = dirty_repo()
