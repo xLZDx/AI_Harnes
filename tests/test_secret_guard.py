@@ -222,13 +222,25 @@ rows.append({"kind": "rotation", "service": "gcp", "project": "p", "step": "veri
 save_records(st, rows)
 out = expect("c) created then verified still denies a default-credential delete (identity unresolved)", "deny", st, DEL_D)
 check("c) reason mentions credential-identity-unresolved", "credential-identity-unresolved" in reason(out), reason(out))
-DEL_NAMED = DEL_D + " --key-file=a.json"  # cred file:a.json = the rotation's old credential
+DEL_NAMED = DEL_D + " --key-file=a.json"  # authenticates with the rotation's old credential file; names NO target key
 post(st, GCP_READ + " --key-file=a.json", UNAUTH)
-expect("c) created then verified allows delete naming the old credential", "", st, DEL_NAMED)
+out = expect("c) authenticating with the old credential file does not identify the delete target (denied)", "deny", st, DEL_NAMED)
+check("c) reason mentions credential-identity-unresolved (auth file)", "credential-identity-unresolved" in reason(out), reason(out))
+DEL_ID_A = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p --key-file=a.json"
+out = expect("c) target key id not recorded in the rotation record: denied despite auth by the old file", "deny", st, DEL_ID_A)
+check("c) reason mentions credential-identity-unresolved (no old_key_id)", "credential-identity-unresolved" in reason(out), reason(out))
+rows = load_records(st)
+for r in rows:
+    if r.get("kind") == "rotation" and r.get("step") == "verified":
+        r["old_key_id"] = "keyid:ABC123"
+save_records(st, rows)
+expect("c) record carries old_key_id == target: delete allowed", "", st, DEL_ID_A)
+expect("c) same record, different target key id: denied", "deny", st, DEL_ID_A.replace("ABC123", "ZZZ999"))
+expect("c) same record, delete naming no key id (file auth only): denied", "deny", st, DEL_NAMED)
 st_other = new_state()
 post(st_other, GCP_READ + " --key-file=b.json", UNAUTH)
 save_records(st_other, load_records(st_other) + [r for r in load_records(st) if r.get("kind") == "rotation"])
-expect("c) delete naming a credential outside the rotation pair is denied", "deny", st_other, DEL_D + " --key-file=b.json")
+expect("c) delete of the recorded key but from another project's record set is not authorized by auth file b.json alone", "deny", st_other, DEL_D + " --key-file=b.json")
 
 # c2) full flow via PostToolUse on cloudflare with confirmed exposure. The leak is attributed to env:CF_API_TOKEN only when the live
 # variable in the hook's environment has the same fingerprint as the leaked value, so the hook subprocess gets CF_API_TOKEN=<leaked value>.
@@ -250,7 +262,8 @@ check("c2) read-only success with the SAME credential does not write verified", 
 expect("c2) same-credential success still denies delete", "deny", st, CF_DELETE, env=LEAK_ENV)
 post(st, CF_READ_NEW, OK_RESP, env=LEAK_ENV)
 check("c2) read-only success with a DIFFERENT explicit credential writes verified", any(r.get("step") == "verified" for r in load_records(st)), str(load_records(st)))
-expect("c2) after verification delete is allowed", "", st, CF_DELETE, env=LEAK_ENV)
+out = expect("c2) after verification a curl DELETE (target not resolvable from a URL) is still denied", "deny", st, CF_DELETE, env=LEAK_ENV)
+check("c2) reason mentions credential-identity-unresolved", "credential-identity-unresolved" in reason(out), reason(out))
 
 # c3) without the matching live variable the leak is recorded as value:<fp>, not as the credential, so it unlocks nothing
 st = new_state()

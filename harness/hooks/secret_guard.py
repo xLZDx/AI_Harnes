@@ -169,10 +169,11 @@ def change_problem(cmd: str, kind: str, data: dict) -> str:
                 f"{note}{extra}. First test the EXISTING key with a read-only call and fix the cause (project, scope, endpoint); "
                 "re-create a key only after it is proven invalid for this exact credential")
     if kind == "delete":
-        if sp.rotation_for_delete(rows, cred, svc, proj) is None:
+        if sp.rotation_for_delete(rows, sp.target_id_of(cmd), svc, proj) is None:
             return ("deleting or revoking the old credential needs a verified replacement of THIS rotation (same service and project): create the "
-                    "new one, switch the consumers, run a successful read-only call with the NEW one, then delete the old. A bare key id cannot be tied to the old "
-                    "credential (credential-identity-unresolved): authenticate that delete with the old credential's own env/file name")
+                    "new one, switch the consumers, run a successful read-only call with the NEW one, then delete the old. The key this command removes "
+                    "is not proven to be the OLD credential of that rotation (credential-identity-unresolved; how a command authenticates says nothing "
+                    "about its target): the operator names this deletion, or the rotation record carries the old key id")
     return ""
 
 
@@ -257,7 +258,7 @@ def on_post(data: dict, failure: bool = False) -> None:
                 _add(d, {"kind": "rotation", "credential_id": cred, "old_credential_id": cred, "service": svc, "project": proj,
                          "step": "created", "rotation_id": f"{svc}:{int(time.time() * 1000)}"})
             elif kind == "delete":
-                rot = sp.rotation_for_delete(rows, cred, svc, proj)
+                rot = sp.rotation_for_delete(rows, sp.target_id_of(cmd), svc, proj)
                 if rot:
                     _add(d, {"kind": "rotation", "service": svc, "project": proj, "step": "old_revoked", "rotation_id": rot.get("rotation_id")})
             elif not kind and not cred.startswith("default:"):

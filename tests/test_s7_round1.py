@@ -88,6 +88,9 @@ def invalid(cred, service, project=""):
     return {"kind": "auth", "credential_id": cred, "service": service, "project": project, "operation": "call", "class": "credential-invalid"}
 
 
+GDEL = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p --key-file=a.json"
+
+
 def rot(step, rid, old, new, service="cloudflare", project="", age=0.0):
     r = {"kind": "rotation", "step": step, "rotation_id": rid, "old_credential_id": old, "credential_id": new, "service": service,
          "project": project, "at": time.time() - age}
@@ -156,68 +159,85 @@ def test_f1_false_positives_are_not_confirmed():
     assert [r["state"] for r in recs(sb) if r.get("kind") == "exposure"] == ["confirmed"]
 
 
-# ================================================================ F2: rotation_for_delete (pure function)
-def test_f2_delete_matches_old_or_verified_credential_of_the_transaction():
-    rows = [rot("verified", "R1", "env:A", "env:A2")]
-    assert sp.rotation_for_delete(rows, "env:A", "cloudflare", "")["rotation_id"] == "R1"
-    assert sp.rotation_for_delete(rows, "env:A2", "cloudflare", "")["rotation_id"] == "R1"
-    assert sp.rotation_for_delete(rows, "env:OTHER", "cloudflare", "") is None  # a named credential outside the pair
-    assert sp.rotation_for_delete(rows, "", "cloudflare", "") is None
+# ================================================================ F2: target_id_of and rotation_for_delete (pure functions)
+def rotk(step, rid, old_key=None, service="gcp", project="p", age=0.0):
+    """A rotation record; old_key is the recorded id of the key the rotation replaces (absent by default, as the hook writes it)."""
+    r = rot(step, rid, "env:A", "env:A2", service, project, age)
+    if old_key:
+        r["old_key_id"] = old_key
+    return r
 
 
-def test_f2_unresolved_id_is_never_accepted_even_with_exactly_one_open_rotation():
-    one = [rot("verified", "R1", "env:A", "env:A2", "gcp", "p")]
-    for cred in ("keyid:ABC123", "default:gcp", ""):
-        assert sp.rotation_for_delete(one, cred, "gcp", "p") is None, cred
-    two = one + [rot("verified", "R2", "env:B", "env:B2", "gcp", "p")]
-    for cred in ("keyid:ABC123", "default:gcp"):
-        assert sp.rotation_for_delete(two, cred, "gcp", "p") is None, cred
-    # named credentials still resolve with one or two open rotations
-    assert sp.rotation_for_delete(one, "env:A", "gcp", "p")["rotation_id"] == "R1"
-    assert sp.rotation_for_delete(two, "env:B", "gcp", "p")["rotation_id"] == "R2"
-    assert sp.rotation_for_delete(two, "env:A", "gcp", "p")["rotation_id"] == "R1"
-    # once one is revoked the other is still not reachable through an unresolved id
-    three = two + [{"kind": "rotation", "step": "old_revoked", "rotation_id": "R1", "service": "gcp", "project": "p", "at": time.time()}]
-    assert sp.rotation_for_delete(three, "keyid:ABC123", "gcp", "p") is None
-    assert sp.rotation_for_delete(three, "env:B", "gcp", "p")["rotation_id"] == "R2"
-    assert sp.rotation_for_delete(three, "env:A", "gcp", "p") is None
+def test_f2_target_id_of_resolves_the_removed_key_from_gcloud_and_aws_forms():
+    t = sp.target_id_of
+    assert t("gcloud iam service-accounts keys delete ABC123456 --iam-account x --project p") == "keyid:ABC123"
+    assert t("gcloud iam service-accounts keys disable abc123def0 --iam-account x") == "keyid:abc123"
+    assert t("aws iam delete-access-key --access-key-id " + AWS + " --user-name u") == "keyid:" + AWS[:6]
+    assert t("aws iam delete-access-key --user-name u --access-key-id=" + AWS) == "keyid:" + AWS[:6]
 
 
-def test_f2_other_project_other_service_created_only_and_stale_rotations_do_not_authorize():
-    ver = rot("verified", "R1", "env:A", "env:A2", "gcp", "p")
-    assert sp.rotation_for_delete([ver], "env:A", "gcp", "p") is not None  # control
+def test_f2_target_id_of_unresolved_when_the_command_names_no_key():
+    t = sp.target_id_of
+    assert t("") == "" and t(None) == ""
+    assert t(cf_delete("CF_A_TOKEN")) == ""  # curl DELETE with only a collection url and auth
+    assert t("curl -X DELETE https://api.example.org/v1/tokens/x") == ""
+    assert t("gcloud iam service-accounts keys disable --iam-account x --project p") == ""
+    assert t("terraform destroy -auto-approve") == ""
+    assert t("gcloud projects describe p --project p") == ""
+
+
+def test_f2_auth_flags_never_change_the_target():
+    t = sp.target_id_of
+    base = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p"
+    assert t(base) == t(base + " --key-file=a.json") == t(base + " --key-file=/tmp/zzzzzzzz.json") == "keyid:ABC123"
+    assert t(base + " --key-file=" + "b.json") == "keyid:ABC123"
+    assert t("TOKEN=$CF_A_TOKEN " + base) == "keyid:ABC123"
+    # auth alone is never a target
+    assert t("gcloud iam service-accounts keys disable --iam-account x --key-file=a.json") == ""
+    assert t("curl -X DELETE -H \"Authorization: Bearer $CF_A_TOKEN\" https://api.cloudflare.com/client/v4/user/tokens") == ""
+    assert t("aws iam delete-access-key --user-name u") == ""
+
+
+def test_f2_rotation_for_delete_matches_only_the_recorded_old_key_id():
+    rows = [rotk("verified", "R1", "keyid:ABC123")]
+    assert sp.rotation_for_delete(rows, "keyid:ABC123", "gcp", "p")["rotation_id"] == "R1"
+    assert sp.rotation_for_delete(rows, "keyid:ZZZ999", "gcp", "p") is None
+    assert sp.rotation_for_delete(rows, "", "gcp", "p") is None
+    # the authentication ids of the pair never match (they are not the target)
+    for cred in ("env:A", "env:A2", "file:a.json", "default:gcp"):
+        assert sp.rotation_for_delete(rows, cred, "gcp", "p") is None, cred
+
+
+def test_f2_record_without_old_key_id_authorizes_nothing_even_when_it_is_the_only_open_rotation():
+    one = [rotk("verified", "R1")]
+    for target in ("keyid:ABC123", "env:A", "default:gcp", ""):
+        assert sp.rotation_for_delete(one, target, "gcp", "p") is None, target
+    two = one + [rotk("verified", "R2")]
+    assert sp.rotation_for_delete(two, "keyid:ABC123", "gcp", "p") is None
+
+
+def test_f2_parallel_rotations_are_told_apart_by_their_key_ids():
+    ra, rb = rotk("verified", "RA", "keyid:AAA111"), rotk("verified", "RB", "keyid:BBB222")
+    assert sp.rotation_for_delete([ra, rb], "keyid:AAA111", "gcp", "p")["rotation_id"] == "RA"
+    assert sp.rotation_for_delete([ra, rb], "keyid:BBB222", "gcp", "p")["rotation_id"] == "RB"
+    assert sp.rotation_for_delete([ra], "keyid:BBB222", "gcp", "p") is None
+    assert sp.rotation_for_delete([rb], "keyid:AAA111", "gcp", "p") is None
+    # only created (not verified) B is not unlocked by verified A
+    assert sp.rotation_for_delete([ra, rotk("created", "RB", "keyid:BBB222")], "keyid:BBB222", "gcp", "p") is None
+
+
+def test_f2_scope_staleness_and_revocation_still_apply_to_a_matching_key_id():
+    ver = rotk("verified", "R1", "keyid:ABC123")
+    assert sp.rotation_for_delete([ver], "keyid:ABC123", "gcp", "p") is not None  # control
     assert sp.rotation_for_delete([ver], "keyid:ABC123", "gcp", "q") is None
-    assert sp.rotation_for_delete([ver], "env:A", "gcp", "q") is None
     assert sp.rotation_for_delete([ver], "keyid:ABC123", "aws", "p") is None
-    assert sp.rotation_for_delete([ver], "env:A", "aws", "p") is None
-    assert sp.rotation_for_delete([rot("created", "R1", "env:A", "env:A", "gcp", "p")], "env:A", "gcp", "p") is None
-    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=25 * 3600)], "env:A", "gcp", "p") is None
-    assert sp.rotation_for_delete([rot("verified", "R1", "env:A", "env:A2", "gcp", "p", age=23 * 3600)], "env:A", "gcp", "p") is not None
-
-
-def test_f2_after_old_revoked_the_same_rotation_cannot_authorize_again():
-    ver = rot("verified", "R1", "env:A", "env:A2", "gcp", "p")
-    assert sp.rotation_for_delete([ver], "env:A", "gcp", "p") is not None
+    assert sp.rotation_for_delete([rotk("created", "R1", "keyid:ABC123")], "keyid:ABC123", "gcp", "p") is None
+    assert sp.rotation_for_delete([rotk("verified", "R1", "keyid:ABC123", age=25 * 3600)], "keyid:ABC123", "gcp", "p") is None
+    assert sp.rotation_for_delete([rotk("verified", "R1", "keyid:ABC123", age=23 * 3600)], "keyid:ABC123", "gcp", "p") is not None
     revoked = {"kind": "rotation", "step": "old_revoked", "rotation_id": "R1", "service": "gcp", "project": "p", "at": time.time()}
-    for cred in ("env:A", "env:A2", "keyid:ABC123"):
-        assert sp.rotation_for_delete([ver, revoked], cred, "gcp", "p") is None, cred
-    # a revocation of ANOTHER rotation does not close this one
+    assert sp.rotation_for_delete([ver, revoked], "keyid:ABC123", "gcp", "p") is None
     other = {**revoked, "rotation_id": "R9"}
-    assert sp.rotation_for_delete([ver, other], "env:A", "gcp", "p") is not None
-
-
-def test_f2_parallel_rotations_of_one_service_do_not_unlock_each_other():
-    ra, rb = rot("verified", "RA", "env:A", "env:A2"), rot("verified", "RB", "env:B", "env:B2")
-    assert sp.rotation_for_delete([ra, rb], "env:A", "cloudflare", "")["rotation_id"] == "RA"
-    assert sp.rotation_for_delete([ra, rb], "env:B", "cloudflare", "")["rotation_id"] == "RB"
-    assert sp.rotation_for_delete([ra, rb], "env:A2", "cloudflare", "")["rotation_id"] == "RA"
-    assert sp.rotation_for_delete([ra, rb], "env:B2", "cloudflare", "")["rotation_id"] == "RB"
-    # only A is verified: B is not unlocked, and vice versa
-    assert sp.rotation_for_delete([ra], "env:B", "cloudflare", "") is None
-    assert sp.rotation_for_delete([ra], "env:B2", "cloudflare", "") is None
-    assert sp.rotation_for_delete([rb], "env:A", "cloudflare", "") is None
-    # B has only been created, A verified: deleting B is not unlocked by A's verification
-    assert sp.rotation_for_delete([ra, rot("created", "RB", "env:B", "env:B", "cloudflare", "")], "env:B", "cloudflare", "") is None
+    assert sp.rotation_for_delete([ver, other], "keyid:ABC123", "gcp", "p") is not None
 
 
 # ================================================================ F2: rotation transaction through the hook
@@ -243,15 +263,26 @@ def test_f2_post_hook_writes_created_verified_and_old_revoked_with_ids():
     post(sb, cf_create("CF_B_TOKEN"), OK)
     post(sb, cf_read("CF_B2_TOKEN"), "Exit code: 1\nERROR: 401 Unauthorized")
     assert [r["step"] for r in recs(sb) if r.get("kind") == "rotation"] == ["created", "verified", "created"]
-    # successful delete of the old credential closes THIS rotation only
+    # a successful curl DELETE names no key id: the target is unresolved, so nothing is revoked in the record
     post(sb, cf_delete("CF_A_TOKEN"), OK)
-    rev = [r for r in recs(sb) if r.get("step") == "old_revoked"]
-    assert len(rev) == 1 and rev[0]["rotation_id"] == c["rotation_id"], rev
-    # a failed delete records nothing
+    assert [r for r in recs(sb) if r.get("step") == "old_revoked"] == []
+    # a rotation record the hook writes carries no old_key_id by itself
+    assert all(not r.get("old_key_id") for r in recs(sb) if r.get("kind") == "rotation")
+    # a failed delete of the recorded key records nothing
     sb2 = fb.sandbox("r1f2_faildel")
-    seed(sb2, [rot("verified", "R1", "env:CF_A_TOKEN", "env:CF_A2_TOKEN")])
-    post(sb2, cf_delete("CF_A_TOKEN"), "Exit code: 1\nERROR: boom")
+    seed(sb2, [rotk("verified", "R1", "keyid:ABC123")])
+    post(sb2, GDEL, "Exit code: 1\nERROR: boom")
     assert [r for r in recs(sb2) if r.get("step") == "old_revoked"] == []
+    # a successful delete of the RECORDED key closes that rotation only
+    sb3 = fb.sandbox("r1f2_okdel")
+    seed(sb3, [rotk("verified", "R1", "keyid:ABC123"), rotk("verified", "R2", "keyid:BBB222")])
+    post(sb3, GDEL, OK)
+    assert [r["rotation_id"] for r in recs(sb3) if r.get("step") == "old_revoked"] == ["R1"]
+    # a successful delete of an UNRECORDED key id closes nothing
+    sb4 = fb.sandbox("r1f2_unrec")
+    seed(sb4, [rotk("verified", "R1", "keyid:ABC123")])
+    post(sb4, GDEL.replace("ABC123", "QQQ777"), OK)
+    assert [r for r in recs(sb4) if r.get("step") == "old_revoked"] == []
 
 
 def test_f2_verification_in_another_project_does_not_verify():
@@ -268,78 +299,96 @@ def test_f2_verification_in_another_project_does_not_verify():
 def test_f2_delete_gate_through_the_hook_unresolved_id_and_scope():
     del_key = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p"
     ev = lambda svc="gcp", proj="p": invalid("keyid:ABC123", svc, proj)  # noqa: E731
-    # one open rotation of A, delete of a bare key id (maybe a different key B): denied, identity unresolved
+    # a verified rotation WITHOUT old_key_id (one, then two): the delete target is unresolved => denied
     sb = fb.sandbox("r1f2_one")
     seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), ev()])
     assert pre(sb, del_key) == "deny"
-    # two open rotations of the same service and project: the unresolved key id is denied
     sb = fb.sandbox("r1f2_two")
     seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), rot("verified", "R2", "env:B", "env:B2", "gcp", "p"), ev()])
     assert pre(sb, del_key) == "deny"
-    # verified rotation of another project
-    sb = fb.sandbox("r1f2_proj_other")
-    seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "q"), ev()])
-    assert pre(sb, del_key) == "deny"
-    # verified rotation of another service
-    sb = fb.sandbox("r1f2_svc_other")
-    seed(sb, [rot("verified", "R1", "env:A", "env:A2", "aws", "p"), ev()])
-    assert pre(sb, del_key) == "deny"
-    # revoked rotation cannot authorize a second delete
-    sb = fb.sandbox("r1f2_revoked")
-    seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"),
-              {"kind": "rotation", "step": "old_revoked", "rotation_id": "R1", "service": "gcp", "project": "p"}, ev()])
-    assert pre(sb, del_key) == "deny"
-    # only created, never verified
-    sb = fb.sandbox("r1f2_created")
-    seed(sb, [rot("created", "R1", "env:A", "env:A", "gcp", "p"), ev()])
-    assert pre(sb, del_key) == "deny"
+    # records carrying the matching old_key_id but out of scope
+    revoked = {"kind": "rotation", "step": "old_revoked", "rotation_id": "R1", "service": "gcp", "project": "p"}
+    for label, recs_ in [("project", [rotk("verified", "R1", "keyid:ABC123", project="q")]),
+                         ("service", [rotk("verified", "R1", "keyid:ABC123", service="aws")]),
+                         ("created", [rotk("created", "R1", "keyid:ABC123")]),
+                         ("revoked", [rotk("verified", "R1", "keyid:ABC123"), revoked])]:
+        sb = fb.sandbox("r1f2_scope_" + label)
+        seed(sb, recs_ + [ev()])
+        assert pre(sb, del_key) == "deny", label
+    # control: the matching record in scope allows the same command
+    sb = fb.sandbox("r1f2_control")
+    seed(sb, [rotk("verified", "R1", "keyid:ABC123"), ev()])
+    assert pre(sb, del_key) == ""
 
 
-def test_f2_one_open_rotation_of_a_keyid_delete_of_other_key_is_denied_with_identity_reason():
-    del_key = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p"
-    sb = fb.sandbox("r1f2_keyid_reason")
-    seed(sb, [rot("verified", "R1", "env:A", "env:A2", "gcp", "p"), invalid("keyid:ABC123", "gcp", "p")])
-    dec, reason = pre_reason(sb, del_key)
+def test_f2_gpt_pm_case_deleting_with_the_old_key_file_is_denied_when_the_target_is_not_proven():
+    cmd = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p --key-file=a.json"
+    sb = fb.sandbox("r1f2_gptpm")
+    seed(sb, [rot("verified", "R1", "file:a.json", "file:a2.json", "gcp", "p"), invalid("file:a.json", "gcp", "p")])
+    dec, reason = pre_reason(sb, cmd)
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+    assert "authenticat" in reason, reason
+
+
+def test_f2_record_with_old_key_id_allows_the_delete_then_old_revoked_blocks_a_second_one():
+    cmd = "gcloud iam service-accounts keys delete ABC123 --iam-account x --project p --key-file=a.json"
+    sb = fb.sandbox("r1f2_keyid_ok")
+    seed(sb, [rotk("verified", "R1", "keyid:ABC123"), invalid("file:a.json", "gcp", "p")])
+    assert pre_reason(sb, cmd)[0] == ""
+    post(sb, cmd, OK)
+    assert [r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked"] == ["R1"]
+    seed(sb, [invalid("file:a.json", "gcp", "p")])  # fresh proof of the auth again, so only the rotation can decide
+    dec, reason = pre_reason(sb, cmd)
     assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
 
 
-def test_f2_one_open_rotation_delete_by_the_old_credentials_env_name_is_allowed():
-    sb = fb.sandbox("r1f2_envname_ok")
+def test_f2_different_key_id_with_the_same_record_is_denied():
+    sb = fb.sandbox("r1f2_other_key")
+    seed(sb, [rotk("verified", "R1", "keyid:ABC123"), invalid("file:a.json", "gcp", "p")])
+    other = "gcloud iam service-accounts keys delete XYZ789 --iam-account x --project p --key-file=a.json"
+    dec, reason = pre_reason(sb, other)
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+    # the 6-char id is compared whole: a one-character difference is another key
+    assert pre_reason(sb, other.replace("XYZ789", "ABC124"))[0] == "deny"
+    assert pre_reason(sb, other.replace("XYZ789", "ABC123"))[0] == ""  # control: the recorded id passes
+
+
+def test_f2_deletes_naming_nothing_resolvable_are_denied_even_with_a_recorded_key_id():
+    sb = fb.sandbox("r1f2_nameless")
+    seed(sb, [rotk("verified", "R1", "keyid:ABC123"), invalid("file:a.json", "gcp", "p")])
+    nameless_gcloud = "gcloud iam service-accounts keys disable --iam-account x --project p --key-file=a.json"
+    dec, reason = pre_reason(sb, nameless_gcloud)
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+    sb = fb.sandbox("r1f2_nameless_curl")
     seed(sb, [rot("verified", "R1", "env:CF_A_TOKEN", "env:CF_A2_TOKEN"), invalid("env:CF_A_TOKEN", "cloudflare")])
-    assert pre_reason(sb, cf_delete("CF_A_TOKEN"))[0] == ""
-    # control: a different env name than the pair is still denied
-    seed(sb, [invalid("env:CF_C_TOKEN", "cloudflare")])
-    assert pre_reason(sb, cf_delete("CF_C_TOKEN"))[0] == "deny"
+    dec, reason = pre_reason(sb, cf_delete("CF_A_TOKEN"))
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+    # terraform destroy is a state change: denied unless the operator names it
+    sb = fb.sandbox("r1f2_tf")
+    assert pre_reason(sb, "terraform destroy -auto-approve")[0] == "deny"
 
 
-def test_f2_two_parallel_rotations_end_to_end_delete_by_env_name():
+def test_f2_two_parallel_rotations_end_to_end_delete_by_key_id():
     sb = fb.sandbox("r1f2_par")
-    post(sb, cf_create("CF_A_TOKEN"), OK)
-    post(sb, cf_read("CF_A2_TOKEN"), OK)
-    post(sb, cf_create("CF_B_TOKEN"), OK)
-    # delete of B is not unlocked while only A is verified (B created, not verified)
-    seed(sb, [invalid("env:CF_A_TOKEN", "cloudflare"), invalid("env:CF_B_TOKEN", "cloudflare")])
-    assert pre(sb, cf_delete("CF_B_TOKEN")) == "deny"
-    assert pre(sb, cf_delete("CF_A_TOKEN")) == ""
-    post(sb, cf_read("CF_B2_TOKEN"), OK)
-    steps = [(r["step"], r["old_credential_id"], r.get("credential_id")) for r in recs(sb) if r.get("kind") == "rotation"]
-    assert ("verified", "env:CF_A_TOKEN", "env:CF_A2_TOKEN") in steps and ("verified", "env:CF_B_TOKEN", "env:CF_B2_TOKEN") in steps, steps
-    ids = {r["old_credential_id"]: r["rotation_id"] for r in recs(sb) if r.get("step") == "verified"}
-    assert len(set(ids.values())) == 2, ids
-    # both verified: each named delete is allowed (the verifications did not cross over)
-    seed(sb, [invalid("env:CF_A_TOKEN", "cloudflare"), invalid("env:CF_B_TOKEN", "cloudflare")])
-    assert pre(sb, cf_delete("CF_A_TOKEN")) == "" and pre(sb, cf_delete("CF_B_TOKEN")) == ""
-    # delete A succeeds: it revokes A's transaction, B stays open
-    post(sb, cf_delete("CF_A_TOKEN"), OK)
-    rev = [r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked"]
-    assert rev == [ids["env:CF_A_TOKEN"]], (rev, ids)
-    seed(sb, [invalid("env:CF_A_TOKEN", "cloudflare"), invalid("env:CF_B_TOKEN", "cloudflare")])
-    assert pre(sb, cf_delete("CF_A_TOKEN")) == "deny", "A's revoked transaction must not authorize a second delete"
-    assert pre(sb, cf_delete("CF_B_TOKEN")) == ""
-    post(sb, cf_delete("CF_B_TOKEN"), OK)
-    assert sorted(r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked") == sorted(ids.values())
-    seed(sb, [invalid("env:CF_B_TOKEN", "cloudflare")])
-    assert pre(sb, cf_delete("CF_B_TOKEN")) == "deny"
+    ca = "gcloud iam service-accounts keys delete AAA111 --iam-account x --project p --key-file=a.json"
+    cb = "gcloud iam service-accounts keys delete BBB222 --iam-account x --project p --key-file=b.json"
+    ev = lambda: seed(sb, [invalid("file:a.json", "gcp", "p"), invalid("file:b.json", "gcp", "p")])  # noqa: E731
+    seed(sb, [rotk("verified", "RA", "keyid:AAA111"), rotk("created", "RB", "keyid:BBB222")])
+    ev()
+    assert pre(sb, cb) == "deny", "B is only created, A's verification does not unlock it"
+    assert pre(sb, ca) == ""
+    seed(sb, [rotk("verified", "RB", "keyid:BBB222")])
+    ev()
+    assert pre(sb, ca) == "" and pre(sb, cb) == ""
+    post(sb, ca, OK)
+    assert [r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked"] == ["RA"]
+    ev()
+    assert pre(sb, ca) == "deny", "A's revoked transaction must not authorize a second delete"
+    assert pre(sb, cb) == ""
+    post(sb, cb, OK)
+    assert sorted(r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked") == ["RA", "RB"]
+    ev()
+    assert pre(sb, cb) == "deny"
 
 
 # ================================================================ F3: plan_first_gate first-change boundary

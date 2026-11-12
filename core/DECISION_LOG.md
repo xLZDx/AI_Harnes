@@ -192,3 +192,6 @@
 
 ## 2026-11-12 S7 GPT-PM round 2 fixes
 - Round 2 (request 6b4a39bc) accepted F1, F3, F5 and kept F2 (BLOCKER) and F4 (MAJOR). F2: a bare key id or default credential never authorizes a delete (credential-identity-unresolved); only the old or verified credential's own env/file name does. F4: with own task ids a session is held only by its own tasks, whatever their state; unknown ownership keeps tasks and logs ownership-unknown. Limit: finishing the next todo task is now driven by the keep-going gate and the closing line, not by the ledger Stop gate.
+
+## 2026-11-12 S7 GPT-PM round 3 fix
+- Round 3 (request d1ec7891) closed F4 and kept F2: authentication and target are different things. target_id_of(cmd) names the key a delete removes (never --key-file or a token variable); rotation_for_delete matches it only against an `old_key_id` recorded on the open verified rotation, so by default the old key is not deleted by the agent until the operator names it or the record carries the id. Limit: the target id is the first 6 characters of the key id.
