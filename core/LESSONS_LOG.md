@@ -170,3 +170,5 @@
 - Kind: SUCCESS. Facts: the test agent drove 3 real defects out of the gate (English money words, a file listing counted as a failed try, a call without result counted as proof) by running the incident asks. Rule: test a gate with the incident text itself.
 
 - Kind: SHORTCOMING. Facts: I first accepted an ExitPlanMode plan without looking at its result, so a plan the operator rejected counted as presented; the test agent caught it. Rule: every proof of presentation reads the tool result, not only the call.
+
+- Kind: SUCCESS. Facts: the first render of the AEVE plan matched the plan counts exactly (14 accepted rows of 34 tasks). Rule: compare an adapter output with an independent count before wiring it in.

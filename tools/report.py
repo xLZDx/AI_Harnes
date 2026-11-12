@@ -249,7 +249,7 @@ def gather(d: dict, g: Git) -> dict:
         remote = "синхронно с upstream"
     else:
         remote = f"впереди на {snap['ahead']}, позади на {snap['behind']}"
-    return {"snap": snap, "total": total, "done": len(done), "shipped": len(shipped) if checked else None,
+    return {"source": d.get("source") or "", "snap": snap, "total": total, "done": len(done), "shipped": len(shipped) if checked else None,
             "checked": checked, "gpt": gpt, "remote": remote, "groups": group_counts([t for _, t in pairs])}
 
 
@@ -302,7 +302,7 @@ def sec_program(f: dict) -> str:
             f'<div class="program-total"><b>{fmt_pct(p)}</b><span>принято {n} из {m} задач</span></div>'
             + seg_bar([("accepted", n, f"принято: {n}"), ("remaining", m - n, f"осталось: {m - n}")], m, "bar overall-progress")
             + f'<p class="progress-caption"><code>{n} ÷ {m} × 100 = {fmt_pct(p)}</code> · знаменатель {m} — число задач в реестре '
-            '(.harness/ledger.json, все спринты).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
+            + f'({E(f.get("source") or ".harness/ledger.json")}, все спринты; SUPERSEDED не считаются).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
             '<p class="gate-chart-note">Один цвет означает одно состояние во всех графиках страницы.</p>'
             '<div class="gate-chart-list">' + "".join(rows) + "</div></section>")
 
@@ -600,7 +600,11 @@ def run(a) -> int:
             return 0
     ledger_error = ""
     try:
+        plan_file = root / "PROJECT_PLAN.md"
         d = ledger.load()
+        if plan_file.is_file() and not d.get("sprints"):  # plan-based project (no real ledger): same format, source is the plan
+            import plan_ledger
+            d = plan_ledger.load(plan_file)
     except (OSError, ValueError) as e:
         ledger_error = str(e)
         d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}

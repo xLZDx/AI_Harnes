@@ -96,13 +96,17 @@ def _post_commit_flow(env, name):
     assert _itool(r, "ledger.py", "sprint-add", "--id", "S1", "--title", "One").rc == 0
     assert _itool(r, "ledger.py", "task-add", "--title", "first").rc == 0
     assert not (r / ".harness" / "report.html").exists()
+    assert not (r / "reports").exists()
     sha = h.commit(r, "src/a.py", "x = 1\n", "Implement first", "Task: S1-T1", env=env)
     t = h.task(r, "S1-T1")
-    assert t["state"] == "implemented" and t["commits"] == [sha], t
-    rep = r / ".harness" / "report.html"
-    assert rep.exists(), "post-commit hook did not write the report"
-    html = rep.read_text(encoding="utf-8")
-    assert "S1-T1" in html and sha[:7] in html and "код готов, ждёт тестов" in html
+    assert t["state"] == "implemented" and t["commits"] == [sha], t  # post-commit only records the commit on the ledger
+    reps = sorted((r / "reports").glob("*_PROGRAM_STATUS_LIVE.ru.html"))
+    assert len(reps) == 1, "pre-commit hook did not write the report"
+    assert not (r / ".harness" / "report.html").exists(), "old report location must not be used"
+    html = reps[0].read_text(encoding="utf-8")
+    assert "<!-- harness-report v1 -->" in html[:400] and "S1-T1" in html
+    rel = reps[0].relative_to(r).as_posix()
+    assert rel in h.git(r, "show", "--name-only", "--format=", sha).out.split(), "report must be staged into the commit itself"
     h.commit(r, "src/b.py", "y = 1\n", "No task here", env=env)  # a commit without a Task line keeps working
     assert h.task(r, "S1-T1")["commits"] == [sha]
     assert not (r / ".harness" / "hook-error.log").exists()
@@ -123,7 +127,9 @@ def test_post_commit_hook_unknown_task_is_visible_not_silent():
     assert res.rc == 0, res.all
     assert "HARNESS HOOK ERROR" in res.err, res.all
     assert "S5-T5" in (r / ".harness" / "hook-error.log").read_text(encoding="utf-8")
-    assert "Ошибки хуков" in (r / ".harness" / "report.html").read_text(encoding="utf-8")
+    assert _itool(r, "report.py").rc == 0  # post-commit does not render; the next report run shows the error
+    reps = sorted((r / "reports").glob("*_PROGRAM_STATUS_LIVE.ru.html"))
+    assert len(reps) == 1 and "Ошибки хуков" in reps[0].read_text(encoding="utf-8")
 
 
 def test_post_commit_hook_failure_is_logged_and_does_not_fail_the_commit():

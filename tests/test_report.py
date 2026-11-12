@@ -1,4 +1,4 @@
-"""Criterion 4: incremental HTML report."""
+"""Criterion 4: the program status report (one format, tools/report.py; contract details in test_report_format.py)."""
 import importlib.util
 import re
 import sys
@@ -9,86 +9,65 @@ h = importlib.util.module_from_spec(_s)
 sys.modules["hv2"] = h
 _s.loader.exec_module(h)
 
-IDS = ["progress", "kpis", "tasks", "next"]
+MARKER = "<!-- harness-report v1 -->"
 
 
-def _changed(res):
-    m = re.search(r"\(changed: (.*)\)", res.out)
-    assert m, res.all
-    return m.group(1)
+def _files(r):
+    return sorted((r / "reports").glob("*_PROGRAM_STATUS_LIVE.ru.html"))
 
 
-def _sections(html):
-    return re.findall(r'<section id="(\w+)" data-hash="\w+"([^>]*)>', html)
+def _html(r):
+    fs = _files(r)
+    assert len(fs) == 1, fs
+    return fs[0].read_text(encoding="utf-8")
 
 
-def test_first_run_creates_report_with_four_sections():
+def test_first_run_creates_report_in_reports_dir_with_marker():
     r = h.mk_repo("rp_first")
     h.setup_tasks(r)
     res = h.tool(r, "report.py")
     assert res.rc == 0, res.all
-    f = r / ".harness" / "report.html"
-    assert f.exists()
-    html = f.read_text(encoding="utf-8")
-    assert [s[0] for s in _sections(html)] == IDS
+    assert not (r / ".harness" / "report.html").exists(), "old location must not be used"
+    html = _html(r)
+    assert MARKER in html[:400]
     assert "S1-T1" in html and "S1-T2" in html
-    assert _changed(res) == "progress, kpis, tasks, next"
 
 
 def test_report_in_empty_ledger_still_renders():
     r = h.mk_repo("rp_empty")
     res = h.tool(r, "report.py")
     assert res.rc == 0, res.all
-    assert [s[0] for s in _sections((r / ".harness" / "report.html").read_text(encoding="utf-8"))] == IDS
+    assert MARKER in _html(r)[:400]
 
 
-def test_second_run_without_change_reports_none_and_leaves_unmarked():
+def test_second_run_overwrites_same_single_file():
     r = h.mk_repo("rp_second")
     h.setup_tasks(r)
-    h.tool(r, "report.py")
-    res = h.tool(r, "report.py")
-    assert _changed(res) == "none", res.all
-    html = (r / ".harness" / "report.html").read_text(encoding="utf-8")
-    assert 'class="upd"' not in html and 'class="tag"' not in html
-    assert "изменено секций: 0" in html
+    assert h.tool(r, "report.py").rc == 0
+    assert h.tool(r, "report.py").rc == 0
+    assert len(_files(r)) == 1
 
 
-def test_only_affected_sections_changed_and_tagged_then_cleared():
+def test_report_is_rendered_from_scratch_after_ledger_change():
     r = h.mk_repo("rp_delta")
     h.setup_tasks(r)
     h.tool(r, "report.py")
-    h.tool(r, "report.py")
+    before = _html(r)
     assert h.ledger(r, "start", "S1-T1").rc == 0
+    assert h.tool(r, "report.py").rc == 0
+    after = _html(r)
+    assert after != before and "в работе" in after
+
+
+def test_hand_made_file_is_never_overwritten():
+    r = h.mk_repo("rp_hand")
+    h.setup_tasks(r, 1)
+    h.tool(r, "report.py")
+    f = _files(r)[0]
+    f.write_text("<html>hand made</html>", encoding="utf-8")
     res = h.tool(r, "report.py")
-    changed = [c.strip() for c in _changed(res).split(",")]
-    assert "tasks" in changed and "kpis" not in changed, changed
-    assert set(changed) <= set(IDS) and changed, changed
-    html = (r / ".harness" / "report.html").read_text(encoding="utf-8")
-    tagged = [sid for sid, attrs in _sections(html) if 'class="upd"' in attrs]
-    assert sorted(tagged) == sorted(changed), (tagged, changed)
-    assert html.count('class="tag"') == len(changed)
-    assert "в работе" in html
-    # the next unchanged run clears all marks again
-    res3 = h.tool(r, "report.py")
-    assert _changed(res3) == "none"
-    html3 = (r / ".harness" / "report.html").read_text(encoding="utf-8")
-    assert 'class="upd"' not in html3 and 'class="tag"' not in html3
-
-
-def test_unchanged_sections_are_byte_identical_across_runs():
-    r = h.mk_repo("rp_bytes")
-    h.setup_tasks(r)
-    h.tool(r, "report.py")
-    a = (r / ".harness" / "report.html").read_text(encoding="utf-8")
-    h.ledger(r, "start", "S1-T1")
-    h.tool(r, "report.py")
-    b = (r / ".harness" / "report.html").read_text(encoding="utf-8")
-    pa = re.search(r'<section id="kpis".*?</section>', a, re.S).group(0)
-    pb = re.search(r'<section id="kpis".*?</section>', b, re.S).group(0)
-    assert pa == pb
-    ta = re.search(r'<section id="tasks".*?</section>', a, re.S).group(0)
-    tb = re.search(r'<section id="tasks".*?</section>', b, re.S).group(0)
-    assert ta != tb
+    assert res.rc == 1, res.all
+    assert f.read_text(encoding="utf-8") == "<html>hand made</html>"
 
 
 def test_report_html_escapes_task_title():
@@ -96,7 +75,7 @@ def test_report_html_escapes_task_title():
     h.ledger(r, "sprint-add", "--id", "S1", "--title", "t")
     h.ledger(r, "task-add", "--title", "<script>alert(1)</script>")
     h.tool(r, "report.py")
-    html = (r / ".harness" / "report.html").read_text(encoding="utf-8")
+    html = _html(r)
     assert "<script>alert(1)" not in html and "&lt;script&gt;" in html
 
 
@@ -106,13 +85,10 @@ def test_report_out_flag_and_harness_ledger_env():
     env = {"HARNESS_LEDGER": str(alt / "l" / "ledger.json")}
     h.ledger(r, "sprint-add", "--id", "S1", "--title", "t", env=env)
     res = h.tool(r, "report.py", env=env)
-    assert res.rc == 0 and (alt / "l" / "report.html").exists()
+    assert res.rc == 0 and len(_files(r)) == 1, res.all
+    assert not (alt / "l" / "report.html").exists()
     out = alt / "custom.html"
     assert h.tool(r, "report.py", "--out", str(out), env=env).rc == 0 and out.exists()
-
-
-def _html(r):
-    return (r / ".harness" / "report.html").read_text(encoding="utf-8")
 
 
 def test_not_run_state_is_shown_as_tests_not_run():
@@ -123,8 +99,8 @@ def test_not_run_state_is_shown_as_tests_not_run():
     h.ledger(r, "verify", "S1-T1", "--result", "NOT_RUN", "--evidence", "no device")
     assert h.tool(r, "report.py").rc == 0
     html = _html(r)
-    assert re.search(r'class="st [\w-]+">тесты не запускались</span>', html), "state cell must say tests were not run"
-    assert not re.search(r'class="st [\w-]+">тесты красные', html), "not_run must not look like a red test run"
+    assert re.search(r'class="pill [\w-]+">тесты не запускались</span>', html), "state cell must say tests were not run"
+    assert not re.search(r'class="pill [\w-]+">тесты красные', html), "not_run must not look like a red test run"
 
 
 def test_header_shows_hook_errors_and_approval_skips_as_alerts():
@@ -139,7 +115,7 @@ def test_header_shows_hook_errors_and_approval_skips_as_alerts():
     html = _html(r)
     assert "Ошибки хуков: 1" in html and "S9-T9" in html, "hook error alert missing"
     assert "была отключена 1 раз" in html, "approval skip alert missing"
-    assert html.index("Ошибки хуков") < html.index('<section id="progress"'), "alerts belong to the header"
+    assert html.index("Ошибки хуков") > html.index('id="updates"'), "alerts belong to the updates panel"
 
 
 def test_shell_level_hook_errors_from_log_without_ledger_event_are_shown():
@@ -153,7 +129,7 @@ def test_shell_level_hook_errors_from_log_without_ledger_event_are_shown():
     assert h.tool(r, "report.py").rc == 0
     html = _html(r)
     assert "Ошибки хуков: 1" in html and "no working Python" in html, "shell-level error missing from header"
-    assert html.index("Ошибки хуков") < html.index('<section id="progress"'), "must be in the header"
+    assert html.index("Ошибки хуков") > html.index('id="updates"'), "must be in the updates panel"
     with open(log, "a", encoding="utf-8") as f:
         f.write("2026-11-10T10:05:00 post-commit: report.py failed\n")
         f.write("2026-11-10T10:06:00 post-commit: report.py failed\n")  # same message twice counts once
@@ -167,8 +143,9 @@ def test_report_write_is_atomic_no_temp_leftover():
     h.setup_tasks(r, 1)
     for _ in range(3):
         assert h.tool(r, "report.py").rc == 0
-    names = sorted(p.name for p in (r / ".harness").iterdir())
-    assert "report.html" in names and not [n for n in names if n.endswith(".tmp")], names
+    names = sorted(p.name for p in (r / "reports").iterdir())
+    assert len(names) == 1 and names[0].endswith("_PROGRAM_STATUS_LIVE.ru.html"), names
+    assert not [n for n in names if ".tmp" in n], names
 
 
 if __name__ == "__main__":

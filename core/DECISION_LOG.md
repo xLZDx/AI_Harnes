@@ -177,3 +177,6 @@
 
 ## 2026-11-12 S7-T3 committed
 - plan_first_gate: the first change of a turn is denied until the transcript shows a presented valid plan (plan tool with a success result, several TaskCreate calls, an ExitPlanMode plan that was not rejected, or a numbered list in the assistant text before the change); three denies per turn release as plan-first-exception; a Stop backup blocks once. Limit: a one-liner operator message ending with a question mark skips the gate.
+
+## 2026-11-12 S7-T8 committed
+- plan_ledger.py lets report.py render the one global report from PROJECT_PLAN.md (no ledger, or a ledger without sprints). Mapping and exclusions are in the module docstring; SUPERSEDED tasks are left out like in the old plan formula. Limit: only the Task/Title/Acceptance/Status/Evidence/Commit columns are read; sprint dates and durations are not available for plan projects.
