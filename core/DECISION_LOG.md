@@ -165,3 +165,6 @@
 
 ## 2026-11-12 S7-T6 committed
 - Agent START/STOP lines (type, model, effort, task id; never the prompt), active-agents file with proof-level states, status line that never overwrites an operator statusLine. Limit: ACTIVE_CONFIRMED comes only from hook runs carrying the subagent agent_type.
+
+## 2026-11-12 S7-T7 committed
+- run_hook.py runs each hook in process and records one metrics row (hook, event, decision, ms; no text); tools/metrics.py; 30-day retention runs on write, on metrics.py and on --purge, independent of rotation. Limit: the daily scheduled purge task is not installed yet (needs the operator accept).

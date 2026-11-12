@@ -162,3 +162,5 @@
 - Kind: SHORTCOMING. Facts: the plan review took six rounds because I sent plan text with unproven mechanisms (ownership by owner field, ACTIVE_CONFIRMED) that the code later did not implement as written. Rule: write the plan from what the code can read today.
 
 - Kind: SUCCESS. Facts: S7-T6 tests assert the exact START line and that a fake secret in the prompt appears nowhere (UI, state, metrics). Rule: test privacy claims with a planted fake secret.
+
+- Kind: SUCCESS. Facts: the runner output is byte-identical to a direct hook run for deny, allow and exit-2 cases (tests), found one real bug first (a dropped TextIOWrapper closed its buffer). Rule: keep references to wrapped streams.

@@ -447,12 +447,13 @@ def hook_config(client: str, hooks_dir: Path, python: str) -> dict:
         script = str(hooks_dir / h["script"])
         # -X utf8: hook stdin/stdout are UTF-8 JSON whatever the Windows code page; --harness-client tells
         # _agentio which client runs the hook, so it never has to guess
-        args = ["-s", "-X", "utf8", script, f"--harness-client={client}"]
+        runner = str(hooks_dir / "run_hook.py")  # S7-T7: runs the hook in-process and records one metrics row
+        args = ["-s", "-X", "utf8", runner, h["script"], f"--harness-client={client}"]
         if client == "claude":
             entry = {"type": "command", "command": python, "args": args,
                      "timeout": h["timeout"], "statusMessage": h["status"]}
         else:
-            cmd = cmdline([posix(python), "-s", "-X", "utf8", posix(script), f"--harness-client={client}"])
+            cmd = cmdline([posix(python), "-s", "-X", "utf8", posix(runner), h["script"], f"--harness-client={client}"])
             entry = {"type": "command", "command": cmd, "commandWindows": cmd,
                      "timeout": h["timeout"], "statusMessage": h["status"]}
         groups = out.setdefault(h["event"], [])
@@ -530,7 +531,7 @@ def build(python: str = "") -> int:
     return 0
 
 
-TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py")
+TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py")
 REPORT_ASSETS = ("report.css", "filter.js", "copy.js")  # harness/report/* -> <project>/.harness-tools/report/
 HOOKS = ("pre-commit", "post-commit", "pre-push", "post-merge")
 
@@ -573,7 +574,7 @@ def install_project(target: Path, force: bool = False) -> int:
     for h in HOOKS:
         os.chmod(tools / "githooks" / h, 0o755)
     ledger_file = main / ".harness" / "ledger.json"
-    if not ledger_file.exists():
+    if not ledger_file.exists() and not (main / "PROJECT_PLAN.md").is_file():  # plan-based project: the plan is the source
         ledger_file.parent.mkdir(parents=True, exist_ok=True)
         ledger_file.write_text(json.dumps({"version": 1, "project": main.name, "sprints": [], "approval": None, "events": []},
                                           indent=1) + "\n", encoding="utf-8", newline="\n")
