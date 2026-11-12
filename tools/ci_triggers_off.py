@@ -233,48 +233,70 @@ def _place_noclobber(src: Path, dst: Path) -> bool:
         return False
 
 
+def _unlink_retry(p: Path, tries: int = 6) -> bool:
+    """Delete with a short bounded retry (Windows: a scanner or indexer can hold a file for a moment)."""
+    for i in range(tries):
+        try:
+            p.unlink(missing_ok=True)
+            return True
+        except PermissionError:
+            time.sleep(0.05 * (2 ** i))
+    return False
+
+
+LEFTOVER_ASIDES: list[str] = []  # parked copies that could not be deleted after a completed swap (reported in the row)
+
+
 def swap_in(p: Path, data: bytes | None, expect: str | None) -> str | None:
     """Replace p with `data` (None = remove p) only if p holds the bytes with sha256 `expect` (None = p absent), with no
     window in which another writer's bytes can be overwritten:
+      0. the new bytes are written to a temp file first, so p is absent only between two renames;
       1. the current file is moved aside in one rename; from that instant any other writer creates a NEW p;
       2. the moved bytes are hashed: not `expect` -> they are put back (never over a newer p) and the swap is refused;
       3. the new bytes are placed only where p does not exist (no-clobber); if someone created p meanwhile, theirs stays;
-      4. the parked bytes are removed only if they still hash to `expect`, else they are kept and reported.
+      4. the parked bytes are removed only if they still hash to `expect` (bounded retry); a copy that cannot be
+         removed is reported in LEFTOVER_ASIDES and the swap still counts as done (it holds known bytes).
+    Residual: a writer that already held the old file open and writes in place between the step-4 hash and delete.
     Returns None on success, else an error; on error no other writer's bytes were lost (they are at p or at the aside)."""
     a = aside_path(p)
-    if expect is None:
-        if p.exists():
-            return f"{p.name} exists but should not; left as it is"
-        if data is None:
-            return None
-        t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
-        t.write_bytes(data)
-        if not _place_noclobber(t, p):
-            t.unlink(missing_ok=True)
-            return f"{p.name} was created by someone else during the run; theirs kept"
-        return None
-    if a.exists():
-        return f"{a.name} exists from an earlier interrupted swap; resolve it first"
+    t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
     try:
-        os.replace(p, a)  # step 1 (a does not exist, so nothing is overwritten)
-    except FileNotFoundError:
-        return f"{p.name} disappeared during the run; nothing written"
-    except OSError as e:
-        return f"{p.name} could not be moved aside ({e}); nothing written"
-    if _sha(a) != expect:  # step 2: someone changed it before we moved it
-        if _place_noclobber(a, p):
-            return f"{p.name} changed during the run; it was not overwritten"
-        return f"{p.name} changed during the run and was recreated meanwhile; both kept ({a.name} holds the earlier edit)"
-    if data is not None:  # step 3
-        t = p.with_name(f".{p.name}.cioff-{os.getpid()}.tmp")
-        t.write_bytes(data)
-        if not _place_noclobber(t, p):
-            t.unlink(missing_ok=True)
-            return f"{p.name} was recreated by someone else during the run; theirs kept, the earlier bytes are in {a.name}"
-    if _sha(a) == expect:  # step 4
-        a.unlink()
+        if data is not None:
+            t.write_bytes(data)  # step 0
+        if expect is None:
+            if p.exists():
+                return f"{p.name} exists but should not; left as it is"
+            if data is None:
+                return None
+            if not _place_noclobber(t, p):
+                return f"{p.name} was created by someone else during the run; theirs kept"
+            return None
+        if a.exists():
+            return f"{a.name} exists from an earlier interrupted swap; run --recover"
+        try:
+            os.replace(p, a)  # step 1 (a does not exist, so nothing is overwritten)
+        except FileNotFoundError:
+            return f"{p.name} disappeared during the run; nothing written"
+        except OSError as e:
+            return f"{p.name} could not be moved aside ({e}); nothing written"
+        if _sha(a) != expect:  # step 2: someone changed it before we moved it
+            if _place_noclobber(a, p):
+                return f"{p.name} changed during the run; it was not overwritten"
+            return (f"{p.name} changed during the run and was recreated meanwhile; both kept "
+                    f"({a.name} holds the earlier edit, {p.name} the newer one: merge them by hand, then delete {a.name})")
+        if data is not None and not _place_noclobber(t, p):  # step 3
+            return (f"{p.name} was recreated by someone else during the run; theirs kept, the pre-run bytes are in "
+                    f"{a.name} (delete it after checking)")
+        if _sha(a) != expect:  # step 4
+            return f"{a.name} was written to while parked; kept for a manual check (compare with {p.name})"
+        if not _unlink_retry(a):
+            LEFTOVER_ASIDES.append(str(a))
         return None
-    return f"{a.name} was written to while parked; kept for a manual check"
+    finally:
+        try:
+            t.unlink(missing_ok=True)  # placed temp files are gone already; this only removes an unused one
+        except OSError:
+            pass
 
 
 LOCK_WAIT_SECONDS = 30.0
@@ -389,11 +411,15 @@ def unexpected_edits(repo: Path, j: dict) -> list[str]:
     for f in j["files"]:
         p = repo / f
         a = aside_path(p)
+        known = {pre.get(f), merged.get(f)}
         if p.exists() and a.exists():
-            out.append(f)  # a swap was interrupted after someone recreated the file: both copies need a person
+            # a swap stopped between placing the new file and deleting the parked copy (or a copy could not be
+            # deleted): a known state when both hold our bytes; anything else needs a person
+            if _sha(p) not in known or _sha(a) not in known:
+                out.append(f)
             continue
         now = _sha(p) if p.exists() else _sha(a)  # a crash inside swap_in leaves the bytes parked at the aside
-        if now != pre.get(f) and now != merged.get(f):
+        if now not in known:
             out.append(f)
     return out
 
@@ -425,6 +451,10 @@ def rollback(repo: Path, j: dict) -> list[str]:
             try:
                 if not p.exists() and a.exists() and not _place_noclobber(a, p):  # crash inside swap_in: unpark
                     errs.append(f"{f}: could not move {a.name} back; both kept")
+                    continue
+                if p.exists() and a.exists() and _sha(a) in (pre.get(f), merged.get(f)) and not _unlink_retry(a):
+                    # parked copy of known bytes (pre-run bytes are also in the backup): safe to drop
+                    errs.append(f"{f}: could not delete {a.name} (holds known bytes); delete it by hand")
                     continue
                 now = _sha(p)
                 if now == pre.get(f):
@@ -587,6 +617,9 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                     raise RuntimeError(f"index entry changed for {p}")
             set_phase(jp, j, "done")
             result = f"CHANGED {new[:7]} (dirty merge into {', '.join(files)})"
+            if LEFTOVER_ASIDES:
+                result += "; NOTE could not delete parked copies (known pre-run bytes): " + ", ".join(LEFTOVER_ASIDES)
+                LEFTOVER_ASIDES.clear()
             journaled = False
             try:
                 jp.unlink(missing_ok=True)  # only after the final status/stage check passed
