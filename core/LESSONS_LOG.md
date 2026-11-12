@@ -268,3 +268,4 @@
 - Kind: SUCCESS. Facts: the regression tests for the review fixes check each deny case next to an allowed twin, and the push cases require the ledger reason, so a gate that silently fails open would fail them. Rule: every deny test has an allow twin.
 - Kind: SUCCESS. Facts: the audit test built from the real settings format caught the args defect independently of the live audit run. Rule: tool tests use fixtures copied from the real installed files.
 - Kind: SUCCESS. Facts: the restore script of install_claude was run for real in a temp home and put the old CLAUDE.md back. Rule: every installer's rollback path is executed in a test, not only written.
+- Kind: FAILURE. Facts: the CI switch-off and the first audit looked only at origin; a second remote of db-test-tool-analysis still ran CI on push. Root cause: one remote assumed per project. Layer that missed it: author. Rule: GitHub checks cover every remote of a repository.

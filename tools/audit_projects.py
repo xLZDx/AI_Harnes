@@ -144,17 +144,43 @@ def origin_slug(d: Path):
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def github_slugs(d: Path) -> list[str]:
+    """Every GitHub repository among the project's remotes (origin first): CI can run on any of them."""
+    r = git(d, "remote", "-v")
+    out = []
+    for ln in (r.stdout.splitlines() if r is not None and r.returncode == 0 else []):
+        m = re.search(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?\s", ln + " ")
+        if m:
+            s = f"{m.group(1)}/{m.group(2)}"
+            if s not in out:
+                out.append(s)
+    o = origin_slug(d)
+    return ([o] if o else []) + [s for s in out if s != o]
+
+
 def chk_ci_github(d: Path, enabled: bool):
     if not enabled:
         return NA, "skipped (--no-github)"
-    slug = origin_slug(d)
-    if not slug:
+    slugs = github_slugs(d)
+    if not slugs:
         return NA, "no GitHub remote"
+    results = [_ci_github_one(d, s, i == 0) for i, s in enumerate(slugs)]
+    fails = [m for st, m in results if st == FAIL]
+    if fails:
+        return FAIL, " | ".join(fails)
+    oks = [m for st, m in results if st == OK]
+    return (OK if oks else NA), " | ".join(m for _, m in results)
+
+
+def _ci_github_one(d: Path, slug: str, is_origin: bool):
     r = run(["gh", "workflow", "list", "--repo", slug, "--all", "--json", "name,state,path"], timeout=20)
     if r is None:
         return FAIL, f"{slug}: gh timed out or missing"
     if r.returncode != 0:
-        return FAIL, f"{slug}: gh failed: {(r.stderr or r.stdout).strip()[:120]}"
+        err = (r.stderr or r.stdout).strip()
+        if re.search(r"HTTP 404|Could not resolve to a Repository", err):
+            return NA, f"{slug}: not on GitHub (404), no CI can run there"
+        return FAIL, f"{slug}: gh failed: {err[:120]}"
     try:
         items = json.loads(r.stdout or "[]")
     except ValueError:
@@ -169,16 +195,15 @@ def chk_ci_github(d: Path, enabled: bool):
             continue
         active += 1
         text = None
+        a = run(["gh", "api", f"repos/{slug}/contents/{path}", "--jq", ".content"], timeout=20)  # what GitHub runs
+        if a is not None and a.returncode == 0:
+            try:
+                text = base64.b64decode(a.stdout.strip()).decode("utf-8", "replace")
+            except Exception:
+                text = None
         local = d / path
-        if local.is_file():
+        if text is None and is_origin and local.is_file():
             text = local.read_text(encoding="utf-8", errors="replace")
-        else:
-            a = run(["gh", "api", f"repos/{slug}/contents/{path}", "--jq", ".content"], timeout=20)
-            if a is not None and a.returncode == 0:
-                try:
-                    text = base64.b64decode(a.stdout.strip()).decode("utf-8", "replace")
-                except Exception:
-                    text = None
         if text is None:
             bad.append(f"{path} (content unreadable)")
             continue

@@ -347,3 +347,6 @@
 
 ## 2026-11-12 S13 tool regression tests
 - tests/test_s13_review_tools.py 25 passed (functional-test-reviewer): ledger evidence kept, shrink refused, distinct backups, concurrent create/change refused, plan import lock (6 rounds of two real processes, stale takeover, dry run lock-free), audit args format and ledger_whole, install_claude CLAUDE.md replace and restore. Re-run green: test_s13_ledger_sync 9, test_s11_plan_import 30, test_s10_report 14.
+
+## 2026-11-12 S13 audit checks every GitHub remote
+- db-test-tool-analysis origin (xLZDx/DB-test-tool) does not exist (404) but remote cleannew (xLZDx/db_test_tool_clean) had 'Gate 2 evidence' active on push and pull request; disabled with gh workflow disable (added to D:/Backup/ci_disabled_20261112.tsv). The audit now checks every GitHub remote, reads the workflow text GitHub runs, and reports a missing repository as n.a.
