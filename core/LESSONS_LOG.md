@@ -230,3 +230,5 @@
 - Kind: SUCCESS. Facts: forcing the no-link and no-git paths in child processes proved both GPT-PM findings fixed. Rule: force the platform path a comment claims, in a child process.
 
 - Kind: FAILURE. Facts: my stale-lock recovery created a new race (paused owner), and my test asserted the fail-open git behaviour as correct. Root cause: I fixed the symptom GPT-PM named, not the whole class (any automatic recovery needs owner proof); the test copied my assumption. Layer that missed it: author, tester; GPT-PM round 2 found it. Rule: when a fix adds recovery or a fallback, list who else can hold the resource before choosing it, and never let a test assert the weak branch.
+
+- Kind: SUCCESS. Facts: the tests now assert the strict contract in both findings and the old fail-open test was removed. Rule: when a review changes a contract, rewrite the test that encoded the old one first.

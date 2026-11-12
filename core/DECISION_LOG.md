@@ -257,3 +257,6 @@
 
 ## 2026-11-12 S9 GPT-PM round 2 (HEAD 17816a2): REVISE, 2 MAJOR
 - Both real. F1: a stale-lock takeover after 30 s lets a paused first owner replace the second owner's value. Fixed: a lock is never taken over; it holds an owner token, the owner publishes only if the token is still its own and removes only its own lock; after 10 s a held lock gives a clear refusal naming the file (a crashed run needs that file deleted by hand). F2 real: with git unstartable and no .git marker the old code allowed any folder, but a work tree may use GIT_DIR and have no marker. Fixed: with git unstartable only the default folder under the user home is accepted. The test test_h2_git_not_startable_no_marker_put_works fixed the unsafe behaviour and is replaced. Trade-off accepted: without git a custom HARNESS_SECRET_DIR is refused.
+
+## 2026-11-12 S9 tests for GPT-PM round 2 fixes
+- Evidence: tests/test_self_service.py 65 passed (tester af773916): a leftover lock of any age is never taken over and the refusal names the lock file; a paused owner whose token is gone does not publish; git unstartable refuses a custom folder, accepts the default folder, refuses a tree with external GIT_DIR. Not covered: a real process pause; only Windows was run.

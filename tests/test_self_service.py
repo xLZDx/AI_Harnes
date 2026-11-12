@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -476,16 +477,69 @@ def test_h2_git_not_startable_inside_git_marker_refused_creates_nothing():
     assert DUMMY1 not in r.stdout + r.stderr
 
 
-def test_h2_git_not_startable_no_marker_put_works():
-    w = _wrapper(PATCH_NO_GIT)
-    base = Path(tempfile.mkdtemp(prefix="h2_plain_"))
+def _no_marker_base(prefix):
+    base = Path(tempfile.mkdtemp(prefix=prefix))
     assert not any((q / ".git").exists() for q in (base, *base.parents)), "temp dir lies inside a git work tree"
+    return base
+
+
+def test_h2_git_not_startable_no_marker_custom_dir_refused_creates_nothing():
+    w = _wrapper(PATCH_NO_GIT)
+    base = _no_marker_base("h2_plain_")
     sdir = base / "store"
     r = _wrun(w, ["put", "PLAIN_KEY"], sdir, DUMMY1)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not sdir.exists()
+    assert os.listdir(base) == []
+    assert DUMMY1 not in r.stdout + r.stderr
+
+
+def test_h2_empty_path_no_marker_custom_dir_refused_creates_nothing():
+    base = _no_marker_base("h2_plainpath_")
+    sdir = base / "store"
+    env = _wenv(sdir)
+    env["PATH"] = ""
+    r = subprocess.run([PY, "-I", str(STORE), "put", "PLAIN_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not sdir.exists()
+
+
+def test_h2_git_not_startable_default_dir_still_works():
+    w = _wrapper(PATCH_NO_GIT)
+    home = _no_marker_base("h2_home_")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    env["USERPROFILE"] = str(home)
+    env["HOME"] = str(home)
+    env.pop("HOMEDRIVE", None)
+    env.pop("HOMEPATH", None)
+    r = subprocess.run([PY, "-I", str(w), "put", "DEF_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "created"
-    assert (sdir / "PLAIN_KEY").read_bytes() == DUMMY1.encode("utf-8")
-    assert not [n for n in os.listdir(sdir) if n.startswith(".put-")]
+    assert (home / ".harness-secrets" / "DEF_KEY").read_bytes() == DUMMY1.encode("utf-8")
+
+
+def test_h2_external_git_dir_work_tree_git_not_startable_refused():
+    git = shutil.which("git")
+    if not git:
+        pytest.skip("git not installed, cannot create the external bare repository")
+    w = _wrapper(PATCH_NO_GIT)
+    base = _no_marker_base("h2_ext_")
+    bare = base / "bare.git"
+    work = base / "work"
+    work.mkdir()
+    subprocess.run([git, "init", "--bare", str(bare)], check=True, capture_output=True, timeout=60)
+    assert not (work / ".git").exists()
+    sdir = work / "sub" / "store"
+    env = _wenv(sdir)
+    env["GIT_DIR"] = str(bare)
+    env["GIT_WORK_TREE"] = str(work)
+    r = subprocess.run([PY, "-I", str(w), "put", "EXT_KEY"], input=DUMMY1, capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not (work / "sub").exists()
+    assert DUMMY1 not in r.stdout + r.stderr
 
 
 def test_h2_empty_path_inside_git_marker_refused():
@@ -500,7 +554,8 @@ def test_h2_empty_path_inside_git_marker_refused():
     assert not sdir.exists()
 
 
-def test_h3_stale_lock_does_not_block_put_without_hardlink():
+def test_h3_leftover_lock_of_any_age_is_never_taken_over_then_deleted_lock_allows_put():
+    import time
     w = _wrapper(PATCH_NO_LINK)
     sdir = Path(tempfile.mkdtemp(prefix="h3_secrets_")) / "store"
     sdir.mkdir()
@@ -508,11 +563,59 @@ def test_h3_stale_lock_does_not_block_put_without_hardlink():
     lock.write_bytes(b"")
     old = lock.stat().st_mtime - 40
     os.utime(lock, (old, old))
+    t0 = time.monotonic()
     r = _wrun(w, ["put", "STALE_KEY"], sdir, DUMMY1)
-    assert r.returncode == 0, r.stderr
-    assert r.stdout.strip() == "created"
+    elapsed = time.monotonic() - t0
+    assert r.returncode != 0
+    assert "STALE_KEY.lock" in r.stdout + r.stderr
+    assert "created" not in r.stdout
+    assert 5 <= elapsed < 50, elapsed
+    assert not (sdir / "STALE_KEY").exists()
+    assert lock.exists()
+    lock.unlink()
+    r2 = _wrun(w, ["put", "STALE_KEY"], sdir, DUMMY1)
+    assert r2.returncode == 0, r2.stderr
+    assert r2.stdout.strip() == "created"
     assert (sdir / "STALE_KEY").read_bytes() == DUMMY1.encode("utf-8")
     assert sorted(os.listdir(sdir)) == ["STALE_KEY"]
+
+
+def test_h3_paused_owner_lock_not_deleted_by_b_and_resumed_owner_does_not_publish():
+    w = _wrapper(PATCH_NO_LINK)
+    sdir = Path(tempfile.mkdtemp(prefix="h3_pause_")) / "store"
+    sdir.mkdir()
+    lock = sdir / "PAUSE_KEY.lock"
+    lock.write_text("owner-a-token-dummy", encoding="utf-8")
+    r = _wrun(w, ["put", "PAUSE_KEY"], sdir, DUMMY2)
+    assert r.returncode != 0
+    assert "created" not in r.stdout
+    assert not (sdir / "PAUSE_KEY").exists()
+    assert lock.read_text(encoding="utf-8") == "owner-a-token-dummy"
+    # A resumes: its lock now holds somebody else's token, target absent -> A must not publish.
+    mod = _load_store()
+    d = Path(tempfile.mkdtemp(prefix="h3_resume_"))
+    target = d / "RES_KEY"
+    tmp = d / ".put-manual"
+    tmp.write_bytes(DUMMY2.encode("utf-8"))
+    mod._read = lambda p: "another-owner-token"
+    orig = os.link
+    def no_link(*a, **k):
+        raise OSError("link not supported")
+    os.link = no_link
+    try:
+        assert mod._publish(str(tmp), target) == "exists"
+    finally:
+        os.link = orig
+    assert not target.exists()
+    assert (d / "RES_KEY.lock").exists()  # not ours any more: left alone
+    # target already exists and the lock is foreign: nothing replaced
+    target.write_bytes(DUMMY1.encode("utf-8"))
+    os.link = no_link
+    try:
+        assert mod._publish(str(tmp), target) == "exists"
+    finally:
+        os.link = orig
+    assert target.read_bytes() == DUMMY1.encode("utf-8")
 
 
 def test_h3_fresh_lock_with_existing_target_returns_exists_and_keeps_value():
