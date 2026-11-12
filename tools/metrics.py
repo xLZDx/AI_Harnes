@@ -70,10 +70,11 @@ def summarize(rows: list[dict], project: str = "") -> dict:
         h["fired"] += 1
         d = r.get("decision", "allow")
         h[d if d in h and d not in ("fired", "ms") else "other"] += 1  # an unknown decision is shown as `other`, never as allow
-        try:
-            h["ms"].append(int(r.get("ms", 0)))
-        except Exception:
-            pass
+        if r.get("reason") not in ("agent-start", "agent-stop"):  # their ms is the agent's run time, not a hook's latency
+            try:
+                h["ms"].append(int(r.get("ms", 0)))
+            except Exception:
+                pass
         if r.get("reason") == "agent-start":
             agents[r.get("agent") or "?"]["starts"] += 1
         elif r.get("reason") == "agent-stop":

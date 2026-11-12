@@ -44,6 +44,7 @@ def sh(cmd, result, err=False):
 def run_hook(payload, extra_env=None, state=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
     env["HARNESS_HOOK_STATE"] = str(state or (TMP / ("state_" + uuid.uuid4().hex[:6])))
+    env.setdefault("HARNESS_METRICS_DIR", r"D:	mp\harness_v2_tests\sink\metrics")  # S8-T1: never the real metrics folder
     env["PYTHONIOENCODING"] = "utf-8"
     env.update(extra_env or {})
     p = subprocess.run([PY, "-I", "-s", "-X", "utf8", str(HOOK), "--harness-client=claude"], input=json.dumps(payload),

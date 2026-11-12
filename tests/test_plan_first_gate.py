@@ -65,6 +65,7 @@ class Env:
     def call(self, payload, extra_env=None):
         env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_") and k != "CLAUDE_PLAN_FIRST_GATE"}
         env["HARNESS_HOOK_STATE"] = str(self.state)
+        env.setdefault("HARNESS_METRICS_DIR", r"D:	mp\harness_v2_tests\sink\metrics")  # S8-T1
         env["PYTHONIOENCODING"] = "utf-8"
         env.update(extra_env or {})
         p = subprocess.run([PY, "-I", str(HOOK)], input=json.dumps(payload), capture_output=True, text=True,
@@ -337,6 +338,7 @@ def test_garbage_stdin_fails_open():
     e = Env("garbage")
     env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
     env["HARNESS_HOOK_STATE"] = str(e.state)
+    env.setdefault("HARNESS_METRICS_DIR", r"D:	mp\harness_v2_tests\sink\metrics")  # S8-T1
     p = subprocess.run([PY, "-I", str(HOOK)], input="not json {{", capture_output=True, text=True, env=env, timeout=60)
     check(p.returncode == 0 and p.stdout.strip() == "", f"rc={p.returncode} out={p.stdout!r}")
 

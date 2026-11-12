@@ -25,8 +25,16 @@ class R:
         return self.out + self.err
 
 
+# Tests must never write into the operator's real metrics/state folders (S8-T1: test rows had polluted ~/.harness-hooks/metrics).
+SINK = TMP / "sink"
+os.environ["HARNESS_METRICS_DIR"] = str(SINK / "metrics")  # in-process hook calls
+os.environ.setdefault("HARNESS_HOOK_STATE", str(SINK / "state"))
+
+
 def base_env(extra=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
+    env["HARNESS_METRICS_DIR"] = str(SINK / "metrics")  # default for hook subprocesses; a test's own `extra` still wins
+    env["HARNESS_HOOK_STATE"] = str(SINK / "state")
     env["PYTHONIOENCODING"] = "utf-8"
     env["GIT_TERMINAL_PROMPT"] = "0"
     env.update(extra or {})
