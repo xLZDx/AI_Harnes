@@ -239,11 +239,11 @@ def open_rotations(rows: list[dict], service: str, project: str) -> list[dict]:
 
 
 def target_id_of(cmd: str) -> str:
-    """The credential a delete/revoke command REMOVES (not the one that authenticates it): `keyid:<first 6 chars>` or ''.
+    """The credential a delete/revoke command REMOVES (not the one that authenticates it): `keyid:<full key id>` or ''.
     Authentication (--key-file, $TOKEN) says nothing about the target, so it is never used here."""
     cmd = cmd or ""
     m = re.search(r"keys\s+(?:delete|disable)\s+['\"]?([0-9a-zA-Z]{6,})", cmd) or         re.search(r"--access-key-id[= ]\s*['\"]?([A-Z0-9]{8,})", cmd) or         re.search(r"(?:delete|revoke)[-\w]*\s+(?:--[\w-]+[= ]\S+\s+)*['\"]?(?:key[-_]?id[= ]|keys/|tokens?/)?([0-9a-zA-Z]{8,})", cmd, re.I)
-    return "keyid:" + m.group(1)[:6] if m else ""
+    return "keyid:" + m.group(1) if m else ""  # the FULL provider key id: a prefix does not prove identity (GPT-PM round 4)
 
 
 def rotation_for_delete(rows: list[dict], target: str, service: str, project: str) -> dict | None:

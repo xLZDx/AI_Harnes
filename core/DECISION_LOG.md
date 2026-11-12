@@ -195,3 +195,6 @@
 
 ## 2026-11-12 S7 GPT-PM round 3 fix
 - Round 3 (request d1ec7891) closed F4 and kept F2: authentication and target are different things. target_id_of(cmd) names the key a delete removes (never --key-file or a token variable); rotation_for_delete matches it only against an `old_key_id` recorded on the open verified rotation, so by default the old key is not deleted by the agent until the operator names it or the record carries the id. Limit: the target id is the first 6 characters of the key id.
+
+## 2026-11-12 S7 GPT-PM round 4 fix
+- Round 4 (request 7e18c894) accepted the target/authentication split and rejected the 6-character prefix: target_id_of now returns the full provider key id and rotation_for_delete compares it by exact, case-sensitive equality with the rotation's old_key_id. credential_id_of (authentication evidence) keeps its short form because it is not used to authorize a delete.

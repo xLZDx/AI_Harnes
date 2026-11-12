@@ -170,10 +170,13 @@ def rotk(step, rid, old_key=None, service="gcp", project="p", age=0.0):
 
 def test_f2_target_id_of_resolves_the_removed_key_from_gcloud_and_aws_forms():
     t = sp.target_id_of
-    assert t("gcloud iam service-accounts keys delete ABC123456 --iam-account x --project p") == "keyid:ABC123"
-    assert t("gcloud iam service-accounts keys disable abc123def0 --iam-account x") == "keyid:abc123"
-    assert t("aws iam delete-access-key --access-key-id " + AWS + " --user-name u") == "keyid:" + AWS[:6]
-    assert t("aws iam delete-access-key --user-name u --access-key-id=" + AWS) == "keyid:" + AWS[:6]
+    assert t("gcloud iam service-accounts keys delete ABC123456 --iam-account x --project p") == "keyid:ABC123456"
+    assert t("gcloud iam service-accounts keys disable abc123def0 --iam-account x") == "keyid:abc123def0"
+    assert t("aws iam delete-access-key --access-key-id " + AWS + " --user-name u") == "keyid:" + AWS
+    assert t("aws iam delete-access-key --user-name u --access-key-id=" + AWS) == "keyid:" + AWS
+    # the target is NOT truncated, while the authentication id still is
+    assert t("gcloud iam service-accounts keys delete ABC123456 --iam-account x") != "keyid:ABC123"
+    assert sp.credential_id_of("gcloud iam service-accounts keys delete ABC123456 --iam-account x") == "keyid:ABC123"
 
 
 def test_f2_target_id_of_unresolved_when_the_command_names_no_key():
@@ -348,9 +351,33 @@ def test_f2_different_key_id_with_the_same_record_is_denied():
     other = "gcloud iam service-accounts keys delete XYZ789 --iam-account x --project p --key-file=a.json"
     dec, reason = pre_reason(sb, other)
     assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
-    # the 6-char id is compared whole: a one-character difference is another key
+    # the id is compared whole: a one-character difference is another key
     assert pre_reason(sb, other.replace("XYZ789", "ABC124"))[0] == "deny"
     assert pre_reason(sb, other.replace("XYZ789", "ABC123"))[0] == ""  # control: the recorded id passes
+
+
+def test_f2_full_key_id_identity_same_six_char_prefix_is_a_different_key():
+    rows = [rotk("verified", "RA", "keyid:ABC123456")]
+    assert sp.rotation_for_delete(rows, "keyid:ABC123456", "gcp", "p")["rotation_id"] == "RA"
+    assert sp.rotation_for_delete(rows, "keyid:ABC123999", "gcp", "p") is None
+    assert sp.rotation_for_delete(rows, "keyid:ABC123", "gcp", "p") is None  # a prefix is not the key
+    assert sp.rotation_for_delete(rows, "keyid:abc123456", "gcp", "p") is None  # case-sensitive
+    assert sp.rotation_for_delete([rotk("verified", "RA", "keyid:abc123def0")], "keyid:ABC123DEF0", "gcp", "p") is None
+    base = "gcloud iam service-accounts keys delete {} --iam-account x --project p --key-file=a.json"
+    sb = fb.sandbox("r4_fullid")
+    seed(sb, [rotk("verified", "RA", "keyid:ABC123456"), invalid("file:a.json", "gcp", "p")])
+    dec, reason = pre_reason(sb, base.format("ABC123999"))
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
+    assert pre_reason(sb, base.format("abc123456"))[0] == "deny"  # case differs
+    post(sb, base.format("ABC123999"), OK)  # even a successful delete of the other key closes nothing
+    assert [r for r in recs(sb) if r.get("step") == "old_revoked"] == []
+    seed(sb, [invalid("file:a.json", "gcp", "p")])  # the successful call above cleared the auth evidence; renew it
+    assert pre_reason(sb, base.format("ABC123456"))[0] == ""
+    post(sb, base.format("ABC123456"), OK)
+    assert [r["rotation_id"] for r in recs(sb) if r.get("step") == "old_revoked"] == ["RA"]
+    seed(sb, [invalid("file:a.json", "gcp", "p")])
+    dec, reason = pre_reason(sb, base.format("ABC123456"))
+    assert dec == "deny" and "credential-identity-unresolved" in reason, (dec, reason)
 
 
 def test_f2_deletes_naming_nothing_resolvable_are_denied_even_with_a_recorded_key_id():

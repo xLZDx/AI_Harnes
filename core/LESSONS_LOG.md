@@ -190,3 +190,5 @@
 - Kind: FAILURE. Facts: my round 1 fix let a single open rotation authorize deleting any bare key id, and a test pinned that unsafe behavior; GPT-PM called it a BLOCKER. Root cause: I treated uniqueness as identity. Layer that missed it: author and test agent. Rule: an irreversible action needs proof of identity of the target, never "only one candidate".
 
 - Kind: FAILURE. Facts: my round 2 fix matched the delete against the credential the command authenticates with, so --key-file=a.json could unlock deleting key B; the test I had written pinned it. Root cause: two meanings of "credential" in one function. Layer that missed it: author, test agent. Rule: name authentication and target separately in any function that gates an irreversible action.
+
+- Kind: FAILURE. Facts: I wrote "target id is the first 6 characters" as a known limit in the log and still shipped it; GPT-PM rejected it as a BLOCKER (two keys sharing a 6-character prefix). Root cause: a limit I recorded myself was a safety hole, not a convenience. Layer that missed it: author. Rule: a limitation noted in the log on an irreversible-action gate is a defect to fix before review, not a note.

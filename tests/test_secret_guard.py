@@ -236,6 +236,15 @@ for r in rows:
 save_records(st, rows)
 expect("c) record carries old_key_id == target: delete allowed", "", st, DEL_ID_A)
 expect("c) same record, different target key id: denied", "deny", st, DEL_ID_A.replace("ABC123", "ZZZ999"))
+DEL_FULL = "gcloud iam service-accounts keys delete ABC123456 --iam-account x --project p --key-file=a.json"
+for r in rows:
+    if r.get("kind") == "rotation" and r.get("step") == "verified":
+        r["old_key_id"] = "keyid:ABC123456"
+save_records(st, rows)
+expect("c) full recorded key id: delete allowed", "", st, DEL_FULL)
+out = expect("c) same first 6 chars, different key: denied", "deny", st, DEL_FULL.replace("ABC123456", "ABC123999"))
+check("c) reason mentions credential-identity-unresolved (prefix collision)", "credential-identity-unresolved" in reason(out), reason(out))
+expect("c) key ids are case-sensitive: denied", "deny", st, DEL_FULL.replace("ABC123456", "abc123456"))
 expect("c) same record, delete naming no key id (file auth only): denied", "deny", st, DEL_NAMED)
 st_other = new_state()
 post(st_other, GCP_READ + " --key-file=b.json", UNAUTH)
