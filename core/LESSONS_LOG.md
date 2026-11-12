@@ -336,3 +336,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - FAILURE 2026-11-12 S14-T3: my first MAJOR-1 fix kept merging in place, so it guarded the wrong states; reliability-reviewer found two MAJOR in it. Next time: compute every change to user files off to the side and swap it in atomically, then the only states on disk are 'before' and 'after'.
 - SUCCESS 2026-11-12 S14-T3: the temp-file merge with an atomic swap closed both reliability MAJORs in one design change.
 - SUCCESS 2026-11-12 S14-T3: the MAJOR-1 regression test fails on the old blind rollback (reasoned) and passes now.
+- SUCCESS 2026-11-12 S14-T3: the live-race test proves the pre-write hash check keeps a user edit made mid-run.

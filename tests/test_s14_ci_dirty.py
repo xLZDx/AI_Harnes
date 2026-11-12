@@ -462,6 +462,77 @@ def test_real_content_edit_in_a_file_the_tool_rewrites_is_never_lost():
         assert_no_ci_off_refs(repo)
 
 
+def _run_with_hook_before_first_write(repo, scratch, edit_rel, extra):
+    """In-process process_dirty; just before the first real file write in the repo, append `extra` to edit_rel."""
+    orig = ci.atomic_write
+    state = {"writes": [], "fired": False}
+
+    def hooked(p, data):
+        if Path(p).is_relative_to(repo):  # the inner run writes in the temp worktree; only count the real repo
+            state["writes"].append(Path(p).relative_to(repo).as_posix())
+            if not state["fired"]:
+                state["fired"] = True
+                if extra is not None:
+                    _w(repo / edit_rel, rd(repo / edit_rel) + extra)
+        return orig(p, data)
+    ci.atomic_write = hooked
+    try:
+        out = ci.process_dirty(repo, False, scratch)
+    finally:
+        ci.atomic_write = orig
+    return out, state
+
+
+def test_outside_edit_during_live_run_is_never_lost():
+    root, scratch, repo = dirty_repo()
+    before = snapshot(repo)
+    extra = b"OUTSIDE-EDIT-DURING-RUN\n"
+    out, state = _run_with_hook_before_first_write(repo, scratch, DL, extra)
+    assert state["fired"] and state["writes"][0] == WF, state  # hook fired before the first write; DL is a later file
+    assert out.startswith("ERROR") and "changed during the run" in out, out
+    edited = before["files"][DL] + extra
+    assert rd(repo / DL) == edited, rd(repo / DL)  # user's bytes exactly, nothing appended by the tool
+    for rel in (WF, DL, LL, "newfile.txt", "scratch.txt"):
+        assert b"<<<<<<<" not in rd(repo / rel) and b">>>>>>>" not in rd(repo / rel), rel
+    jp = repo / ".git" / JOURNAL
+    head_now = hv2.git(repo, "rev-parse", "refs/heads/main").out.strip()
+    if jp.exists():
+        # rollback refused: journal kept, recover refuses while the edit stays and changes nothing
+        assert "journal kept" in out, out
+        mid = snapshot(repo)
+        rec = ci.recover(repo)
+        assert rec.startswith("ERROR") and "RECOVERED" not in rec, rec
+        assert snapshot(repo) == mid and rd(repo / DL) == edited and jp.exists()
+        # user reverts their edit: recovery now restores the exact pre-run state
+        _w(repo / DL, before["files"][DL])
+        ok = ci.recover(repo)
+        assert ok.startswith("RECOVERED"), ok
+        assert snapshot(repo) == before
+        assert not jp.exists()
+    else:
+        # rolled back: already-written file back to pre-run bytes, branch at the old commit
+        assert "working files restored" in out, out
+        assert head_now == before["head"] and commits(repo) == before["n"]
+        assert rd(repo / WF) == before["files"][WF], "written file not rolled back"
+        assert rd(repo / LL) == before["files"][LL]
+    assert hv2.git(repo, "rev-parse", "refs/heads/main").out.strip() in (before["head"], head_now)
+    no_leftovers(repo, scratch)
+    assert_no_ci_off_refs(repo)
+
+
+def test_same_hook_without_outside_edit_is_changed():
+    root, scratch, repo = dirty_repo()
+    before = snapshot(repo)
+    out, state = _run_with_hook_before_first_write(repo, scratch, DL, None)
+    assert state["fired"] and state["writes"][0] == WF, state
+    assert out.startswith("CHANGED"), out
+    assert commits(repo) == before["n"] + 1
+    assert b"session note" in rd(repo / DL) and b"CI-OFF" in rd(repo / DL)
+    assert not (repo / ".git" / JOURNAL).exists()
+    no_leftovers(repo, scratch)
+    assert_no_ci_off_refs(repo)
+
+
 def test_lock_held_by_another_process_gives_skip_after_timeout():
     import subprocess
     root, scratch, repo = dirty_repo()
