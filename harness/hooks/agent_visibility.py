@@ -88,6 +88,8 @@ def project_root(cwd: str) -> str:
 # a drive-letter path, or a POSIX path with one leading slash; never a URL tail (://host) or a UNC path (\\host, //host),
 # whose exists() would make a network lookup with no timeout
 ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^\s\"'`<>|*?,;()\[\]]+")
+# an absolute path in double or single quotes may hold spaces; same start and exclusions as ABS_PATH_RE
+QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]+)\1""")
 BIND_DEADLINE_S = 3.0  # the whole search stays well inside the 10 s hook budget
 BIND_GIT_TIMEOUT_S = 2
 
@@ -104,10 +106,13 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
         text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))
         tried = set()
         roots = set()
-        for i, m in enumerate(ABS_PATH_RE.finditer(text)):
+        # quoted paths first (they may hold spaces), then the unquoted ones from the text left over
+        found = [m.group(2).strip().rstrip(".:") for m in QUOTED_PATH_RE.finditer(text)]
+        found += [m.group(0).rstrip(".:") for m in ABS_PATH_RE.finditer(QUOTED_PATH_RE.sub(" ", text))]
+        extra = 0
+        for i, raw in enumerate(found):
             if time.monotonic() > deadline or i >= max_matches:
                 return ""
-            raw = m.group(0).rstrip(".:")
             if raw.startswith(("\\\\", "//")) or (os.name == "nt" and raw.startswith("/")):
                 continue
             p = Path(raw)
@@ -117,6 +122,11 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
             key = str(d).lower()
             if key in tried or d == d.parent:
                 continue
+            if len(tried) >= max_dirs:
+                # after the cap only a new directory costs a git call; too many of them fail closed
+                extra += 1
+                if extra > max_dirs * 2:
+                    return ""
             tried.add(key)
             r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(d),
                                  timeout=BIND_GIT_TIMEOUT_S)
@@ -128,9 +138,6 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
                 roots.add(str((common.parent if common.name == ".git" else common).resolve()))
                 if len(roots) > 1:
                     return ""
-            if len(tried) >= max_dirs:
-                # cap reached: a later path could name a second repository, so unexamined text means no binding
-                return roots.pop() if len(roots) == 1 and not any(True for _ in ABS_PATH_RE.finditer(text, m.end())) else ""
         return roots.pop() if len(roots) == 1 else ""
     except Exception:
         pass
@@ -259,7 +266,7 @@ def touch(data: dict) -> None:
 def announce_stop(data: dict, client: str) -> None:
     try:
         name = str(data.get("agent_type") or "agent").strip()[:60]
-        res = {"secs": 0, "hit": False}
+        res = {"secs": 0, "hit": False, "ran": False}
 
         aid = str(data.get("agent_id") or "")[:64]
 
@@ -269,6 +276,7 @@ def announce_stop(data: dict, client: str) -> None:
             return True
 
         def apply(d: dict):
+            res["ran"] = True  # the state lock was taken (mutate also returns False when apply changed nothing)
             if aid:
                 # a stop that names its agent finishes that agent's entry; a duplicate stop finishes nothing. It never
                 # falls back to an entry a SubagentStart already reported (a run killed by an app restart would
@@ -278,12 +286,16 @@ def announce_stop(data: dict, client: str) -> None:
                         return False if e.get("stop") else finish(e)
                 # the id was never recorded (SubagentStart not delivered): only an entry that came from PreToolUse
                 # alone, carries no id and has the same type and session can be this run; newest first
-                for e in reversed(d["agents"]):
-                    if (e.get("type") == name and not e.get("stop") and not e.get("agent_id")
-                            and "start" not in e.get("sources", ["pre"])
-                            and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))):
-                        e["agent_id"] = aid
-                        return finish(e)
+                # B37a: only when exactly one such entry exists; with two or more nothing is finished
+                pre = [e for e in d["agents"]
+                       if (e.get("type") == name and not e.get("stop") and not e.get("agent_id")
+                           and "start" not in e.get("sources", ["pre"])
+                           and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64])))]
+                if len(pre) == 1:
+                    pre[0]["agent_id"] = aid
+                    return finish(pre[0])
+                if len(pre) > 1:
+                    res["ambiguous"] = len(pre)
                 return False
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
@@ -301,6 +313,8 @@ def announce_stop(data: dict, client: str) -> None:
         hit, secs = res["hit"], res["secs"]
         if res.get("ambiguous", 0) > 0:  # no duration: no run was finished (B34); 0 candidates = start not observed
             _emit(f"[agent STOP] {name} | not paired: {res['ambiguous']} unfinished {name} runs and no agent id", client)
+        elif not res["ran"]:  # B37b: the state lock was not taken, nothing was recorded
+            _emit(f"[agent STOP] {name} | stop was not recorded: the state is busy", client)
         else:
             _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:
