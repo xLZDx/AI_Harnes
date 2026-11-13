@@ -386,19 +386,57 @@ def _row_texts(row: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _read_finished() -> tuple[dict[str, float], str]:
+    """(cache, status). status: ok | missing | corrupt (unparsable JSON or wrong shape, logged, cache = empty) |
+    unreadable (OS error other than a missing file, logged, cache = empty)."""
+    try:
+        text = FINISHED.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}, "missing"
+    except OSError as exc:
+        log({"event": "finished-cache", "verdict": "unreadable", "error": str(exc)[:200]})
+        return {}, "unreadable"
+    try:
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            raise TypeError("finished cache is " + type(raw).__name__ + ", not an object")
+        return {str(k): float(v) for k, v in raw.items()}, "ok"
+    except (ValueError, TypeError, AttributeError, OverflowError) as exc:  # fail closed: a corrupt cache counts as empty
+        log({"event": "finished-cache", "verdict": "corrupt", "error": str(exc)[:200]})
+        return {}, "corrupt"
+
+
 def _load_finished() -> dict[str, float]:
     """{id: unix time}. Any read or shape error = empty (fail-safe: the transcript replay still decides)."""
+    return _read_finished()[0]
+
+
+def _save_finished(done: dict[str, float], removed=()) -> bool:
+    """B40: merge into the file under its own lock: read the current file, union with `done` (ids in `removed`, i.e. explicitly
+    resumed agents, are dropped), keep the FINISHED_MAX newest by time, atomic write. Lock not taken in time or file unreadable =
+    nothing written, logged, False (a lost write only loses the cache; it can never mark an agent finished, the replay decides)."""
     try:
-        raw = json.loads(FINISHED.read_text(encoding="utf-8"))
-        return {str(k): float(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return {}
-
-
-def _save_finished(done: dict[str, float]) -> None:
-    """Atomic write of the newest FINISHED_MAX entries (oldest by time evicted)."""
-    keep = dict(sorted(done.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
-    _agentio.atomic_write_text(FINISHED, json.dumps(keep))
+        with _agentio.file_lock(FINISHED, wait=1.0, stale=10.0) as got:
+            if not got:
+                log({"event": "finished-cache", "verdict": "lock-timeout", "ids": len(done)})
+                return False
+            disk, status = _read_finished()
+            if status == "unreadable":
+                log({"event": "finished-cache", "verdict": "write-skipped-unreadable"})
+                return False
+            merged = dict(disk)
+            for k, v in done.items():
+                merged[k] = max(v, merged.get(k, v))
+            for k in removed:
+                merged.pop(k, None)
+            if status == "ok" and merged == disk:
+                return True  # nothing new on disk
+            keep = dict(sorted(merged.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
+            _agentio.atomic_write_text(FINISHED, json.dumps(keep))  # temp file + os.replace, retried on winerror 5/32
+            return True
+    except OSError as exc:
+        log({"event": "finished-cache", "verdict": "write-failed", "error": str(exc)[:200]})
+        return False
 
 
 def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
@@ -437,26 +475,33 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                             pass
                 if "<task-notification>" in text:
                     for block in text.split("<task-notification>")[1:]:
+                        inner = block.split("</task-notification>")[0]
                         m = NOTIF_ID_RE.search(block)
+                        if not NOTIF_HEAD_RE.search(inner):  # B41: no <summary>/<status> at all = malformed block, changes nothing, but is logged
+                            log({"event": "task-notification", "verdict": "ignored-no-summary-or-status", "id": m.group(1) if m else ""})
+                            continue
                         if not m:
                             continue
                         aid = m.group(1)
                         # B14/B15: the interim phrase counts only inside <summary> (or <status>), never in the result text
-                        head = " ".join(x.group(1) for x in NOTIF_HEAD_RE.finditer(block.split("</task-notification>")[0]))
+                        head = " ".join(x.group(1) for x in NOTIF_HEAD_RE.finditer(inner))
                         if STILL_RUNNING_RE.search(head) and aid not in finished:
                             # an interim notice: the agent stopped a turn but its own background work still runs
                             try:
                                 pending[aid] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
                             except (ValueError, TypeError, OverflowError):
                                 pass
-                        elif NOTIF_HEAD_RE.search(block.split("</task-notification>")[0]):
+                        else:
                             pending.pop(aid, None)
                             finished.add(aid)  # an id that finished never counts as running again
                             finished_map.setdefault(aid, now)
-                        # else: no <summary>/<status> at all = malformed block, changes nothing
         if finished_map != finished_before:
             try:
-                _save_finished(finished_map)
+                removed = set(finished_before) - set(finished_map)  # explicit SendMessage resumes
+                if removed:
+                    _save_finished(finished_map, removed)
+                else:
+                    _save_finished(finished_map)
             except Exception:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
                 pass
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]

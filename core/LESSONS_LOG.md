@@ -435,3 +435,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-13 S18 merge: the merge was pinned to the GPT-PM approved head with --match-head-commit, so no unreviewed commit could enter main. Next time: always pin a merge to the approved sha.
 - SUCCESS 2026-11-13 S19-T3: the deferred audit MINORs were small enough to finish in one engineer pass with the contract tests read first. Next time: give the engineer the test files to read so contract breaks (here test_s18_audit.py:279 taskkill argv) are reported up front.
 - SUCCESS 2026-11-13 S19-T1: reusing the found repository root removed the per-directory git cost instead of only raising the deadline. Next time: fix a time-budget overrun at the repeated work first, then size the budget.
+- SUCCESS 2026-11-13 S19-T4: the cache lock reused the existing _agentio lock and atomic write instead of a new mechanism. Next time: look for the project's own lock helper before writing one.
