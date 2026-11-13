@@ -90,9 +90,45 @@ def project_root(cwd: str) -> str:
 ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^\s\"'`<>|*?,;()\[\]]+")
 # an absolute path in double or single quotes may hold spaces; same start and exclusions as ABS_PATH_RE
 QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]{1,260})\1""")
-BIND_DEADLINE_S = 3.0  # the whole search stays well inside the 10 s hook budget
+# B44: one git rev-parse costs about 0.5 s here, and a prompt naming 6 subdirectories of one repository took 3.1-3.6 s, so
+# 3.0 s made the hook record ''. 6.0 s + one last git call (BIND_GIT_TIMEOUT_S) stays under the 10 s hook budget.
+BIND_DEADLINE_S = 6.0
 BIND_GIT_TIMEOUT_S = 2
 BIND_TEXT_MAX = 65536  # regex cost: only the first 64 KB of the task text is scanned
+BIND_SPACE_WORDS = 4  # B40: an unquoted path with spaces is rebuilt from at most this many following words
+SPACE_WORD_RE = re.compile(r" ([^\s\"'`<>|*?,;()\[\]]+)")
+
+
+def _extend_unquoted(raw: str, tail: str) -> str:
+    """B40: an unquoted absolute path stops at its first space. Extend it through the following space-separated words
+    and return the LONGEST candidate that exists (os.path.exists); the plain path when none of the extensions exists."""
+    best, cand, pos = raw, raw, 0
+    for _ in range(BIND_SPACE_WORDS):
+        m = SPACE_WORD_RE.match(tail, pos)
+        if not m:
+            break
+        cand += " " + m.group(1)
+        pos = m.end()
+        c = cand.rstrip(".:")
+        if os.path.exists(c):
+            best = c
+    return best
+
+
+def _under_known_root(d: Path, roots: set) -> bool:
+    """True when d lies inside one of the already found repository roots (normcase prefix with a separator) and no
+    directory between d and that root has its own .git (a nested repository or a worktree needs its own git call)."""
+    nd = os.path.normcase(str(d))
+    for root in roots:
+        nr = os.path.normcase(root)
+        if nd == nr or nd.startswith(nr.rstrip("\\/") + os.sep):
+            p = d
+            while os.path.normcase(str(p)) != nr and p != p.parent:
+                if (p / ".git").exists():
+                    return False
+                p = p.parent
+            return True
+    return False
 
 
 def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50) -> str:
@@ -109,20 +145,27 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
         roots = set()
         # quoted paths first (they may hold spaces), then every unquoted hit of the FULL text as its own candidate (a
         # second path inside the same quotes must still be examined); all candidates that resolve must agree
-        found = [m.group(2).strip().rstrip(".:") for m in QUOTED_PATH_RE.finditer(text)]
-        found += [m.group(0).rstrip(".:") for m in ABS_PATH_RE.finditer(text)]
+        found = [(m.group(2).strip().rstrip(".:"), None) for m in QUOTED_PATH_RE.finditer(text)]
+        found += [(m.group(0), text[m.end():]) for m in ABS_PATH_RE.finditer(text)]  # tail: for B40 space extension
         extra = 0
-        for i, raw in enumerate(found):
+        for i, (raw, tail) in enumerate(found):
             if time.monotonic() > deadline or i >= max_matches:
                 return ""
             if raw.startswith(("\\\\", "//")) or (os.name == "nt" and raw.startswith("/")):
                 continue
+            if tail is not None:
+                raw = raw.rstrip(".:")
+                if tail[:1] == " ":
+                    raw = _extend_unquoted(raw, tail)
             p = Path(raw)
             while not p.exists() and p != p.parent:
                 p = p.parent
             d = p if p.is_dir() else p.parent
             key = str(d).lower()
             if key in tried or d == d.parent:
+                continue
+            if roots and _under_known_root(d, roots):
+                tried.add(key)  # B44: inside a repository root already found: no second git call, same root
                 continue
             if len(tried) >= max_dirs:
                 # after the cap only a new directory costs a git call; too many of them fail closed
@@ -309,6 +352,8 @@ def announce_stop(data: dict, client: str) -> None:
                 if len(pre) > 1:
                     res["ambiguous"] = len(pre)
                     res["unrecorded"] = True
+                elif len(pre) == 1:
+                    res["too_old"] = True  # B41: the only candidate is older than UNKNOWN_AFTER_S: refused, not "unobserved"
                 return False
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
@@ -335,6 +380,8 @@ def announce_stop(data: dict, client: str) -> None:
             _emit(f"[agent STOP] {name} | stop was not recorded: the state is busy", client)
         elif res["dup"]:
             _emit(f"[agent STOP] {name} | duplicate stop ignored", client)
+        elif res.get("too_old"):
+            _emit(f"[agent STOP] {name} | not paired: the only unrecorded {name} start was too old to pair", client)
         else:
             _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:
