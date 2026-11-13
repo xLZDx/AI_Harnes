@@ -171,7 +171,8 @@ DOC_EXTS = {".md", ".rst", ".txt"}
 DEPENDENCY_NAMES = re.compile(r"^(requirements|constraints|dev-requirements|pipfile|cmakelists)[\w.-]*$", re.I)
 REPORT_RE = re.compile(r"^(reports/[^/]+\.html|\.harness/report\.html)$", re.I)
 LEDGER_FILE = ".harness/ledger.json"
-AGENT_CONFIG_RE = re.compile(r"(^|/)\.(claude|codex|agents)/|(^|/)harness/(agents|skills|commands|rules)/", re.I)
+AGENT_CONFIG_RE = re.compile(r"(^|/)\.(claude|codex|agents)/|(^|/)harness/(agents|skills|commands|rules)/"
+                             r"|^(agents|skills|commands|rules|prompts)/", re.I)  # B31: root-level plugin layout
 TEST_CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".dart", ".go", ".rs", ".java", ".kt", ".cs",
                   ".rb", ".ps1", ".sh"}
 _ROUTE_RULES: list = []
