@@ -31,17 +31,20 @@ def git(*args) -> subprocess.CompletedProcess:
 
 
 def triggers(text: str) -> set[str]:
-    """Event names in the top-level `on:` key of a workflow file (inline, list, mapping and block forms)."""
+    """Event names in the top-level `on:` key of a workflow file (inline, list, mapping and block forms).
+
+    No top-level `on:` key, more than one (duplicate keys or several YAML documents), or a value that cannot be read
+    safely gives {UNPARSABLE}, which callers count as a hit (fail closed)."""
     lines = text.lstrip("\ufeff").splitlines()
     base = next((len(l) - len(l.lstrip(" ")) for l in lines
                  if l.strip() and not l.lstrip().startswith("#") and not l.startswith(("---", "%"))), 0)
-    for i, line in enumerate(lines):
-        if len(line) - len(line.lstrip(" ")) != base:
-            continue
-        m = ON_RE.match(line[base:])
-        if not m:
-            continue
-        rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+    keys = [(i, m) for i, line in enumerate(lines)
+            if len(line) - len(line.lstrip(" ")) == base and (m := ON_RE.match(line[base:]))]
+    if len(keys) > 1:
+        # duplicate top-level `on:` keys (or a second YAML document): which one a parser keeps is not ours to guess
+        return {UNPARSABLE}
+    for i, m in keys:
+        rest =re.sub(r"\s+#.*$", "", m.group(1)).strip()
         if rest[:1] in ("[", "{"):  # flow style may span lines: accumulate until the brackets balance
             acc, k = rest, i
             while acc.count("[") + acc.count("{") > acc.count("]") + acc.count("}"):
