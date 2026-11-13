@@ -103,7 +103,7 @@ def test_start_line_fields_and_no_secret_anywhere():
     rc, out, err = hook(sb, "agent_model_gate.py", spawn(sb))
     assert rc == 0, (rc, out, err)
     msg = json.loads(out)["systemMessage"]
-    assert msg == "[agent START] code-reviewer | model sonnet | effort medium | task S9-T2", msg
+    assert msg == "[agent START] code-reviewer | role code-reviewer | model sonnet | effort medium | task S9-T2", msg
     assert not re.search(r"\d+ s\b", msg), "duration must be on STOP only"
     assert SECRET not in out + err
     assert SECRET not in all_files_text(sb["state"], sb["metrics"], sb["root"] / "dstate")
@@ -202,7 +202,7 @@ def test_codex_start_goes_to_stderr_only():
     rc, out, err = hook(sb, "agent_model_gate.py", p, client="codex")
     assert rc == 0, err
     assert out == "", out
-    assert "[agent START] code-reviewer | model gpt-6-luna | effort medium | task active" in err, err
+    assert "[agent START] code-reviewer | role code-reviewer | model gpt-6-luna | effort medium | task active" in err, err
     assert SECRET not in out + err + all_files_text(sb["state"], sb["metrics"])
 
 
