@@ -402,3 +402,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-13 S17-T3: B33 and B34 closed in agent_visibility with fail-closed rules; the S16 test file showed exactly the three tests whose criterion changed. Next time: when a criterion changes, name the tests it obsoletes in the task.
 - SHORTCOMING 2026-11-13 S17-T2: the first Codex flag check judged every hook command, so the operator's own completion_gate.py (not a harness hook) gave a false FAIL; I narrowed it to run_hook.py commands before commit. Next time: an audit rule names exactly which entries it owns.
 - SUCCESS 2026-11-13 S17-T1: criteria-first tests passed on the first run against the merge code. Next time: assert whole group lists and the exact kept count, not only presence.
+- SUCCESS 2026-11-13 S17-T2: a fake winreg module in sys.modules lets the registry branches run without touching the real registry. Next time: patch the import seam, not the machine.
