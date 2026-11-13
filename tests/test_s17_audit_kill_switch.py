@@ -128,7 +128,7 @@ def test_reports_only_name_value_scope_for_off_values_in_three_scopes():
              CLAUDE_SHELL_POLICY_AUDIT="off"):
         status, detail = ap.chk_kill_switch()
     assert status == ap.FAIL, (status, detail)
-    assert items(detail) == {"CLAUDE_GO_GATE=off (process)", "SESSION_CLOSE_GATE_MODE=off (process)",
+    assert items(detail) == {"CLAUDE_GO_GATE=off (this process)", "SESSION_CLOSE_GATE_MODE=off (this process)",
                              "HARNESS_SECRET_GUARD=0 (user)", "CLAUDE_EVIDENCE_GATE=False (machine)",
                              "SESSION_SUPERVISOR_MODE=off (machine)"}, detail
     for leak in ("hunter", "secret", "enabled", "USER_SECRET_TOKEN", "ROSETTA", "SHELL_POLICY", "on ("):
@@ -139,7 +139,7 @@ def test_each_off_value_spelling_counts_for_a_switch_that_honours_all_three():
     for val in ("off", "0", "false", "OFF", " False "):
         with env(fake_winreg(), HARNESS_SECRET_GUARD=val):
             st, detail = ap.chk_kill_switch()
-        assert st == ap.FAIL and f"HARNESS_SECRET_GUARD={val} (process)" in detail, (val, st, detail)
+        assert st == ap.FAIL and f"HARNESS_SECRET_GUARD={val} (this process)" in detail, (val, st, detail)
     for val in ("on", "1", "true", "", "live", "no"):
         with env(fake_winreg(), HARNESS_SECRET_GUARD=val):
             st, detail = ap.chk_kill_switch()
@@ -150,7 +150,7 @@ def test_switch_that_honours_only_off_ignores_zero_and_false():
     for val in ("off", "OFF", " off "):
         with env(fake_winreg(), CLAUDE_GO_GATE=val):
             st, detail = ap.chk_kill_switch()
-        assert st == ap.FAIL and f"CLAUDE_GO_GATE={val} (process)" in detail, (val, st, detail)
+        assert st == ap.FAIL and f"CLAUDE_GO_GATE={val} (this process)" in detail, (val, st, detail)
     for val in ("0", "false", "False", "on", ""):
         with env(fake_winreg(), CLAUDE_GO_GATE=val):
             st, detail = ap.chk_kill_switch()
@@ -165,7 +165,7 @@ def test_switch_that_honours_only_off_ignores_zero_and_false():
 def test_go_gate_zero_not_reported_but_secret_guard_zero_is_in_process_and_registry():
     with env(fake_winreg(), CLAUDE_GO_GATE="0", HARNESS_SECRET_GUARD="0"):
         st, detail = ap.chk_kill_switch()
-    assert st == ap.FAIL and items(detail) == {"HARNESS_SECRET_GUARD=0 (process)"}, (st, detail)
+    assert st == ap.FAIL and items(detail) == {"HARNESS_SECRET_GUARD=0 (this process)"}, (st, detail)
     with env(fake_winreg(user=[("CLAUDE_GO_GATE", "0")], machine=[("HARNESS_SECRET_GUARD", "0")])):
         st, detail = ap.chk_kill_switch()
     assert st == ap.FAIL and items(detail) == {"HARNESS_SECRET_GUARD=0 (machine)"}, (st, detail)
@@ -178,7 +178,9 @@ def test_registry_names_compare_case_insensitively():
     with env(wr):
         st, detail = ap.chk_kill_switch()
     assert st == ap.FAIL, (st, detail)
-    assert items(detail) == {"claude_go_gate=off (user)", "Harness_Secret_Guard=0 (machine)"}, detail
+    assert "CLAUDE_GO_GATE=off (user; overrides machine=0)" in detail, detail  # upper-case name from a lower-case registry name
+    assert "HARNESS_SECRET_GUARD=0 (machine)" in detail, detail
+    assert "claude_go_gate" not in detail and "Harness_Secret_Guard" not in detail, detail
 
 
 # ---------------------------------------------------------------- criterion 3
@@ -248,14 +250,14 @@ def test_non_windows_host_is_na_with_reason_and_process_switch_still_fails():
     with env(fake_winreg(user=[("HARNESS_SECRET_GUARD", "off")]), HARNESS_SECRET_GUARD="0"), \
             mock.patch.object(ap, "os", _PosixOs()):
         st, detail = ap.chk_kill_switch()
-    assert st == ap.FAIL and "HARNESS_SECRET_GUARD=0 (process)" in detail and "(user)" not in detail, (st, detail)
+    assert st == ap.FAIL and "HARNESS_SECRET_GUARD=0 (this process)" in detail and "(user)" not in detail, (st, detail)
 
 
 def test_registry_read_error_with_found_switch_is_fail_carrying_both():
     with env(fake_winreg(machine_err=PermissionError(5, "access denied MACHINEKEY")), CLAUDE_GO_GATE="off"):
         st, detail = ap.chk_kill_switch()
     assert st == ap.FAIL, (st, detail)
-    assert "CLAUDE_GO_GATE=off (process)" in detail and "machine registry unreadable" in detail \
+    assert "CLAUDE_GO_GATE=off (this process)" in detail and "machine registry unreadable" in detail \
         and "access denied MACHINEKEY" in detail, detail
 
 
