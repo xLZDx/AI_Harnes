@@ -72,7 +72,7 @@ def _proj(repo):
 def test_output_json_shape_and_line_for_a_project_agent():
     st = h.fresh("s19t5_shape")
     repo = h.mk_repo("s19t5_shape_repo")
-    _seed(st, [_e("functional-test-reviewer", project=_proj(repo)), _e("code-reviewer", project=_proj(repo))])
+    _seed(st, [_e("functional-test-reviewer", start_ago=50, project=_proj(repo)), _e("code-reviewer", start_ago=100, project=_proj(repo))])  # S19 fix: newest first
     r = _hook(st, _payload(repo))
     assert r.rc == 0, r.all
     out = json.loads(r.out)
@@ -168,8 +168,8 @@ def test_question_mark_suffix_after_ten_minutes_without_events():
     st = h.fresh("s19t5_q")
     _seed(st, [_e("old-agent", start_ago=700, sid="me"),
                _e("alive-agent", start_ago=700, sid="me", activity_ago=100),
-               _e("new-agent", start_ago=100, sid="me")])
-    assert _ctx(_hook(st, _payload(st, sid="me"))) == PREFIX + "old-agent?, alive-agent, new-agent"
+               _e("new-agent", start_ago=50, sid="me")])
+    assert _ctx(_hook(st, _payload(st, sid="me"))) == PREFIX + "new-agent, alive-agent, old-agent?"  # S19 fix: live first, newest first
 
 
 def test_agent_just_under_ten_minutes_has_no_question_mark():
@@ -180,7 +180,7 @@ def test_agent_just_under_ten_minutes_has_no_question_mark():
 
 def test_at_most_ten_names_are_listed():
     st = h.fresh("s19t5_max")
-    _seed(st, [_e(f"agent{i:02d}", sid="me") for i in range(12)])
+    _seed(st, [_e(f"agent{i:02d}", start_ago=60 + i, sid="me") for i in range(12)])  # agent00 is the newest
     line = _ctx(_hook(st, _payload(st, sid="me")))
     assert line.startswith(PREFIX), line
     listed = line[len(PREFIX):].split(" (+")[0].split(", ")
@@ -191,7 +191,7 @@ def test_at_most_ten_names_are_listed():
 
 def test_exactly_ten_names_are_all_listed_without_a_more_marker():
     st = h.fresh("s19t5_ten")
-    _seed(st, [_e(f"agent{i:02d}", sid="me") for i in range(10)])
+    _seed(st, [_e(f"agent{i:02d}", start_ago=60 + i, sid="me") for i in range(10)])
     line = _ctx(_hook(st, _payload(st, sid="me")))
     assert line == PREFIX + ", ".join(f"agent{i:02d}" for i in range(10)), line
 
@@ -311,6 +311,187 @@ def test_sec_agents_lists_a_running_agent_and_no_not_running_line_twin():
     assert "<code>run-agent</code>" in html_out and "<code>stale-agent</code>" in html_out, html_out
     assert "не запущены" not in html_out, html_out
     assert "статус неизвестен" in html_out and "старт замечен" in html_out, html_out
+
+
+# ---------------------------------------------------------------- S19 review fixes (hook): git timeout, 24 h drop, order, ASCII, error log
+def test_hook_asks_project_root_with_a_3_second_git_timeout():
+    sys.path.insert(0, str(h.SRC / "harness" / "hooks"))
+    import agent_visibility as av
+    import agents_context as ac
+    st = h.fresh("s19fix_ctx_to")
+    calls = []
+    orig = av.project_root
+
+    def fake(cwd, timeout=None):
+        calls.append(timeout)
+        return ""
+    old = os.environ.get("HARNESS_HOOK_STATE")
+    os.environ["HARNESS_HOOK_STATE"] = str(st)
+    av.project_root = fake
+    try:
+        ac.running_names({"cwd": str(st), "session_id": "me"})
+    finally:
+        av.project_root = orig
+        if old is None:
+            os.environ.pop("HARNESS_HOOK_STATE", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE"] = old
+    assert calls == [3], calls
+
+
+def test_entries_silent_for_more_than_24_hours_are_dropped():
+    st = h.fresh("s19fix_ctx_24")
+    _seed(st, [_e("dead-start", start_ago=25 * 3600, sid="me"),
+               _e("dead-activity", start_ago=30 * 3600, sid="me", activity_ago=24 * 3600 + 120),
+               _e("revived", start_ago=30 * 3600, sid="me", activity_ago=60),
+               _e("day-minus", start_ago=23 * 3600, sid="me")])
+    line = _ctx(_hook(st, _payload(st, sid="me")))
+    names = line[len(PREFIX):].split(", ")
+    assert "dead-start" not in line and "dead-activity" not in line, line
+    assert names == ["revived", "day-minus?"], line  # live first; a 23 h silent run is still listed, as unknown
+
+
+def test_only_dead_entries_means_empty_output():
+    st = h.fresh("s19fix_ctx_24b")
+    _seed(st, [_e("dead", start_ago=25 * 3600, sid="me")])
+    r = _hook(st, _payload(st, sid="me"))
+    assert r.rc == 0 and r.out == "", r.all
+
+
+def test_live_entries_come_first_and_newest_first_so_the_cap_keeps_live_ones():
+    st = h.fresh("s19fix_ctx_order")
+    unknown = [_e(f"stuck{i}", start_ago=700 + i, sid="me") for i in range(3)]  # in the file BEFORE the live ones
+    live = [_e(f"live{i:02d}", start_ago=10 + i * 5, sid="me") for i in range(10)]  # live00 is the newest
+    _seed(st, unknown + list(reversed(live)))
+    line = _ctx(_hook(st, _payload(st, sid="me")))
+    listed = line[len(PREFIX):].split(" (+")[0].split(", ")
+    assert listed == [f"live{i:02d}" for i in range(10)], line
+    assert "stuck" not in line and "(+3 more)" in line, line
+
+
+def test_unknown_group_is_newest_first_after_the_live_group():
+    st = h.fresh("s19fix_ctx_order2")
+    _seed(st, [_e("old-stuck", start_ago=900, sid="me"), _e("new-stuck", start_ago=650, sid="me"), _e("live", start_ago=5, sid="me")])
+    assert _ctx(_hook(st, _payload(st, sid="me"))) == PREFIX + "live, new-stuck?, old-stuck?"
+
+
+def test_output_is_ascii_json_and_round_trips_a_non_ascii_name():
+    st = h.fresh("s19fix_ctx_ascii")
+    name = "агент-ревью"
+    _seed(st, [_e(name, sid="me")])
+    r = _hook(st, _payload(st, sid="me"))
+    assert r.rc == 0 and r.out.isascii(), repr(r.out)
+    assert "\\u" in r.out, r.out
+    assert json.loads(r.out)["hookSpecificOutput"]["additionalContext"] == PREFIX + name
+
+
+def test_a_read_error_is_logged_to_errors_jsonl_and_prints_nothing():
+    st = h.fresh("s19fix_ctx_err")
+    (st / "agents" / "active.json").mkdir(parents=True)  # a directory where the file should be: read_text raises OSError
+    r = _hook(st, _payload(st, sid="me"))
+    assert r.rc == 0 and r.out == "", r.all
+    lf = st / "agents_context" / "errors.jsonl"
+    assert lf.exists(), list(st.rglob("*"))
+    rows = [json.loads(x) for x in lf.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(rows) == 1 and "read active.json" in rows[0]["error"] and rows[0].get("ts"), rows
+
+
+def test_corrupt_and_invalid_utf8_agents_files_are_logged_too():
+    for name, data in (("json", b"{corrupt"), ("utf8", b"\xff\xfe\x00{")):
+        st = h.fresh("s19fix_ctx_err_" + name)
+        (st / "agents").mkdir(parents=True)
+        (st / "agents" / "active.json").write_bytes(data)
+        r = _hook(st, _payload(st, sid="me"))
+        assert r.rc == 0 and r.out == "", (name, r.all)
+        assert (st / "agents_context" / "errors.jsonl").exists(), name
+
+
+def test_missing_agents_file_is_not_an_error_and_logs_nothing():
+    st = h.fresh("s19fix_ctx_noerr")
+    r = _hook(st, _payload(st, sid="me"))
+    assert r.rc == 0 and r.out == "", r.all
+    assert not (st / "agents_context" / "errors.jsonl").exists()
+
+
+def test_hook_skips_a_malformed_entry_and_lists_the_others():
+    st = h.fresh("s19fix_ctx_bad")
+    bad = _e("bad", sid="me")
+    bad["start"] = "yesterday"
+    _seed(st, [bad, "not-a-dict", None, _e("good", sid="me")])
+    assert _ctx(_hook(st, _payload(st, sid="me"))) == PREFIX + "good"
+
+
+# ---------------------------------------------------------------- S19 review fixes (report): config rules, None on failure, bad entry
+NOT_READ = "состояние не прочитано"  # 'состояние не прочитано'
+NOT_RUNNING = "не запущены"  # 'не запущены'
+
+
+def test_report_reads_a_utf8_sig_config_with_a_bom():
+    st = h.fresh("s19fix_rep_bom_state")
+    repo = h.mk_repo("s19fix_rep_bom_repo")
+    _seed(st, [_e("bom-agent", project=_proj(repo))])
+    cfg = h.fresh("s19fix_rep_bom") / "config.json"
+    cfg.write_bytes(b"\xef\xbb\xbf" + json.dumps({"HARNESS_HOOK_STATE": str(st)}).encode("utf-8"))
+    with _Env(HARNESS_HOOK_STATE=None, HARNESS_HOOK_CONFIG=str(cfg)):
+        got = report.running_agents(repo)
+    assert [e["type"] for e in got] == ["bom-agent"], got
+
+
+def test_report_skips_a_placeholder_state_value_in_the_config():
+    st = h.fresh("s19fix_rep_ph_state")
+    repo = h.mk_repo("s19fix_rep_ph_repo")
+    _seed(st, [_e("ph-agent", project=_proj(repo))])
+    home = h.fresh("s19fix_rep_ph_home")  # no .harness-hooks here
+    cfg = home / "config.json"
+    cfg.write_text(json.dumps({"HARNESS_HOOK_STATE": "<" + str(st) + ">"}), encoding="utf-8")
+    with _Env(HARNESS_HOOK_STATE=None, HARNESS_HOOK_CONFIG=str(cfg), USERPROFILE=str(home), HOME=str(home)):
+        got = report.running_agents(repo)
+    assert got == [], got  # the '<...>' value was not used as a folder: the default home folder has no agents file
+
+
+def test_report_expands_environment_variables_in_the_config_state_path():
+    base = h.fresh("s19fix_rep_ev")
+    st = base / "inner"
+    repo = h.mk_repo("s19fix_rep_ev_repo")
+    _seed(st, [_e("ev-agent", project=_proj(repo))])
+    cfg = base / "config.json"
+    cfg.write_text(json.dumps({"HARNESS_HOOK_STATE": "%S19FIX_BASE%\\inner"}), encoding="utf-8")
+    with _Env(HARNESS_HOOK_STATE=None, HARNESS_HOOK_CONFIG=str(cfg), S19FIX_BASE=str(base)):
+        got = report.running_agents(repo)
+    assert [e["type"] for e in got] == ["ev-agent"], got
+
+
+def test_report_returns_none_on_a_broken_state_file_and_sec_agents_says_not_read():
+    repo = h.mk_repo("s19fix_rep_none_repo")
+    for name, data in (("json", b"{corrupt"), ("utf8", b"\xff\xfe{"), ("shape", b'["a"]')):
+        st = h.fresh("s19fix_rep_none_" + name)
+        (st / "agents").mkdir(parents=True)
+        (st / "agents" / "active.json").write_bytes(data)
+        with _Env(HARNESS_HOOK_STATE=str(st)):
+            assert report.running_agents(repo) is None, name
+            assert report.AGENTS_ERROR, name
+            out = report.sec_agents(repo)
+        assert NOT_READ in out and NOT_RUNNING not in out, (name, out)
+
+
+def test_report_missing_file_is_empty_list_not_none_twin():
+    repo = h.mk_repo("s19fix_rep_miss_repo")
+    st = h.fresh("s19fix_rep_miss")
+    with _Env(HARNESS_HOOK_STATE=str(st)):
+        assert report.running_agents(repo) == []
+        assert report.AGENTS_ERROR == ""
+
+
+def test_sec_agents_skips_a_malformed_entry_without_a_crash():
+    st = h.fresh("s19fix_rep_bad")
+    repo = h.mk_repo("s19fix_rep_bad_repo")
+    bad = _e("bad-agent", project=_proj(repo))
+    bad["start"] = "yesterday"
+    _seed(st, [bad, "junk", _e("good-agent", project=_proj(repo), start_ago=100)])
+    with _Env(HARNESS_HOOK_STATE=str(st)):
+        out = report.sec_agents(repo)
+    assert "<code>good-agent</code>" in out and "bad-agent" not in out, out
+    assert NOT_READ not in out, out
 
 
 if __name__ == "__main__":

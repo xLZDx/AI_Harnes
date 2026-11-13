@@ -309,5 +309,158 @@ def test_missing_file_under_a_spaced_directory_outside_any_repository_gives_empt
     assert got == "", got
 
 
+# ---------------------------------------------------------------- S19 review fixes: one hook budget (8 s), lock reserve, per-call git limit
+import contextlib
+import io
+
+
+class _Patch:
+    """Sets module attributes for one block and restores them."""
+
+    def __init__(self, mod, **kv):
+        self.mod, self.kv, self.old = mod, kv, {}
+
+    def __enter__(self):
+        for k, v in self.kv.items():
+            self.old[k] = getattr(self.mod, k)
+            setattr(self.mod, k, v)
+
+    def __exit__(self, *e):
+        for k, v in self.old.items():
+            setattr(self.mod, k, v)
+
+
+class _TimeoutSpy:
+    """Wraps _agentio.run_git and records (cwd, timeout) of every call."""
+
+    def __init__(self):
+        self.calls, self.orig = [], _agentio.run_git
+
+    def __enter__(self):
+        def fake(args, cwd=None, timeout=None):
+            self.calls.append((str(cwd), timeout))
+            return self.orig(args, cwd=cwd, timeout=timeout)
+        _agentio.run_git = fake
+        return self
+
+    def __exit__(self, *e):
+        _agentio.run_git = self.orig
+
+
+def test_shipped_budget_constants():
+    assert SHIPPED_DEADLINE == 5.0, SHIPPED_DEADLINE
+    assert av.HOOK_BUDGET_S == 8.0 and av.LOCK_RESERVE_S == 1.2, (av.HOOK_BUDGET_S, av.LOCK_RESERVE_S)
+    # the whole announce_start budget plus the interpreter start must stay inside the 10 s hook limit
+    assert av.HOOK_BUDGET_S < 10
+
+
+def _announce_spy(budget=None):
+    """Runs announce_start with project_root / project_from_text replaced by recorders; returns (root_timeouts, hook_deadlines,
+    time left to the deadline at the moment of the call)."""
+    st = h.fresh("s19fix_ann")
+    rec = {"root": [], "text": [], "left": []}
+
+    def fake_root(cwd, timeout=None):
+        rec["root"].append(timeout)
+        return ""
+
+    def fake_text(ti, hook_deadline=None, **kw):
+        rec["text"].append(hook_deadline)
+        rec["left"].append(None if hook_deadline is None else hook_deadline - time.monotonic())
+        return ""
+
+    old_env = os.environ.get("HARNESS_HOOK_STATE")
+    os.environ["HARNESS_HOOK_STATE"] = str(st)
+    try:
+        kv = {"project_root": fake_root, "project_from_text": fake_text}
+        if budget is not None:
+            kv["HOOK_BUDGET_S"] = budget
+        with _Patch(av, **kv), contextlib.redirect_stdout(io.StringIO()):
+            av.announce_start({"cwd": str(st), "session_id": "s1", "tool_input": {"subagent_type": "role-x"}}, "claude")
+    finally:
+        if old_env is None:
+            os.environ.pop("HARNESS_HOOK_STATE", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE"] = old_env
+    return rec
+
+
+def test_announce_start_runs_under_one_8_second_deadline():
+    rec = _announce_spy()
+    assert len(rec["root"]) == 1 and len(rec["text"]) == 1, rec
+    assert 3.0 >= rec["root"][0] > 2.9, rec["root"]  # min(3, 8 - 1.2 - elapsed) = 3
+    assert rec["text"][0] is not None, rec
+    assert 7.0 < rec["left"][0] <= 8.0, rec["left"]  # the deadline handed down is t0 + 8 s, shared by both searches
+
+
+def test_announce_start_root_timeout_leaves_the_lock_reserve():
+    rec = _announce_spy(budget=2.0)  # 2.0 - 1.2 reserve = 0.8 s at most for the first git call
+    assert len(rec["root"]) == 1, rec
+    assert 0.5 < rec["root"][0] <= 0.8, rec["root"]
+    assert 0.5 < rec["left"][0] <= 2.0, rec["left"]
+
+
+def test_announce_start_skips_project_root_when_less_than_min_git_is_left():
+    rec = _announce_spy(budget=1.3)  # 1.3 - 1.2 = 0.1 s < MIN_GIT_S 0.2: no git call, fail closed
+    assert rec["root"] == [], rec
+    assert len(rec["text"]) == 1, rec  # the text search still gets the (nearly spent) deadline
+
+
+def test_project_from_text_with_a_one_second_hook_deadline_gives_empty_and_asks_git_nothing():
+    a = h.mk_repo("s19fix_hd1")
+    d = _dirs(a, 1)[0]
+    assert _norm(av.project_from_text({"prompt": str(d)}, hook_deadline=time.monotonic() + 30)) == _norm(a)  # twin
+    with _TimeoutSpy() as spy:
+        got = av.project_from_text({"prompt": str(d)}, hook_deadline=time.monotonic() + 1.0)
+    assert got == "", got  # 1.0 s is inside the 1.2 s lock reserve: nothing left
+    assert spy.calls == [], spy.calls
+
+
+def test_project_from_text_with_less_than_min_git_left_gives_empty_without_a_git_call():
+    a = h.mk_repo("s19fix_hd2")
+    d = _dirs(a, 1)[0]
+    with _TimeoutSpy() as spy:
+        got = av.project_from_text({"prompt": str(d)}, hook_deadline=time.monotonic() + av.LOCK_RESERVE_S + 0.1)
+    assert got == "", got
+    assert spy.calls == [], spy.calls
+
+
+def test_each_git_call_gets_min_of_the_git_limit_and_the_time_left():
+    a = h.mk_repo("s19fix_hd3")
+    d = _dirs(a, 1)[0]
+    # plenty of time: the per-call limit wins
+    with _Patch(av, BIND_GIT_TIMEOUT_S=2, BIND_DEADLINE_S=120.0), _TimeoutSpy() as spy:
+        assert _norm(av.project_from_text({"prompt": str(d)}, hook_deadline=time.monotonic() + 60)) == _norm(a)
+    assert len(spy.calls) == 1 and spy.calls[0][1] == 2, spy.calls
+    # 1.5 s left before the reserve: the remaining time wins over the 2 s limit
+    with _Patch(av, BIND_GIT_TIMEOUT_S=2, BIND_DEADLINE_S=120.0), _TimeoutSpy() as spy:
+        av.project_from_text({"prompt": str(d)}, hook_deadline=time.monotonic() + av.LOCK_RESERVE_S + 1.5)
+    assert len(spy.calls) == 1, spy.calls
+    assert 0.5 < spy.calls[0][1] <= 1.5, spy.calls
+    # no hook deadline: only the per-call limit applies
+    with _Patch(av, BIND_GIT_TIMEOUT_S=2, BIND_DEADLINE_S=120.0), _TimeoutSpy() as spy:
+        av.project_from_text({"prompt": str(d)})
+    assert spy.calls[0][1] == 2, spy.calls
+
+
+def test_extend_unquoted_stops_at_the_deadline():
+    parent, proj, f = _spaced_pair("s19fix_ext")
+    text = "edit " + str(f)
+    m = av.ABS_PATH_RE.search(text)
+    raw, pos = m.group(0), m.end()
+    assert " " not in raw and text[pos:pos + 1] == " ", (raw, text[pos:])
+    assert os.path.normcase(av._extend_unquoted(raw, text, pos, time.monotonic() + 60)) == os.path.normcase(str(f))  # twin
+    assert av._extend_unquoted(raw, text, pos, time.monotonic() - 1.0) == raw  # deadline passed: the plain path, no extension
+
+
+def test_project_root_passes_its_timeout_to_run_git():
+    a = h.mk_repo("s19fix_pr")
+    with _TimeoutSpy() as spy:
+        assert _norm(av.project_root(str(a), timeout=3)) == _norm(a)
+        av.project_root(str(a))
+    assert spy.calls[0][1] == 3, spy.calls
+    assert spy.calls[1][1] is None, spy.calls  # no timeout given: run_git keeps its own default
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))
