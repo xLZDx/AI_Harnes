@@ -8,8 +8,9 @@ agents. This hook puts one short line into additionalContext, e.g.
 Source: agents/active.json in the hook state folder (HARNESS_HOOK_STATE or ~/.harness-hooks), written by agent_visibility.py.
 Only entries without a `stop` that belong to the current project (entry `project` equals the main checkout of the prompt's
 cwd) or to the current session (entry `session` equals the payload session_id) are listed. A name followed by `?` has had no
-event for 10+ minutes (STATUS_UNKNOWN: it may be dead). Nothing is printed when no agent runs. Any error is logged to stderr
-only; the hook always exits 0 and never blocks the prompt. Work is one small JSON read and at most one git call.
+event for 10+ minutes (STATUS_UNKNOWN: it may be dead); entries silent for over 24 h are dropped. Nothing is printed when no
+agent runs. Any error is appended to <state>/agents_context/errors.jsonl (no rotation yet, backlog B47); the hook always
+exits 0 and never blocks the prompt. Work is one small JSON read and at most one git call (3 s cap).
 One file for Claude Code and Codex: both send the same UserPromptSubmit stdin and accept the same JSON output.
 """
 from __future__ import annotations
