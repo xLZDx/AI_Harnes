@@ -26,7 +26,7 @@ Two planning levels only: a sprint and the tasks inside it. Epics exist only as 
 
 ## /ship
 1. Run `python .harness-tools/route.py --task <id>` to choose reviewers (0-4 by risk). Launch them as real agents with the diff file, the changed-file list and the acceptance criteria. Apply `agent-consensus`.
-2. Fix every accepted BLOCKER/MAJOR in one batch and record `python .harness-tools/ledger.py review <id> --result accepted --findings <n>`.
+2. Fix every accepted BLOCKER/MAJOR in one batch and record `python .harness-tools/ledger.py review <id> --result accepted --findings <n> --by <reviewer roles>`.
 3. Intermediate task (other tasks of the sprint are not done yet): stop here, no GPT-PM, no push; go to `/next`.
 4. Final task (every other task of the sprint is done): run `gpt-pm-gate` once for the whole sprint diff, rounds until APPROVE bound to the HEAD commit.
 5. Only after APPROVE, push the sprint branch and open or update the single PR for the sprint. A new commit invalidates the approval.

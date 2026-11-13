@@ -11,6 +11,6 @@ Follow skill `harness-flow`, step /verify.
    criterion. You never run tests yourself.
 3. A failing test that is a product bug goes back to `implementation-engineer`; a wrong test
    goes back to the tester. Re-run only the affected tests.
-4. Record: `python .harness-tools/ledger.py verify <id> --result pass|fail --evidence "<command and summary>"`.
+4. Record: `python .harness-tools/ledger.py verify <id> --result pass|fail --by <test agent role> --evidence "<command and summary>"` (a pass is refused unless a finished run of that test agent after the task commit is recorded).
    Anything not run is `NOT_RUN` with the reason.
 5. Prohibited: full suites, lint, typecheck, verify scripts, mutation runs.

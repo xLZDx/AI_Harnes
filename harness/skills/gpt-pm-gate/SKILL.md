@@ -15,7 +15,7 @@ Sprint code is committed, the test evidence is green (or `NOT_RUN` with reasons)
 4. Send via PM Bridge, then wait for the reply. Do not poll or resend; one send is one durable job.
 5. Not APPROVE: verify each finding against primary evidence (file, line, run). Fix the whole valid BLOCKER/MAJOR set in one batch and commit.
 6. Later rounds check only those fixes and regressions caused by them. Unrelated improvements go to the backlog. Repeat until APPROVE.
-7. APPROVE: record it with `python .harness-tools/ledger.py approve --evidence "<GPT-PM verdict reference>"`. Then push and open one PR per sprint.
+7. APPROVE: record it with `python .harness-tools/ledger.py approve --request-id <PM Bridge request id>`; the ledger refuses unless PM Bridge holds a correlated bare APPROVE reply naming this HEAD. Then push and open one PR per sprint.
 8. Any new commit changes HEAD and invalidates the approval; code changes after APPROVE need a new round limited to the delta.
 
 ## PM Bridge tool notes

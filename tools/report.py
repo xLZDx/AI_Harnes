@@ -466,13 +466,19 @@ def sec_freshness(d: dict, f: dict, root: Path) -> str:
 def alerts_of(d: dict, g: Git, snap: dict) -> list[str]:
     evs = d.get("events", [])
     alerts = []
-    errs = [e.get("message", "") for e in evs if e.get("kind") == "hook-error"]
+    errs = [e.get("message", "") for e in ledger.open_hook_errors(d)]  # resolved and acknowledged errors stay in history only
     try:
         log = ledger.ledger_path().parent / "hook-error.log"
         if log.exists():  # shell-level failures never reach the ledger
-            known = set(errs)
+            # every message the ledger already has (open, resolved or acknowledged) is decided there, not re-raised here
+            known = set(errs) | {e.get("message", "") for e in evs if e.get("kind") == "hook-error"}
+            acks = [str(e.get("at", "")) for e in evs if e.get("kind") == "hook-error-ack"]
+            last_ack = max(acks) if acks else ""
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-                msg = line.split(" ", 1)[1].strip() if " " in line else line.strip()
+                stamp, _, rest = line.partition(" ")
+                msg = rest.strip() if rest else line.strip()
+                if last_ack and stamp and stamp <= last_ack:
+                    continue  # log-only line acknowledged by ack-errors
                 if msg and msg not in known:
                     errs.append(msg)
                     known.add(msg)

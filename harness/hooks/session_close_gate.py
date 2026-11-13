@@ -358,6 +358,8 @@ def ledger_stop(data: dict, msg: str, waiting: list | None = None) -> bool:
 ASYNC_LAUNCH_RE = re.compile(r"Async agent launched successfully", re.I)
 AGENT_ID_RE = re.compile(r"agentId:\s*([A-Za-z0-9_-]+)")
 NOTIF_ID_RE = re.compile(r"<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>")
+STILL_RUNNING_RE = re.compile(r"waiting on its own background work|background work of its own still running", re.I)
+RESUMED_RE = re.compile(r'"resumedAgentId"\s*:\s*"([A-Za-z0-9_-]+)"')
 PENDING_MAX_AGE = 30 * 60  # a launch older than this without a notification is treated as dead, not as "still running"
 
 
@@ -398,12 +400,31 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                     if m:
                         try:
                             ts = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))  # stamps are UTC
-                            pending[m.group(1)] = ts
+                            pending.setdefault(m.group(1), ts)
                         except (ValueError, TypeError, OverflowError):
-                            pending.pop(m.group(1), None)  # no usable launch time: cannot prove it is fresh, so it is NOT pending
+                            # no usable launch time on THIS row: it proves nothing, so it is not added; a row that
+                            # repeats an earlier timed launch (Claude writes the launch result twice, the copy has no
+                            # timestamp) must not remove that launch, or the gate forces work while agents run
+                            pass
+                if role == "result":
+                    for m in RESUMED_RE.finditer(text):  # SendMessage resumed a finished agent: running again from now
+                        try:
+                            pending[m.group(1)] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
+                        except (ValueError, TypeError, OverflowError):
+                            pass
                 if "<task-notification>" in text:
-                    for m in NOTIF_ID_RE.finditer(text):
-                        pending.pop(m.group(1), None)
+                    for block in text.split("<task-notification>")[1:]:
+                        m = NOTIF_ID_RE.search(block)
+                        if not m:
+                            continue
+                        if STILL_RUNNING_RE.search(block):
+                            # an interim notice: the agent stopped a turn but its own background work still runs
+                            try:
+                                pending[m.group(1)] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
+                            except (ValueError, TypeError, OverflowError):
+                                pass
+                        else:
+                            pending.pop(m.group(1), None)
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE]
     except Exception:  # noqa: BLE001  detection must never break a gate
         return []

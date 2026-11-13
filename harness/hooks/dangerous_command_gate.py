@@ -153,6 +153,106 @@ def _command_substitutions(text: str) -> list[str]:
     return found
 
 
+def _words(seg: str) -> list[tuple[str, int]]:
+    """Whitespace-split words with their start offsets; a quoted span ends at the first matching quote."""
+    out: list[tuple[str, int]] = []
+    i, n = 0, len(seg)
+    while i < n:
+        if seg[i].isspace():
+            i += 1
+            continue
+        start = i
+        while i < n and not seg[i].isspace():
+            if seg[i] in "'\"":
+                j = seg.find(seg[i], i + 1)
+                i = n if j < 0 else j + 1
+            else:
+                i += 1
+        out.append((seg[start:i], start))
+    return out
+
+
+_EXEC_VALUE_FLAGS = {
+    "docker": {"-e", "--env", "-u", "--user", "-w", "--workdir", "--env-file", "--detach-keys",
+               "-H", "--host", "--context", "-c", "--config", "-l", "--log-level"},  # global flags with a value
+    "kubectl": {"-n", "--namespace", "-c", "--container", "-f", "--filename", "--context", "--kubeconfig", "--pod-running-timeout"},
+    "ssh": set("-" + c for c in "BbcDEeFIiJLlmOopQRSWw"),
+    "wsl": {"-d", "--distribution", "-u", "--user", "--cd", "--distribution-id"},
+    "nsenter": {"-t", "--target", "-S", "--setuid", "-G", "--setgid", "-w", "--wd"},
+    "chroot": {"--userspec", "--groups"},
+}
+
+
+def _rest(seg: str, words: list[tuple[str, int]], idx: int) -> str | None:
+    """Text of the command that starts at word idx; a single quoted word is unquoted."""
+    if idx >= len(words):
+        return None
+    rest = seg[words[idx][1]:].strip()
+    if idx == len(words) - 1:
+        rest = _unquote(rest)
+    return rest or None
+
+
+def _skip_flags(words: list[tuple[str, int]], idx: int, kind: str) -> int:
+    values = _EXEC_VALUE_FLAGS.get(kind, set())
+    while idx < len(words) and words[idx][0].startswith("-") and words[idx][0] != "--":
+        w = words[idx][0]
+        idx += 2 if (w in values) else 1
+    if idx < len(words) and words[idx][0] == "--":  # end of options: the next word is the host/container/command
+        idx += 1
+    return idx
+
+
+def _exec_inner(seg: str) -> str | None:
+    """The command an exec-style wrapper runs (docker/podman/kubectl exec, ssh, wsl, su -c, runuser, nsenter, chroot), or None."""
+    words = _words(seg)
+    if not words:
+        return None
+    base = words[0][0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base in {"docker", "podman", "kubectl"}:
+        kind = "kubectl" if base == "kubectl" else "docker"
+        idx = _skip_flags(words, 1, kind)
+        if idx < len(words) and words[idx][0].lower() in {"container", "compose"} and base != "kubectl":
+            idx += 1
+            idx = _skip_flags(words, idx, kind)
+        if idx >= len(words) or words[idx][0].lower() != "exec":
+            return None
+        idx = _skip_flags(words, idx + 1, kind)
+        if kind == "kubectl":
+            for k in range(idx, len(words)):
+                if words[k][0] == "--":
+                    return _rest(seg, words, k + 1)
+            return None
+        return _rest(seg, words, idx + 1)  # words[idx] is the container
+    if base == "ssh":
+        idx = _skip_flags(words, 1, "ssh")
+        return _rest(seg, words, idx + 1)  # words[idx] is the host
+    if base == "wsl":
+        idx = _skip_flags(words, 1, "wsl")
+        if idx < len(words) and words[idx][0] == "--":
+            idx += 1
+        return _rest(seg, words, idx)
+    if base in {"su", "runuser"}:
+        for k in range(1, len(words) - 1):
+            if words[k][0] in {"-c", "--command"} or (words[k][0].startswith("-") and not words[k][0].startswith("--") and words[k][0].endswith("c") and len(words[k][0]) > 2):
+                return _rest(seg, words, k + 1)
+        for k in range(1, len(words)):
+            if words[k][0] == "--":
+                return _rest(seg, words, k + 1)
+        return None
+    if base == "nsenter":
+        for k in range(1, len(words)):
+            if words[k][0] == "--":
+                return _rest(seg, words, k + 1)
+        return _rest(seg, words, _skip_flags(words, 1, "nsenter"))
+    if base == "chroot":
+        idx = _skip_flags(words, 1, "chroot")
+        return _rest(seg, words, idx + 1)  # words[idx] is the new root
+    return None
+
+
 def segments(command: str, depth: int = 0) -> list[str]:
     """Return independently classifiable commands, unwrapping common shell wrappers."""
     out: list[str] = []
@@ -172,6 +272,13 @@ def segments(command: str, depth: int = 0) -> list[str]:
             seg = seg[:-1].rstrip()
         if not seg:
             continue
+        if depth < 3:
+            wrapped = _exec_inner(seg)
+            if wrapped:
+                inner = segments(wrapped, depth + 1)
+                if inner:
+                    out.extend(inner)
+                    continue
         m = SHELL_C.match(seg)
         if m and depth < 3:
             inner = segments(_unquote(m.group(1)), depth + 1)
@@ -361,6 +468,91 @@ def find_hits(command: str) -> list[dict[str, str]]:
     return hits
 
 
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+_WRAPPER_WORDS = {"sh", "bash", "zsh", "ksh", "dash", "pwsh", "powershell", "powershell.exe", "cmd", "cmd.exe", "eval", "source", ".", "xargs",
+                  "wsl", "wsl.exe", "ssh", "su", "runuser", "docker", "podman", "kubectl", "nsenter", "chroot"}
+# A quoted span right after a -c / -e / -Command style flag is code for another shell: keep it raw.
+_CODE_FLAG_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*[ce]|--command|-Command|-EncodedCommand|/[ckCK])\s+$")
+
+
+def _is_wrapper(raw: str) -> bool:
+    """True when the segment runs its quoted argument as shell code (bash -c "...", eval "...", bash <<EOF)."""
+    seg = raw.strip()
+    while seg:
+        nxt = LEADERS.sub("", PREFIXES.sub("", seg, count=1).strip(), count=1).strip()
+        if nxt == seg:
+            break
+        seg = nxt
+    if SHELL_C.match(seg) or EVAL_WRAPPER.match(seg):
+        return True
+    first = seg.split(None, 1)[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if seg.split() else ""
+    return first in _WRAPPER_WORDS
+
+
+def sanitize(cmd: str) -> str:
+    """Quote-aware view of the command: separators inside a quoted span become spaces so log text is not split into
+    fake commands. A span ends at the first matching quote (no backslash escape, so "C:\\proj\\" closes). Double-quoted
+    spans holding $( ) or a backtick, spans after a -c/-e/-Command flag, wrapper segments and their heredoc bodies stay
+    raw; other heredoc bodies are dropped. Same rules as shell_policy_gate._sanitize. Any error returns the raw command."""
+    try:
+        segs: list[list] = []  # [raw, san, body, separator]
+        raw: list[str] = []
+        san: list[str] = []
+        body: list[str] = []
+        pending: list[str] = []
+        i, n = 0, len(cmd)
+
+        def flush(sep: str) -> None:
+            segs.append(["".join(raw), "".join(san), "".join(body), sep])
+            raw.clear(); san.clear(); body.clear()
+
+        while i < n:
+            ch = cmd[i]
+            if ch == "\\" and i + 1 < n:
+                raw.append(cmd[i:i + 2]); san.append(cmd[i:i + 2]); i += 2
+                continue
+            if ch in "'\"":
+                j = cmd.find(ch, i + 1)
+                if j < 0:
+                    j = n
+                span = cmd[i:j + 1] if j < n else cmd[i:]
+                i = j + 1 if j < n else n
+                keep = (ch == '"' and ("$(" in span or "`" in span)) or bool(_CODE_FLAG_RE.search("".join(raw)))
+                raw.append(span); san.append(span if keep else re.sub(r"[;|&\r\n]", " ", span))
+                continue
+            if cmd.startswith("<<", i) and not cmd.startswith("<<<", i):
+                m = _HEREDOC_RE.match(cmd, i)
+                if m:
+                    pending.append(m.group(2))
+                    raw.append(m.group(0)); san.append(m.group(0)); i = m.end()
+                    continue
+            if ch == "\n" and pending:
+                i += 1
+                for delim in pending:
+                    while i < n:
+                        end = cmd.find("\n", i)
+                        line = cmd[i:] if end < 0 else cmd[i:end]
+                        i = n if end < 0 else end + 1
+                        if line.strip() == delim:
+                            break
+                        body.append(line + "\n")
+                pending.clear()
+                flush("\n")
+                continue
+            m = SEPARATORS.match(cmd, i)
+            if m and m.group():
+                flush(m.group()); i = m.end()
+                continue
+            raw.append(ch); san.append(ch); i += 1
+        flush("")
+        out = []
+        for r, s, b, sep in segs:
+            out.append((r + ("\n" + b if b else "") if _is_wrapper(r) else s) + sep)
+        return "".join(out)
+    except Exception:  # noqa: BLE001  never weaken the gate by failing: fall back to the raw command
+        return cmd
+
+
 def main() -> int:
     data = json.loads(sys.stdin.read() or "{}")
     tool_input = data.get("tool_input") or {}
@@ -368,7 +560,7 @@ def main() -> int:
     if not isinstance(command, str) or not command.strip():
         return 0
 
-    hits = find_hits(command)
+    hits = find_hits(sanitize(command))
     if not hits:
         return 0
 

@@ -281,6 +281,9 @@ def c_commit_hook(a, d):
     if not m:
         return
     tid = m.group(1)
+    if tid in HOUSEKEEPING_TASKS:  # harness maintenance commits (tools/ci_triggers_off.py) are not project tasks
+        event(d, "housekeeping-commit", task=tid, sha=sha)
+        return
     if not any(t["id"] == tid for s in d["sprints"] for t in s["tasks"]):
         hook_error(d, f"commit {sha[:12]} names unknown task {tid}")
         return
@@ -292,11 +295,97 @@ def c_commit_hook(a, d):
     print(f"ledger: {tid} <- {sha[:7]} ({t['state']})")
 
 
+TEST_ROLES = {"functional-test-reviewer", "tdd-guide", "e2e-runner"}
+REVIEW_ROLES_EXTRA = {"silent-failure-hunter", "architect", "code-architect", "type-design-analyzer", "comment-analyzer",
+                      "pr-test-analyzer", "a11y-architect"}
+
+
+def is_reviewer(role: str) -> bool:
+    """Allow list: '*-reviewer' agents (not the test author functional-test-reviewer) and the named analysis roles."""
+    r = role.lower()
+    return r not in TEST_ROLES and (r.endswith("-reviewer") or r in REVIEW_ROLES_EXTRA)
+
+
+def _hook_state_base() -> Path:
+    """Same place the hooks write: HARNESS_HOOK_STATE, else that key of the machine config the hooks load
+    (~/.harness-hooks/config.json or HARNESS_HOOK_CONFIG), else ~/.harness-hooks."""
+    v = os.environ.get("HARNESS_HOOK_STATE")
+    if not v:
+        cfg = Path(os.environ.get("HARNESS_HOOK_CONFIG") or Path.home() / ".harness-hooks" / "config.json")
+        try:
+            c = json.loads(cfg.read_text(encoding="utf-8-sig"))
+            x = c.get("HARNESS_HOOK_STATE") if isinstance(c, dict) else None
+            if isinstance(x, str) and x and "<" not in x:
+                v = os.path.expandvars(os.path.expanduser(x))
+        except (OSError, ValueError):
+            pass
+    return Path(v) if v else Path.home() / ".harness-hooks"
+
+
+def _agents_state() -> list:
+    base = _hook_state_base()
+    try:
+        d = json.loads((base / "agents" / "active.json").read_text(encoding="utf-8"))
+        return d.get("agents", []) if isinstance(d, dict) else []
+    except (OSError, ValueError):
+        return []
+
+
+def is_test_path(f: str) -> bool:
+    f = f.replace("\\", "/").lower()
+    name = f.rsplit("/", 1)[-1]
+    return (f.startswith(("tests/", "test/")) or "/tests/" in f or name.startswith("test_") or name.endswith("_test.py")
+            or ".test." in name or ".spec." in name)
+
+
+def require_agent_run(role: str, task_commit: str, what: str) -> None:
+    """A pass/accepted result needs a finished run of that agent role that started after the task's last commit, as
+    recorded by the agent_visibility hook. 2026-11-12 incident: a runaway helper session wrote 'verify pass' and
+    'review accepted' for every S14 task with no test or review agent ever run, then closed the sprint."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import route
+        rules = route.load_rules(main_root())
+        # a docs-only commit (logs, backlog) after the agent run does not make the run stale
+        cur = task_commit
+        while True:
+            files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", cur).splitlines() if f]
+            # docs-only and tests-only commits do not make a run stale (the test agent's own tests are committed after
+            # its run); a commit that touches product code does
+            if not files or any(not (route.is_doc(rules, f) or is_test_path(f)) for f in files):
+                break
+            prev = [c for c in git("rev-list", "--parents", "-n", "1", cur).split()[1:2]]
+            if not prev:
+                break
+            cur = prev[0]
+        since = int(git("show", "-s", "--format=%ct", cur))
+    except (GitError, ValueError, ImportError):
+        sys.exit(f"ledger: cannot read the time of commit {task_commit[:12]}")
+    here = os.path.normcase(str(main_root().resolve()))
+    runs = []
+    for e in _agents_state():
+        try:
+            if (isinstance(e, dict) and str(e.get("type", "")).lower() == role.lower() and e.get("stop")
+                    and float(e.get("start", 0)) >= since - 5
+                    and os.path.normcase(str(e.get("project") or "")) == here):  # a run in another project does not count
+                runs.append(e)
+        except (TypeError, ValueError):
+            continue
+    if not runs:
+        sys.exit(f"ledger: no finished {role} agent run after commit {task_commit[:12]} is recorded; {what} needs one "
+                 "(the agent_visibility hook records START/STOP). Run that agent, then record the result.")
+
+
 def c_verify(a, d):
     _, t = find_task(d, a.id)
     if not t["commits"]:
         sys.exit(f"ledger: {a.id} has no commit yet; verify needs code (commit with 'Task: {a.id}')")
-    t["verify"] = {"result": a.result, "evidence": a.evidence, "at": now(), "task_commit": t["commits"][-1]}
+    if a.result == "pass":
+        if (a.by or "").lower() not in TEST_ROLES:
+            sys.exit(f"ledger: verify pass needs --by <test agent role>: one of {', '.join(sorted(TEST_ROLES))}")
+        require_agent_run(a.by, t["commits"][-1], "a verify pass")
+    t["verify"] = {"result": a.result, "evidence": a.evidence, "at": now(), "task_commit": t["commits"][-1],
+                   "by": a.by or None}
     recompute(t)
     event(d, "verify", task=a.id, result=a.result)
     print(f"{a.id} verify={a.result} state={t['state']}")
@@ -306,7 +395,15 @@ def c_review(a, d):
     _, t = find_task(d, a.id)
     if not t["commits"]:
         sys.exit(f"ledger: {a.id} has no commit yet")
-    t["review"] = {"result": a.result, "findings": a.findings, "at": now(), "task_commit": t["commits"][-1]}
+    if a.result == "accepted":
+        by = [r.strip() for r in (a.by or "").split(",") if r.strip()]
+        if not by or not all(is_reviewer(r) for r in by):
+            sys.exit("ledger: review accepted needs --by <reviewer role[,role]> (the reviewers route.py chose; "
+                     "an implementation, test or general agent is not a reviewer)")
+        for r in by:
+            require_agent_run(r, t["commits"][-1], "an accepted review")
+    t["review"] = {"result": a.result, "findings": a.findings, "at": now(), "task_commit": t["commits"][-1],
+                   "by": a.by or None}
     recompute(t)
     event(d, "review", task=a.id, result=a.result)
     print(f"{a.id} review={a.result} state={t['state']}")
@@ -318,11 +415,95 @@ def c_tokens(a, d):
     print(f"{a.id} tokens recorded")
 
 
+REQ_ID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+APPROVE_LINE = re.compile(r"^[\s*#>_]*(?:VERDICT\s*:\s*)?APPROVE[D]?[\s*_.]*$", re.I)
+NEGATIVE_LINE = re.compile(r"^[\s*#>_]*(?:VERDICT\s*:\s*)?(?:REVISE|REQUEST[_ ]CHANGES|MODIFY|REJECT|RESEND\b|NOT APPROVED)",
+                           re.I)
+HEAD_LINE = re.compile(r"^[\s*#>_]*HEAD\s*:\s*`?([0-9a-f]{7,64})", re.I | re.M)
+
+
+def pm_bridge_messages() -> Path | None:
+    """PM Bridge's message log: HARNESS_PM_BRIDGE_MESSAGES, else a `pm-bridge/state/messages.jsonl` beside the project
+    or beside one of its parent folders (the workspace layout: <workspace>/<project>, <workspace>/pm-bridge)."""
+    env = os.environ.get("HARNESS_PM_BRIDGE_MESSAGES")
+    if env:
+        return Path(env)
+    for p in [main_root(), *main_root().parents]:
+        c = p.parent / "pm-bridge" / "state" / "messages.jsonl"
+        if c.is_file():
+            return c
+    return None
+
+
+def find_pm_approve(request_id: str, h: str, project: str) -> tuple[str | None, str]:
+    """(reply id, '') when PM Bridge holds a correlated GPT-PM reply to `request_id` whose verdict is APPROVE and whose
+    HEAD (in the reply, else in the request we sent) is `h`; otherwise (None, reason)."""
+    path = pm_bridge_messages()
+    if not path:
+        return None, "PM Bridge message log not found (set HARNESS_PM_BRIDGE_MESSAGES)"
+    norm = lambda s: re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+    out_text, replies = "", []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if request_id not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue  # also a partial last line while PM Bridge is writing
+                if not isinstance(r, dict) or r.get("reviewRequestId") != request_id:
+                    continue
+                if norm(r.get("project")) != norm(project):
+                    continue  # a record must name this project
+                if r.get("direction") == "outbound":
+                    out_text += str(r.get("text") or "")
+                elif r.get("direction") == "inbound" and r.get("correlated"):
+                    replies.append(r)
+    except OSError as e:
+        return None, f"cannot read {path}: {e}"
+    if not replies:
+        return None, f"no correlated GPT-PM reply to request {request_id} for project {project} in {path}"
+    # only the NEWEST reply decides: an APPROVE followed by a REVISE/RESEND to the same request is not an approval
+    r = replies[-1]
+    text = str(r.get("text") or "")
+    lines = text.splitlines()
+    if any(NEGATIVE_LINE.match(l) for l in lines) or not any(APPROVE_LINE.match(l) for l in lines):
+        return None, f"the latest GPT-PM reply to {request_id} is not a bare APPROVE (REVISE/RESEND/findings or no verdict line)"
+    heads = HEAD_LINE.findall(text)  # the reply itself must name the HEAD; our own request text proves nothing
+    if not heads or not all(h.startswith(x.lower()) for x in heads):
+        return None, f"the APPROVE reply to {request_id} names HEAD {', '.join(heads) or '(none)'}, not {h[:12]}"
+    return str(r.get("replyId") or r.get("messageId")), ""
+
+
 def c_approve(a, d):
     h = resolve(a.head) if a.head else head()
-    d["approval"] = {"head": h, "by": "GPT-PM", "at": now(), "evidence": a.evidence}
-    event(d, "approve", head=h, evidence=a.evidence)
-    print(f"approval bound to {h[:12]}")
+    if not a.request_id or not REQ_ID_RE.fullmatch(a.request_id):
+        sys.exit("ledger: approve needs --request-id <PM Bridge review request id>; the approval is checked against "
+                 "GPT-PM's real reply, a typed text is not an approval")
+    reply, why = find_pm_approve(a.request_id, h, d.get("project") or main_root().name)
+    if not reply:
+        sys.exit(f"ledger: approval refused: {why}")
+    d["approval"] = {"head": h, "by": "GPT-PM", "at": now(), "evidence": a.evidence or "",
+                     "request_id": a.request_id, "reply_id": reply}
+    event(d, "approve", head=h, request_id=a.request_id, reply_id=reply)
+    print(f"approval bound to {h[:12]} (GPT-PM reply {reply})")
+
+
+def c_reopen(a, d):
+    """Undo a wrong sprint close: the sprint is open again, every task's verify and review are cleared (to be recorded
+    again with real agent runs) and an approval of a commit on this sprint is dropped. History stays in the events."""
+    s = next((s for s in d["sprints"] if s["id"] == a.id), None)
+    if not s:
+        sys.exit(f"ledger: sprint {a.id} not found")
+    s["state"], s["closed"] = "open", None
+    for t in s["tasks"]:
+        t["verify"], t["review"] = None, None
+        recompute(t)
+    dropped = bool(d.get("approval"))
+    d["approval"] = None
+    event(d, "sprint-reopen", sprint=a.id, reason=a.reason, approval_dropped=dropped)
+    print(f"sprint {a.id} reopened; verify/review cleared for {len(s['tasks'])} task(s); approval dropped={dropped}")
 
 
 def is_ancestor(a: str, b: str) -> bool:
@@ -357,7 +538,9 @@ def c_check_approval(a, d):
             event(dd, "approval-skipped", shas=shas)
         print("approval check skipped by HARNESS_SKIP_APPROVAL=1 (recorded in the ledger)", file=sys.stderr)
         return 0
-    ap = (d.get("approval") or {}).get("head")
+    rec = d.get("approval") or {}
+    # an approval without the PM Bridge request id was typed, not checked against a GPT-PM reply (2026-11-12 incident)
+    ap = rec.get("head") if rec.get("request_id") else None
     bad = []
     for sha in shas:
         if ap and (sha == ap or is_ancestor(sha, ap) or (is_ancestor(ap, sha) and doc_only_since(ap, sha))):
@@ -367,7 +550,7 @@ def c_check_approval(a, d):
         print(f"approval ok ({len(shas)} ref(s), approved {ap[:12]})")
         return 0
     print(f"push blocked: no GPT-PM APPROVE covers {', '.join(s[:12] for s in bad)} (approved: {(ap or 'none')[:12]}). "
-          "Run the gpt-pm-gate skill, then `python .harness-tools/ledger.py approve --evidence ...`.", file=sys.stderr)
+          "Run the gpt-pm-gate skill, then `python .harness-tools/ledger.py approve --request-id <PM Bridge request id>` (checked against the real reply).", file=sys.stderr)
     return 1
 
 
@@ -383,8 +566,36 @@ def c_sprint_close(a, d):
     print(f"sprint {a.id} closed")
 
 
+UNKNOWN_TASK_RE = re.compile(r"names unknown task (\S+)")
+HOUSEKEEPING_TASKS = {"CI-OFF"}  # Task: trailers of harness maintenance commits in project repos
+
+
+def open_hook_errors(d) -> list:
+    """Hook errors still worth a warning. History is never removed (operator rule 5): an error is only hidden when
+    (a) it reported an unknown task that the ledger now has (the plan sync added it), or
+    (b) an 'ack-errors' event recorded later acknowledges it with a reason."""
+    ids = {t["id"] for s in d["sprints"] for t in s["tasks"]}
+    events = d.get("events", [])
+    last_ack = max((i for i, e in enumerate(events) if e.get("kind") == "hook-error-ack"), default=-1)
+    out = []
+    for i, e in enumerate(events):
+        if e.get("kind") != "hook-error" or i < last_ack:
+            continue
+        m = UNKNOWN_TASK_RE.search(str(e.get("message", "")))
+        if m and (m.group(1) in ids or m.group(1) in HOUSEKEEPING_TASKS):
+            continue
+        out.append(e)
+    return out
+
+
+def c_ack_errors(a, d):
+    n = len(open_hook_errors(d))
+    event(d, "hook-error-ack", reason=a.reason, count=n)
+    print(f"ledger: {n} open hook error(s) acknowledged ({a.reason}); history kept")
+
+
 def c_status(a, d):
-    errs = [e for e in d.get("events", []) if e["kind"] == "hook-error"]
+    errs = open_hook_errors(d)
     if errs:
         print(f"WARNING: {len(errs)} hook error(s); last: {errs[-1]['message']}")
     if not d["sprints"]:
@@ -418,13 +629,15 @@ def main(argv=None) -> int:
     x.add_argument("--cause", required=True, help="the verified cause")
     x.add_argument("--case", help="OPERATOR only: " + "|".join(OPERATOR_CASES))
     sub.add_parser("commit-hook")
-    x = sub.add_parser("verify"); x.add_argument("id"); x.add_argument("--result", choices=["pass", "fail", "NOT_RUN"], required=True); x.add_argument("--evidence", required=True)
-    x = sub.add_parser("review"); x.add_argument("id"); x.add_argument("--result", choices=["accepted", "changes"], required=True); x.add_argument("--findings", type=int, default=0)
+    x = sub.add_parser("verify"); x.add_argument("id"); x.add_argument("--result", choices=["pass", "fail", "NOT_RUN"], required=True); x.add_argument("--evidence", required=True); x.add_argument("--by", help="test agent role that ran the tests (required for pass)")
+    x = sub.add_parser("review"); x.add_argument("id"); x.add_argument("--result", choices=["accepted", "changes"], required=True); x.add_argument("--findings", type=int, default=0); x.add_argument("--by", help="reviewer role(s) that ran, comma separated (required for accepted)")
     x = sub.add_parser("tokens"); x.add_argument("id"); x.add_argument("--code", type=int, default=0); x.add_argument("--tests", type=int, default=0); x.add_argument("--docs", type=int, default=0)
-    x = sub.add_parser("approve"); x.add_argument("--head"); x.add_argument("--evidence", required=True, help="GPT-PM verdict reference: chat, reply id or quote")
+    x = sub.add_parser("approve"); x.add_argument("--head"); x.add_argument("--request-id", required=True, help="PM Bridge review request id whose GPT-PM reply is APPROVE for this HEAD"); x.add_argument("--evidence", default="", help="optional note")
     sub.add_parser("check-approval")
     x = sub.add_parser("sprint-close"); x.add_argument("id"); x.add_argument("--force", action="store_true")
+    x = sub.add_parser("reopen"); x.add_argument("id"); x.add_argument("--reason", required=True)
     sub.add_parser("status")
+    x = sub.add_parser("ack-errors"); x.add_argument("--reason", required=True, help="why the open hook errors are acknowledged")
     a = p.parse_args(argv)
     fn = globals()["c_" + a.cmd.replace("-", "_")]
     try:

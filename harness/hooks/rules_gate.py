@@ -119,6 +119,7 @@ def strip_heredocs(cmd: str) -> str:
         pre = split_segments(line[:ms[0].start()])
         last = tokenize(pre[-1]) if pre else []
         interp = any(base(t) in SHELLS or base(t) in PY_BASES for t in last[:4])
+        py_body = not any(base(t) in SHELLS for t in last[:4])  # a python body has no shell substitution
         for m in ms:
             tag = m.group(2) or m.group(3) or m.group(4)
             body: list[str] = []
@@ -129,7 +130,12 @@ def strip_heredocs(cmd: str) -> str:
                     break
                 body.append(l)
             if interp:
-                out.extend(body)
+                # python source keeps its plain lines (a shell-like `npm test` line is still read), but `$(` and
+                # backticks there are Python text, not shell substitution, so they are neutralised
+                # ...unless the python code starts a shell (os.system, os.popen, subprocess, shell=True): then a `$(`
+                # in its strings really runs, so the body stays as it is
+                shells_out = re.search(r"os\.(system|popen)|subprocess|shell\s*=\s*True", "\n".join(body))
+                out.extend([b.replace("$(", "$ (").replace("`", "'") for b in body] if py_body and not shells_out else body)
     return "\n".join(out)
 
 
@@ -307,7 +313,7 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
     """Findings for one command (already split). kinds: full-test, named-test, py-script-test, lint, typecheck, verify,
     ci, push, pr-create."""
     if depth > 3:
-        return []
+        return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]  # fail closed: too deep to read is not allowed
     toks = list(tokens)
     while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]):
         toks.pop(0)  # leading VAR=value
@@ -429,6 +435,10 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
         return [("named-test" if names and "discover" not in [a.lower() for a in rest] else "full-test", "unittest", cwd)]
     if b in ("vitest", "jest"):
         return [("named-test" if has_file(rest) else "full-test", b, cwd)]
+    if b in ("flutter", "dart", "go", "cargo", "playwright", "dotnet", "mvn", "mvnw", "gradle", "gradlew"):
+        r = classify_runner(b, rest, cwd)
+        if r:
+            return r
     if b in ("eslint", "eslint_d", "ruff", "flake8", "pylint", "biome"):
         return [("lint", b, cwd)]
     if b in ("mypy", "pyright", "basedpyright"):
@@ -440,11 +450,92 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
     return []
 
 
+def classify_runner(b: str, rest: list[str], cwd: str) -> list[tuple]:
+    """Other test runners (flutter, dart, go, cargo, playwright, dotnet, mvn, gradle): full-test unless a test file is named."""
+    args = [a for a in rest if not a.startswith("+")]  # cargo +nightly test
+    plain = [a for a in args if not is_flag(a)]
+    sub = plain[0].lower() if plain else ""
+    ext_named = lambda ext: has_file(args) or any(not is_flag(a) and a.lower().endswith(ext) for a in args)  # noqa: E731
+    if b in ("flutter", "dart") and sub == "test":
+        return [("named-test" if ext_named(".dart") else "full-test", f"{b} test", cwd)]
+    if b == "go" and sub == "test":
+        named = any(not is_flag(a) and a.lower().endswith("_test.go") for a in args)
+        return [("named-test" if named else "full-test", "go test", cwd)]
+    if b == "cargo" and sub == "test":
+        named = any(a == "--test" or a.startswith("--test=") for a in args)
+        return [("named-test" if named else "full-test", "cargo test", cwd)]
+    if b == "playwright" and sub == "test":
+        return [("named-test" if has_file(args[args.index(plain[0]) + 1:]) else "full-test", "playwright test", cwd)]
+    if b == "dotnet" and sub == "test":
+        return [("full-test", "dotnet test", cwd)]
+    if b in ("mvn", "mvnw") and "test" in [a.lower() for a in plain]:
+        return [("full-test", f"{b} test", cwd)]
+    if b in ("gradle", "gradlew") and any(a.lower() == "test" or a.lower().endswith(":test") for a in plain):
+        return [("full-test", f"{b} test", cwd)]
+    return []
+
+
+def extract_subst(cmd: str) -> tuple[str, list[str]]:
+    """Command substitutions $(...) and `...` (active outside single quotes, also inside double quotes): return the command
+    with each replaced by a placeholder, and the inner command texts to analyse on their own."""
+    out: list[str] = []
+    inners: list[str] = []
+    i, n, sq, dq = 0, len(cmd), False, False
+    while i < n:
+        ch = cmd[i]
+        if ch == "\\" and not sq and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if ch == "'" and not dq:
+            sq = not sq
+        elif ch == '"' and not sq:
+            dq = not dq
+        elif not sq and ch == "$" and cmd.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += (cmd[j] == "(") - (cmd[j] == ")")
+                j += 1
+            inners.append(cmd[i + 2:j - 1 if depth == 0 else j])
+            out.append("x")
+            i = j
+            continue
+        elif not sq and ch == "`":
+            j = i + 1
+            while j < n and cmd[j] != "`":
+                j += 2 if cmd[j] == "\\" else 1
+            inners.append(cmd[i + 1:j])
+            out.append("x")
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out), inners
+
+
+def strip_case(toks: list[str]) -> list[str]:
+    """`case $a in x) cmd` and later branches `y) cmd`: drop the case head / pattern so cmd is classified."""
+    if toks and toks[0].lower() == "case":
+        for k, t in enumerate(toks):
+            if k >= 2 and t.endswith(")") and "in" in [x.lower() for x in toks[:k]]:
+                return toks[k + 1:]
+        return []
+    if toks and len(toks) > 1 and re.fullmatch(r"[^()\s]*\)", toks[0]):
+        return toks[1:]
+    return toks
+
+
 def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
+    if depth > 3:
+        return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]
     found: list[tuple] = []
     cur = cwd
-    for seg in split_segments(strip_heredocs(command)):
+    outer, inners = extract_subst(strip_heredocs(command))
+    for inner in inners:
+        found.extend(analyze(inner, cwd, depth + 1))
+    for seg in split_segments(outer):
         toks = clean_tokens(tokenize(seg))
+        toks = clean_tokens(strip_case(toks)) if toks else toks
         if not toks:
             continue
         b = base(toks[0])
@@ -542,7 +633,12 @@ def _ledger_problems(cwd: str, led: Path) -> list[str]:
         return ["ledger unreadable or malformed"]
     if not ap:
         problems.append("no GPT-PM approval is recorded in the ledger (run the gpt-pm-gate skill, then `ledger.py approve`)")
-    elif head and ap != head:
+    elif not (approval or {}).get("request_id"):
+        problems.append("the recorded approval has no PM Bridge request id, so it was never checked against a GPT-PM "
+                        "reply; record it again with `ledger.py approve --request-id <id>`")
+    elif not head:
+        problems.append("HEAD cannot be resolved, so the approval cannot be checked against it")
+    elif ap != head:
         problems.append(f"the GPT-PM approval is bound to {ap[:12]}, not to the current HEAD {head[:12]} "
                         "(a new commit removes the approval; run gpt-pm-gate again)")
     sprint = next((s for s in data.get("sprints", []) if s.get("state") != "closed"), None)
