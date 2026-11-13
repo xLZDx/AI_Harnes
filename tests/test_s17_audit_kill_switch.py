@@ -19,18 +19,23 @@ _s.loader.exec_module(ap)
 
 USER_SUB = r"Environment"
 MACHINE_SUB = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
-MODE_VARS = ("SESSION_SUPERVISOR_MODE", "SESSION_CLOSE_GATE_MODE", "CLAUDE_ROSETTA_GATE", "CLAUDE_SHELL_POLICY_AUDIT")
+OPT_IN_VARS = ("CLAUDE_ROSETTA_GATE", "CLAUDE_SHELL_POLICY_AUDIT")  # opt-in modes: never kill switches
+SESSION_MODE_VARS = ("SESSION_SUPERVISOR_MODE", "SESSION_CLOSE_GATE_MODE")  # kill switches for "off" only
+MODE_VARS = OPT_IN_VARS + SESSION_MODE_VARS
+ALL3 = {"off", "0", "false"}
 
 
-def fake_winreg(user=(), machine=(), user_err=None, machine_err=None):
-    """A winreg stand-in. user/machine: lists of (name, value); *_err: exception raised by OpenKey for that scope."""
+def fake_winreg(user=(), machine=(), user_err=None, machine_err=None, user_enum_err=None, machine_enum_err=None):
+    """A winreg stand-in. user/machine: lists of (name, value); *_err: exception raised by OpenKey for that scope;
+    *_enum_err: exception EnumValue raises once the listed values are exhausted (instead of the normal error 259)."""
     m = types.ModuleType("winreg")
     m.HKEY_CURRENT_USER, m.HKEY_LOCAL_MACHINE = "HKCU", "HKLM"
-    data = {("HKCU", USER_SUB): (list(user), user_err), ("HKLM", MACHINE_SUB): (list(machine), machine_err)}
+    data = {("HKCU", USER_SUB): (list(user), user_err, user_enum_err),
+            ("HKLM", MACHINE_SUB): (list(machine), machine_err, machine_enum_err)}
 
     class Key:
-        def __init__(self, vals):
-            self.vals = vals
+        def __init__(self, vals, enum_err):
+            self.vals, self.enum_err = vals, enum_err
 
         def __enter__(self):
             return self
@@ -39,14 +44,14 @@ def fake_winreg(user=(), machine=(), user_err=None, machine_err=None):
             return False
 
     def OpenKey(root, sub):
-        vals, err = data[(root, sub)]
+        vals, err, enum_err = data[(root, sub)]
         if err is not None:
             raise err
-        return Key(vals)
+        return Key(vals, enum_err)
 
     def EnumValue(key, i):
         if i >= len(key.vals):
-            raise OSError(259, "no more data")
+            raise key.enum_err if key.enum_err is not None else OSError(259, "no more data")
         n, v = key.vals[i]
         return n, v, 1
 
@@ -57,7 +62,8 @@ def fake_winreg(user=(), machine=(), user_err=None, machine_err=None):
 @contextlib.contextmanager
 def env(winreg_mod, **set_vars):
     """Process env with every kill-switch-like and mode variable removed, then set_vars applied; fake winreg installed."""
-    clean = {k: v for k, v in os.environ.items() if k not in ap.kill_switch_names() and k not in MODE_VARS}
+    drop = ap.kill_switch_names() | set(MODE_VARS)  # read once: the scan of the hook sources is slow per call
+    clean = {k: v for k, v in os.environ.items() if k not in drop}
     clean.update(set_vars)
     with mock.patch.dict(os.environ, clean, clear=True), mock.patch.dict(sys.modules, {"winreg": winreg_mod}):
         yield
@@ -68,13 +74,24 @@ def items(detail):
 
 
 # ---------------------------------------------------------------- criterion 1
-def test_names_found_in_real_hook_sources_and_mode_vars_excluded():
+def test_names_found_in_real_hook_sources_session_modes_in_and_opt_in_modes_out():
     names = ap.kill_switch_names()
     for must in ("CLAUDE_GO_GATE", "HARNESS_SECRET_GUARD", "CODEX_CITATION_JUDGE", "CLAUDE_CITATION_JUDGE",
-                 "CODEX_EVIDENCE_GATE", "CLAUDE_EVIDENCE_GATE"):
+                 "CODEX_EVIDENCE_GATE", "CLAUDE_EVIDENCE_GATE") + SESSION_MODE_VARS:
         assert must in names, (must, sorted(names))
-    for mode in MODE_VARS:
+    for mode in OPT_IN_VARS:
         assert mode not in names, mode
+    assert names == set(ap.kill_switch_values())
+
+
+def test_honoured_values_per_name_from_real_hook_sources():
+    vals = ap.kill_switch_values()
+    assert vals["CLAUDE_GO_GATE"] == {"off"}, vals["CLAUDE_GO_GATE"]            # go_gate.py compares == "off"
+    assert vals["HARNESS_SECRET_GUARD"] == ALL3, vals["HARNESS_SECRET_GUARD"]    # secret_guard.py: in {"off","0","false"}
+    for n in ("CLAUDE_EVIDENCE_GATE", "CODEX_EVIDENCE_GATE"):                    # evidence_gate off('NAME') indirect
+        assert vals[n] == ALL3, (n, vals[n])
+    for n in SESSION_MODE_VARS:
+        assert vals[n] == {"off"}, (n, vals[n])
 
 
 def test_names_from_synthetic_hook_folder():
@@ -92,7 +109,11 @@ def test_names_from_synthetic_hook_folder():
             'if evidence_gate.off("MY_INDIRECT"):\n    pass\n', encoding="utf-8")
         with mock.patch.object(ap, "HARNESS", d):
             got = ap.kill_switch_names()
-        assert got == {"MY_SWITCH_ONE", "MY_TUPLE_A", "MY_TUPLE_B", "MY_INDIRECT"}, got
+        assert got == {"MY_SWITCH_ONE", "MY_TUPLE_A", "MY_TUPLE_B", "MY_INDIRECT", *SESSION_MODE_VARS}, got
+        with mock.patch.object(ap, "HARNESS", d):
+            vals = ap.kill_switch_values()
+        assert vals == {"MY_SWITCH_ONE": {"off"}, "MY_TUPLE_A": ALL3, "MY_TUPLE_B": ALL3, "MY_INDIRECT": ALL3,
+                        "SESSION_SUPERVISOR_MODE": {"off"}, "SESSION_CLOSE_GATE_MODE": {"off"}}, vals
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -101,25 +122,63 @@ def test_names_from_synthetic_hook_folder():
 def test_reports_only_name_value_scope_for_off_values_in_three_scopes():
     wr = fake_winreg(user=[("HARNESS_SECRET_GUARD", "0"), ("CLAUDE_QUESTION_POLICY", "on"), ("USER_SECRET_TOKEN", "off"),
                            ("Path", "C:\\secret\\bin")],
-                     machine=[("CLAUDE_EVIDENCE_GATE", "False"), ("SESSION_SUPERVISOR_MODE", "off"), ("OTHER", "hunter2")])
-    with env(wr, CLAUDE_GO_GATE="off", CLAUDE_PLAN_FIRST_GATE="enabled", SOME_OTHER_VAR="hunter3", SESSION_CLOSE_GATE_MODE="off"):
+                     machine=[("CLAUDE_EVIDENCE_GATE", "False"), ("SESSION_SUPERVISOR_MODE", "off"), ("OTHER", "hunter2"),
+                              ("CLAUDE_ROSETTA_GATE", "off")])
+    with env(wr, CLAUDE_GO_GATE="off", CLAUDE_PLAN_FIRST_GATE="enabled", SOME_OTHER_VAR="hunter3", SESSION_CLOSE_GATE_MODE="off",
+             CLAUDE_SHELL_POLICY_AUDIT="off"):
         status, detail = ap.chk_kill_switch()
     assert status == ap.FAIL, (status, detail)
-    assert items(detail) == {"CLAUDE_GO_GATE=off (process)", "HARNESS_SECRET_GUARD=0 (user)",
-                             "CLAUDE_EVIDENCE_GATE=False (machine)"}, detail
-    for leak in ("hunter", "secret", "enabled", "USER_SECRET_TOKEN", "SESSION_", "on ("):
+    assert items(detail) == {"CLAUDE_GO_GATE=off (process)", "SESSION_CLOSE_GATE_MODE=off (process)",
+                             "HARNESS_SECRET_GUARD=0 (user)", "CLAUDE_EVIDENCE_GATE=False (machine)",
+                             "SESSION_SUPERVISOR_MODE=off (machine)"}, detail
+    for leak in ("hunter", "secret", "enabled", "USER_SECRET_TOKEN", "ROSETTA", "SHELL_POLICY", "on ("):
         assert leak not in detail, (leak, detail)
 
 
-def test_each_off_value_spelling_counts_and_other_values_do_not():
+def test_each_off_value_spelling_counts_for_a_switch_that_honours_all_three():
     for val in ("off", "0", "false", "OFF", " False "):
+        with env(fake_winreg(), HARNESS_SECRET_GUARD=val):
+            st, detail = ap.chk_kill_switch()
+        assert st == ap.FAIL and f"HARNESS_SECRET_GUARD={val} (process)" in detail, (val, st, detail)
+    for val in ("on", "1", "true", "", "live", "no"):
+        with env(fake_winreg(), HARNESS_SECRET_GUARD=val):
+            st, detail = ap.chk_kill_switch()
+        assert st == ap.OK, (val, st, detail)
+
+
+def test_switch_that_honours_only_off_ignores_zero_and_false():
+    for val in ("off", "OFF", " off "):
         with env(fake_winreg(), CLAUDE_GO_GATE=val):
             st, detail = ap.chk_kill_switch()
         assert st == ap.FAIL and f"CLAUDE_GO_GATE={val} (process)" in detail, (val, st, detail)
-    for val in ("on", "1", "true", "", "live", "no"):
+    for val in ("0", "false", "False", "on", ""):
         with env(fake_winreg(), CLAUDE_GO_GATE=val):
             st, detail = ap.chk_kill_switch()
         assert st == ap.OK, (val, st, detail)
+    for n in SESSION_MODE_VARS:  # the session modes honour only off as well
+        with env(fake_winreg(), **{n: "0"}):
+            assert ap.chk_kill_switch()[0] == ap.OK, n
+        with env(fake_winreg(), **{n: "off"}):
+            assert ap.chk_kill_switch()[0] == ap.FAIL, n
+
+
+def test_go_gate_zero_not_reported_but_secret_guard_zero_is_in_process_and_registry():
+    with env(fake_winreg(), CLAUDE_GO_GATE="0", HARNESS_SECRET_GUARD="0"):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.FAIL and items(detail) == {"HARNESS_SECRET_GUARD=0 (process)"}, (st, detail)
+    with env(fake_winreg(user=[("CLAUDE_GO_GATE", "0")], machine=[("HARNESS_SECRET_GUARD", "0")])):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.FAIL and items(detail) == {"HARNESS_SECRET_GUARD=0 (machine)"}, (st, detail)
+    with env(fake_winreg(user=[("CLAUDE_GO_GATE", "0")], machine=[("CLAUDE_GO_GATE", "false")])):
+        assert ap.chk_kill_switch()[0] == ap.OK
+
+
+def test_registry_names_compare_case_insensitively():
+    wr = fake_winreg(user=[("claude_go_gate", "off")], machine=[("Harness_Secret_Guard", "0"), ("claude_go_gate", "0")])
+    with env(wr):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.FAIL, (st, detail)
+    assert items(detail) == {"claude_go_gate=off (user)", "Harness_Secret_Guard=0 (machine)"}, detail
 
 
 # ---------------------------------------------------------------- criterion 3
@@ -136,17 +195,60 @@ def test_missing_registry_key_is_not_an_error():
 
 
 # ---------------------------------------------------------------- criterion 4
-def test_registry_read_error_without_switch_is_na_with_reason():
+def test_registry_read_error_without_switch_is_fail_with_reason():
     with env(fake_winreg(user_err=PermissionError(5, "access denied USERKEY"))):
         st, detail = ap.chk_kill_switch()
-    assert st == ap.NA, (st, detail)
+    assert st == ap.FAIL, (st, detail)
     assert "user registry unreadable" in detail and "access denied USERKEY" in detail, detail
 
 
-def test_machine_registry_error_is_na_with_reason():
+def test_machine_registry_error_is_fail_with_reason():
     with env(fake_winreg(machine_err=OSError(1, "boom MACHINEKEY"))):
         st, detail = ap.chk_kill_switch()
-    assert st == ap.NA and "machine registry unreadable" in detail and "boom MACHINEKEY" in detail, (st, detail)
+    assert st == ap.FAIL and "machine registry unreadable" in detail and "boom MACHINEKEY" in detail, (st, detail)
+
+
+def test_enumvalue_error_other_than_259_is_fail_not_end_of_list():
+    for scope, kw in (("user", "user_enum_err"), ("machine", "machine_enum_err")):
+        wr = fake_winreg(**{kw: OSError(5, "enum denied ENUMKEY")})
+        with env(wr):
+            st, detail = ap.chk_kill_switch()
+        assert st == ap.FAIL and f"{scope} registry unreadable" in detail and "ENUMKEY" in detail, (scope, st, detail)
+    # the error comes after a readable value: the value found before it is still reported next to the failure
+    wr = fake_winreg(user=[("HARNESS_SECRET_GUARD", "off")], user_enum_err=OSError(1, "enum boom"))
+    with env(wr):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.FAIL and "HARNESS_SECRET_GUARD=off (user)" in detail and "user registry unreadable" in detail, detail
+
+
+def test_enumvalue_error_259_by_errno_or_winerror_ends_the_list_cleanly():
+    with env(fake_winreg(user=[("Path", "x")], user_enum_err=OSError(259, "no more"))):
+        assert ap.chk_kill_switch()[0] == ap.OK
+    exc = OSError(0, "no more items", None, 259)  # winerror form (Windows only; elsewhere winerror is not set)
+    if getattr(exc, "winerror", None) == 259:
+        with env(fake_winreg(machine=[("Path", "x")], machine_enum_err=exc)):
+            st, detail = ap.chk_kill_switch()
+        assert st == ap.OK, (st, detail)
+    else:
+        print("SKIP winerror form: OSError has no winerror here")
+
+
+class _PosixOs:
+    """Proxy for audit_projects.os: reports a non-Windows host, everything else is the real os module."""
+    name = "posix"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
+def test_non_windows_host_is_na_with_reason_and_process_switch_still_fails():
+    with env(fake_winreg()), mock.patch.object(ap, "os", _PosixOs()):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.NA and "not Windows" in detail and "registry" in detail, (st, detail)
+    with env(fake_winreg(user=[("HARNESS_SECRET_GUARD", "off")]), HARNESS_SECRET_GUARD="0"), \
+            mock.patch.object(ap, "os", _PosixOs()):
+        st, detail = ap.chk_kill_switch()
+    assert st == ap.FAIL and "HARNESS_SECRET_GUARD=0 (process)" in detail and "(user)" not in detail, (st, detail)
 
 
 def test_registry_read_error_with_found_switch_is_fail_carrying_both():
