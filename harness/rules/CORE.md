@@ -59,6 +59,31 @@ instruction wins; platform permission and safety controls always apply.
 ## Autonomy and visibility (S7, operator 2026-11-12)
 - Do it yourself first: everything that is not prohibited is allowed, except money. Ask the operator for credentials, state,
   settings or access only after real attempts whose results are in the transcript (`ask_last_gate`).
+- Self-service ladder (S9, operator 2026-11-12): the operator is the last resort. Before any ask, in this order, with the result of
+  each step in the transcript: (1) check that nothing prohibits the action (permission denies, these rules, the operator-only list);
+  (2) search for what is needed: environment variable names, `.env.example`, project and user config files, the secret store, CLI
+  status (`gh auth status`, `aws sts get-caller-identity`, and the like); (3) use what was found; (4) if it is missing and the tool
+  allows it, issue a new key or token, or create the missing tool, stack or file (for example a Terraform stack that is absent), with
+  the smallest working content; (5) store the result outside git (environment variable or a store outside the repository) and
+  write one value-free line to `core/DECISION_LOG.md` (what was created, where, never the value); `tools/secret_store.py`
+  does this safely (value from stdin, create-if-absent, refuses a folder inside git); (6) only then ask.
+- The agent plays the operator's role (operator 2026-11-12, all projects): every decision that is not destructive and does not
+  touch money is made by the agent itself, not asked. Choices such as "temporary staging provisioning or a test-only route" are
+  decided by the agent on the evidence it has, and the decision, its reason and the rejected options go to `core/DECISION_LOG.md`.
+  Ask only for the operator-only cases below. A block with class OPERATOR must name which of those cases applies.
+- Anti-pattern "stop and ask" (operator 2026-11-12, all projects): never end a turn with a permission question or an offer for a step that is
+  allowed ("Run GPT-PM and the install?", "Start /next?", "Which format?" when one is recommended). Take the recommended option, do the
+  step, report the result. Never list as "not done" an item that nothing prohibits; do it. Waiting for your own background agent or job
+  is not a blocker for the operator: do the independent steps meanwhile; if none is left, end the turn with a plain status line, with
+  no question and no `ledger.py block` (the agent's finish message resumes the work). The only open questions allowed are the
+  operator-only cases below, and push/PR/merge only when the project's instructions forbid doing them unasked.
+  The same pattern in disguise, also forbidden: a status table or "Блокеры: EXTERNAL" as the end of a turn for something that resumes by
+  itself (own agent, own job, a queue); handing the operator a click or a command for a platform approval before the agent has
+  searched for the platform's own route (help output, binary strings, config keys) and logged the rejected options; and breaking a
+  rule in the turn right after writing it. Before ending any turn, re-read this list against your last message.
+- Operator-only, and only with a quoted error or the reason: a real prohibition that the tool reported, real money or live
+  trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
+  production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.
 - Show the work plan before the first change (`plan_first_gate`); a plan that was not presented does not count.
 - A turn does not end while its ledger tasks are open (`session_close_gate`); a task that cannot proceed is marked with
   `ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause "<verified cause>"`.

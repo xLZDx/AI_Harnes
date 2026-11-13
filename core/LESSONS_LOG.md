@@ -198,3 +198,41 @@
 - Kind: SHORTCOMING. Facts: two ledger tasks were committed together under one Task trailer, so the ledger could not verify the first. Rule: one commit per task, or add the second task by a note commit before verify.
 
 - Kind: FAILURE. Facts: a path with a TAB (D: TAB mp) shipped in four test files; my own end-to-end test passed because it only counted fixture rows in the real folder. Root cause: escapes in a generated patch script; no check of the written bytes. Layer that missed it: author; GPT-PM found it. Rule: after any scripted edit of a path, grep the written bytes, and test that an isolation path is absolute.
+
+- Kind: SUCCESS. Facts: S9-T1 put the self-service ladder in CORE.md, the one source that build.py copies into both the Claude CLAUDE.md and the Codex AGENTS.md. Why it worked: one source file, no per-client copy. Rule: put shared behaviour rules in CORE.md only.
+
+- Kind: SUCCESS. Facts: S9-T2 added the /unblock command to both clients with one file, checked by listing the build output of both clients. Rule: check a shared source by listing both outputs.
+
+- Kind: SHORTCOMING. Facts: S9-T3 as planned assumed Codex wiring and prose asks were missing; reading registry.json and out/codex/hooks.json showed both exist. Root cause: the plan was written before reading the gate. Layer that missed it: author. Rule: read the existing code before splitting a task.
+
+- Kind: SHORTCOMING. Facts: S9-T4 helper was committed without being run once; only the tester will run it in /verify. Rule: the tester run decides, but read the code path of concurrent create once more before verify.
+
+- Kind: SHORTCOMING. Facts: four S9 commits were made without the ledger post-commit hook installed (core.hooksPath empty in Harness_v2), so verify refused them. Root cause: the harness repo itself is not installed as a project. Layer that missed it: author. Rule: after the first commit of a task run ledger.py status and check the commit was recorded.
+
+- Kind: SUCCESS. Facts: closed the OPERATOR loophole in the ledger by a fixed case list instead of free text. Rule: a gate on a free-text reason is not a gate; require a value from a closed list.
+
+- Kind: SUCCESS. Facts: tester wrote 18 cases from the criteria and all passed first run with an isolated ledger. Rule: tests for a state file always point it at a temp path.
+
+- Kind: FAILURE. Facts: secret_store and the ledger quote check shipped with a crash window and a one-apostrophe loophole. Root cause: I wrote them without running them once and without a failure-half-way thought. Layer that missed it: author and tests; python-reviewer found it. Rule: for any create-then-write step, answer "what if it dies in between" before commit.
+
+- Kind: SUCCESS. Facts: three independent reviewers found the same two defects and the fix was confirmed by 48 tests. Rule: run reviewers on risky create-then-write code before the tester, not after.
+
+- Kind: FAILURE. Facts: I ended the S9 turn with "Not verified and not done" plus a permission question for steps that were allowed, and used ledger block EXTERNAL to wait for my own agents; the operator pointed it out twice in the day. Root cause: the safe-looking habit of asking, no rule against it. Layer that missed it: author; no gate catches it. Rule: allowed means do it; ask only the operator-only cases.
+
+- Kind: SHORTCOMING. Facts: an earlier message of mine asked the operator to approve hooks via /hooks, a command that does not exist in 0.167. Root cause: I answered from memory, not from the binary. Rule: before naming a CLI command to the operator, run --help or search the binary.
+
+- Kind: FAILURE. Facts: a scripted edit silently did not apply and I reported the fix as done. Root cause: no grep after the replace. Layer that missed it: author; the tester caught it. Rule: after a scripted replace, grep the result before saying it is fixed.
+
+- Kind: FAILURE. Facts: two turns after writing the stop-and-ask rule I ended a turn with a blocker table waiting for my own agent. Root cause: the rule was text only and I did not re-read it before ending the turn. Layer that missed it: author; no gate. Rule: re-read CORE.md anti-pattern list before every final message.
+
+- Kind: FAILURE. Facts: two comments of mine in secret_store.py claimed no-overwrite and "no work tree to leak into" without checking POSIX rename semantics or the git-missing case; GPT-PM found both. Root cause: I wrote platform claims from memory, only Windows was run. Layer that missed it: author, three reviewers and the tester; GPT-PM caught it. Rule: a comment that claims a platform guarantee needs a test that forces that path.
+
+- Kind: SUCCESS. Facts: forcing the no-link and no-git paths in child processes proved both GPT-PM findings fixed. Rule: force the platform path a comment claims, in a child process.
+
+- Kind: FAILURE. Facts: my stale-lock recovery created a new race (paused owner), and my test asserted the fail-open git behaviour as correct. Root cause: I fixed the symptom GPT-PM named, not the whole class (any automatic recovery needs owner proof); the test copied my assumption. Layer that missed it: author, tester; GPT-PM round 2 found it. Rule: when a fix adds recovery or a fallback, list who else can hold the resource before choosing it, and never let a test assert the weak branch.
+
+- Kind: SUCCESS. Facts: the tests now assert the strict contract in both findings and the old fail-open test was removed. Rule: when a review changes a contract, rewrite the test that encoded the old one first.
+
+- Kind: SHORTCOMING. Facts: my round-2 exception for the default folder repeated the round-1 mistake (an assumed-safe location without proof). Root cause: I patched the named input, not the class "git unavailable". Layer that missed it: author and tester; GPT-PM round 3. Rule: when a check cannot run, refuse for the whole class, never add an exception.
+
+- Kind: SUCCESS. Facts: the exact failing input from the reviewer is now a test. Rule: every review finding becomes a test with the reviewer's own input.

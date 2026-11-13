@@ -136,8 +136,9 @@ def evidence_problem(ask_text: str, turn: dict) -> str:
 
 
 MSG = ("ASK LAST (operator 2026-11-12): do it yourself first; everything that is not prohibited is allowed, except money. This ask wants the "
-       "operator to do something you may be able to do. %s. Then act with what you found (use the keys you have, create the missing state or "
-       "resource, change the setting). Come back to the operator only with the results of these attempts.")
+       "operator to do something you may be able to do. %s. Then follow the self-service ladder (command /unblock): use what you found; "
+       "if it is missing and the tool allows it, issue the key or create the missing tool, stack or file yourself; store it outside git "
+       "and add a value-free line to core/DECISION_LOG.md. Come back to the operator only with the quoted results of these attempts.")
 
 
 def ask_text_of(data: dict) -> str:
