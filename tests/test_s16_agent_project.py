@@ -240,14 +240,22 @@ def _subdirs(repo, n):
 
 
 def test_directory_cap_with_more_paths_remaining_gives_empty_project():
+    # S18-T1: paths past the 5-directory cap are still scanned. A NEW repository root after the cap gives '';
+    # a 6th directory of the same repository keeps the binding.
     repo = h.mk_repo("s16a_cap6")
     other = h.mk_repo("s16a_cap6_other")
     cwd, st = _plain_dir("s16a_cap6_cwd"), _state("s16a_cap6_st")
     dirs = _subdirs(repo, 6)
     _pre(st, cwd, "dirs " + " ".join(str(d) for d in dirs) + f" and {other / 'x.py'}", tuid="t1")
-    _pre(st, cwd, "dirs " + " ".join(str(d) for d in dirs), tuid="t2", agent="architect")
     a = {x["type"]: x["project"] for x in _agents(st)}
-    assert a == {"python-reviewer": "", "architect": ""}, a
+    assert a["python-reviewer"] == "", a
+    # same-repo half runs in-process with a long deadline: six git calls overrun the production 3 s deadline on a slow machine
+    sys.path.insert(0, str(h.SRC / "harness" / "hooks"))
+    import agent_visibility as av
+    av.BIND_DEADLINE_S = 120.0
+    av.BIND_GIT_TIMEOUT_S = 60
+    text = "dirs " + " ".join(str(d) for d in dirs)
+    assert _norm(av.project_from_text({"prompt": text})) == _norm(repo), text
 
 
 def test_exactly_five_directories_in_one_repo_still_bind():

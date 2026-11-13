@@ -144,7 +144,7 @@ def test_c3_duplicate_stop_finishes_nothing_with_older_id_less_entry_present():
     r = _stop(st, "A")  # duplicate stop
     a = _agents(st)
     assert _stopped(a) == [False, True] and a[1]["stop"] == first_stop, a
-    assert "start was not observed" in r.all
+    assert "duplicate stop ignored" in r.all and "start was not observed" not in r.all  # S18 review: own wording
 
 
 # ---------------------------------------------------------------- criterion 4
@@ -281,7 +281,8 @@ def test_c6_start_claims_newest_matching_entry_not_dead_runs_older_one():
 # ------------------------------------------- criterion 3 (refined): unrecorded id, PreToolUse-only fallback
 def test_c3r_unrecorded_id_finishes_newest_pre_only_idless_entry_and_stamps_id():
     st = h.fresh("s16t3_c3r1")
-    _seed(st, [_e(300, sources=("pre",), tuid="a"), _e(100, sources=("pre",), tuid="b")])
+    # B37a (S18-T1): only ONE pre-only id-less candidate is finished; an older run that SubagentStart reported is no candidate
+    _seed(st, [_e(300, sources=("pre", "start"), tuid="a"), _e(100, sources=("pre",), tuid="b")])
     _stop(st, "X")
     a = _agents(st)
     assert _stopped(a) == [False, True] and a[1]["agent_id"] == "X" and "agent_id" not in a[0], a
@@ -314,7 +315,7 @@ def test_c3r_fallback_ignores_other_type_other_session_and_entries_with_other_id
 
 def test_c3r_stamped_fallback_makes_a_second_stop_a_duplicate():
     st = h.fresh("s16t3_c3r5")
-    _seed(st, [_e(300, sources=("pre",), tuid="a"), _e(100, sources=("pre",), tuid="b")])
+    _seed(st, [_e(300, sources=("pre", "start"), tuid="a"), _e(100, sources=("pre",), tuid="b")])  # B37a: one candidate
     _stop(st, "X")
     _stop(st, "X")  # duplicate: must not take the older pre-only entry
     assert _stopped(_agents(st)) == [False, True]
