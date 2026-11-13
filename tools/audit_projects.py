@@ -760,6 +760,11 @@ def codex_source_keys(hooks_json: Path) -> set[str]:
     return {_codex_key(hooks_json), _codex_key(hooks_json.parent / "config.toml")}
 
 
+def codex_exe_note() -> str:
+    """B-S19-1: the vendor-exe note as a detail suffix, for OK and FAIL rows alike."""
+    return f"; {CODEX_EXE_NOTE}" if CODEX_EXE_NOTE else ""
+
+
 def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
     hp = HOME / ".codex" / "hooks.json"
     cfg = load_json(hp)
@@ -780,21 +785,21 @@ def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
     target = cwd or HARNESS
     if CODEX_HOOKS_ERROR:
         probs.append(CODEX_HOOKS_ERROR)
-        return FAIL, "; ".join(probs)
+        return FAIL, "; ".join(probs) + codex_exe_note()
     item = CODEX_HOOKS_BY_CWD.get(_codex_key(target))
     if item is None:
         probs.append(f"Codex app-server hooks/list returned no entry for {target}")
-        return FAIL, "; ".join(probs)
+        return FAIL, "; ".join(probs) + codex_exe_note()
 
     hooks = item.get("hooks")
     warnings = item.get("warnings", [])
     errors = item.get("errors", [])
     if not isinstance(hooks, list) or not isinstance(warnings, list) or not isinstance(errors, list):
         probs.append("Codex app-server hooks/list returned invalid hooks, warnings, or errors")
-        return FAIL, "; ".join(probs)
+        return FAIL, "; ".join(probs) + codex_exe_note()
     if any(not isinstance(hook, dict) for hook in hooks):
         probs.append("Codex app-server hooks/list returned an invalid hook entry")
-        return FAIL, "; ".join(probs)
+        return FAIL, "; ".join(probs) + codex_exe_note()
     untrusted = [h for h in hooks if h.get("source") in ("user", "project") and h.get("trustStatus") != "trusted"]
     for hook in untrusted:
         probs.append("untrusted hook: " + ", ".join(str(hook.get(k) or "-") for k in ("source", "eventName", "statusMessage", "sourcePath")))
@@ -865,8 +870,8 @@ def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
                 probs.append(f"project hooks.json handlers missing from hooks/list: {', '.join(labels)} ({project_hooks_path})")
 
     if probs:
-        return FAIL, "; ".join(probs)
-    note = f"; {CODEX_EXE_NOTE}" if CODEX_EXE_NOTE else ""
+        return FAIL, "; ".join(probs) + codex_exe_note()
+    note = codex_exe_note()
     return OK, f"{len(hooks)} hooks listed; warnings=[]; errors=[]{note}"
 
 
