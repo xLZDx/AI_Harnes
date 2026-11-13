@@ -102,7 +102,7 @@ SPACE_WORD_RE = re.compile(r" ([^\s\"'`<>|*?,;()\[\]]+)")
 def _extend_unquoted(raw: str, tail: str) -> str:
     """B40: an unquoted absolute path stops at its first space. Extend it through the following space-separated words
     and return the LONGEST candidate that exists (os.path.exists); the plain path when none of the extensions exists."""
-    best, cand, pos = raw, raw, 0
+    best, best_len, cand, pos = raw, 0, raw, 0
     for _ in range(BIND_SPACE_WORDS):
         m = SPACE_WORD_RE.match(tail, pos)
         if not m:
@@ -111,7 +111,13 @@ def _extend_unquoted(raw: str, tail: str) -> str:
         pos = m.end()
         c = cand.rstrip(".:")
         if os.path.exists(c):
-            best = c
+            best, best_len = c, len(c)
+        else:
+            # a file about to be created: the extension still counts when its directory exists and is deeper than
+            # both the plain match and the best found so far (the main loop then walks up to that directory)
+            dn = os.path.dirname(c)
+            if len(dn) > max(len(raw), best_len) and os.path.isdir(dn):
+                best, best_len = c, len(dn)
     return best
 
 
