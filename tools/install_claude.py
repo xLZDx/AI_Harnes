@@ -4,8 +4,11 @@
   python tools/install_claude.py --home ~/.claude --snapshot <new folder>
 
 What it does (nothing is deleted; every replaced file is copied to the snapshot first):
-  settings.json "hooks"   -> replaced by the "hooks" of out/claude/settings.hooks.json. Every other key of
-                             settings.json (permissions, env, model ...) is kept as it is.
+  settings.json "hooks"   -> the harness groups are replaced by the "hooks" of out/claude/settings.hooks.json.
+                             Foreign groups (none of their hooks calls run_hook.py or a file in <home>/hooks, current or
+                             retired) are kept under their event, after the harness groups, in their old order; an
+                             identical group is never added twice, so a second install gives the same hooks.
+                             Every other key of settings.json (permissions, env, model ...) is kept as it is.
   hooks/*.py, *.json      -> the built hook files are copied over the files of the same name in <home>/hooks.
                              Hook files that the new set does not use are left in place (just not called).
 Before touching anything it checks: the snapshot folder does not exist, out/claude is complete, settings.json is
@@ -53,6 +56,36 @@ def _commands(hooks: dict) -> list[str]:
             for h in g.get("hooks", []):
                 out.append(" ".join([str(h.get("command", "")), *map(str, h.get("args", []))]))
     return out
+
+
+def _is_harness_group(group: dict, home: Path, files: list[str]) -> bool:
+    """True when a hook of the group calls run_hook.py, the <home>/hooks folder, or a built / already installed hook file."""
+    folder = str(home / "hooks").replace("\\", "/").lower().rstrip("/") + "/"
+    for cmd in _commands({"g": [group]}):
+        low = cmd.replace("\\", "/").lower()
+        if "run_hook.py" in low or folder in low:
+            return True
+        if any(n in files or (home / "hooks" / n).is_file() for n in HOOK_FILE_RE.findall(cmd)):
+            return True
+    return False
+
+
+def _merge_hooks(new_hooks: dict, old_hooks: dict, home: Path, files: list[str]) -> tuple[dict, int]:
+    """New harness groups first, then the foreign groups of the old settings (old order, no identical duplicates)."""
+    key = lambda g: json.dumps(g, sort_keys=True, ensure_ascii=False)
+    merged = {ev: list(groups) for ev, groups in new_hooks.items()}
+    kept = 0
+    for ev, groups in old_hooks.items():
+        out = merged.setdefault(ev, [])
+        seen = {key(g) for g in out}
+        for g in groups:
+            if not _is_harness_group(g, home, files) and key(g) not in seen:
+                out.append(g)
+                seen.add(key(g))
+                kept += 1
+        if not out:
+            del merged[ev]
+    return merged, kept
 
 
 def _check_hooks(obj: object, what: str) -> dict:
@@ -111,6 +144,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
                     missing.append(name)
         if missing:
             raise ValueError("the new set calls hook files that are not in the build: " + ", ".join(sorted(set(missing))))
+        merged_hooks, n_foreign = _merge_hooks(new_cfg["hooks"], settings.get("hooks") or {}, home, files)
     except (ValueError, OSError) as e:
         print(f"install stopped before any change: {e}")
         return 1
@@ -148,7 +182,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
         if (source / "CLAUDE.md").is_file():  # the core rules (harness/rules/CORE.md); before S13 only Codex got them
             shutil.copy2(source / "CLAUDE.md", home / "CLAUDE.md")
             _tick()
-        merged = {**settings, "hooks": new_cfg["hooks"]}
+        merged = {**settings, "hooks": merged_hooks}
         if "statusLine" not in settings and "agents_statusline.py" in files:  # S7-T6: never overwrite the operator's own
             py = Path(sys.executable).as_posix()
             merged["statusLine"] = {"type": "command", "command": f'"{py}" -s -X utf8 "{(home / "hooks" / "agents_statusline.py").as_posix()}"'}
@@ -173,6 +207,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
                      {n for c in _commands(new_cfg['hooks']) for n in HOOK_FILE_RE.findall(c)})
     n_new = sum(len(g["hooks"]) for v in new_cfg["hooks"].values() for g in v)
     print(f"installed into {home}: settings.json hooks replaced ({len(old_cmds)} old entries -> {n_new} new), "
+          f"{n_foreign} foreign hook groups kept, "
           f"{len(files)} hook files copied" + (", CLAUDE.md replaced." if (source / "CLAUDE.md").is_file() else "."))
     print(f"snapshot and restore script: {snap}")
     if retired:
