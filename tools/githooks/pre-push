@@ -20,5 +20,14 @@ run_py() {
 }
 log_err() { mkdir -p "$COMMON/.harness"; echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$COMMON/.harness/hook-error.log"; echo "HARNESS HOOK ERROR: $1" >&2; }
 [ -n "$T" ] || { log_err "pre-push: harness tools not found, push refused"; exit 1; }
-# Push only commits covered by a GPT-PM approval (gpt-pm-gate skill). Git passes the refs on stdin.
-run_py "$T/ledger.py" check-approval
+# Git passes the refs on stdin; keep them for both checks.
+REFS="$(cat)"
+# CI is prohibited: refuse a tip commit whose workflow starts on push, pull_request, pull_request_target or schedule.
+if [ -f "$T/workflow_guard.py" ]; then
+  printf '%s\n' "$REFS" | run_py "$T/workflow_guard.py" || exit 1
+else
+  log_err "pre-push: workflow_guard.py missing in $T, push refused (install it with: python build.py --install-project)"
+  exit 1
+fi
+# Push only commits covered by a GPT-PM approval (gpt-pm-gate skill).
+printf '%s\n' "$REFS" | run_py "$T/ledger.py" check-approval

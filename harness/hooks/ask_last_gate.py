@@ -38,6 +38,19 @@ REQUEST_RE = re.compile(
     r"(?i)\b(?:please|could you|can you|would you|will you|i need you to|you(?:'ll| will)? need to|you (?:have|must|should) to?|need your|"
     r"give me|send me|let me know the)\b|пожалуйста|не могли бы|нужно,? чтобы вы|вам (?:нужно|надо)|вы должны|дайте|пришлите|"
     r"^\s*(?:[-*•]|\d+[.)])?\s*(?:" + _VERBS_EN + r"|" + _VERBS_RU + r")\b", re.M)
+# Real operator requests, without the "line starts with an imperative" clause: an option label such as "Отключить CI" is a CHOICE
+# between actions, not a request that the operator hand over or do something (R5, operator 2026-11-12).
+DIRECT_REQUEST_RE = re.compile(
+    r"(?i)\b(?:please|could you|can you|would you|will you|i need you to|you(?:'ll| will)? need to|you (?:have|must|should) to?|need your|"
+    r"give me|send me|let me know the)\b|пожалуйста|не могли бы|нужно,? чтобы вы|вам (?:нужно|надо)|вы должны|дайте|пришлите")
+# Asks for a VALUE (credential, key, token, password, access, a setting/state value) that the agent might fetch itself.
+_VALUE_NOUN = (r"key|keys|token|tokens|secret|secrets|credentials?|passwords?|api|access|login|settings?|config\w*|state|value|"
+               r"ключ\w*|токен\w*|секрет\w*|парол\w*|доступ\w*|учётн\w*|учетн\w*|логин\w*|настройк\w*|значени\w*|стейт\w*|конфиг\w*")
+VALUE_REQUEST_RE = re.compile(
+    rf"(?i)(?:\b(?:provide|give|send|paste|share|upload|export|enter|tell|grant|issue)\b|дай(?:те)?|дат[ьи]|предостав\w+|пришл\w+|вставь\w*|"
+    rf"введи\w*|укаж\w+|сообщи\w*|скаж\w+|выда\w+|загруз\w+)[^\n?]{{0,50}}\b(?:{_VALUE_NOUN})\b"
+    rf"|(?:need|needs|нужен|нужна|нужно|нужны)\s+(?:your|ваш\w*|a|an|the)?\s*(?:{_VALUE_NOUN})\b"
+    rf"|\b(?:what(?:'s| is)|which)\s+(?:is\s+)?(?:the\s+|your\s+)?(?:{_VALUE_NOUN})\b|\bкак(?:ой|ое|ая|ие)\s+(?:у вас\s+)?(?:{_VALUE_NOUN})")
 CRED_TOPIC_RE = re.compile(r"\b(?:key|keys|token|tokens|secret|secrets|credential|credentials|password|api|access|login|auth|iam|service account)\b|"
                            r"ключ|токен|секрет|доступ|парол|учётн|учетн|авториз|логин", re.I)
 STATE_TOPIC_RE = re.compile(r"\b(?:state|tfstate|terraform|bucket|backend|resource|config|configuration|settings|gcloud|aws|cloudflare|wrangler)\b|"
@@ -100,10 +113,14 @@ def failed(c: dict) -> bool:
     return c.get("is_error") is True or cls != "unknown"  # a non-zero exit of a real command, or a classified failure
 
 
-def evidence_problem(ask_text: str, turn: dict) -> str:
-    """'' when the ask may go to the operator, else the missing-proof description."""
+def evidence_problem(ask_text: str, turn: dict, structured: bool = False) -> str:
+    """'' when the ask may go to the operator, else the missing-proof description.
+    structured=True: the text comes from an AskUserQuestion (question + option labels). Such a question is a DECISION or a
+    PERMISSION (choose an option, approve an action) unless it asks for a value or tells the operator to act, and passes."""
     if EXEMPT_RE.search(ask_text) or sp.MONEY_TEXT_RE.search(ask_text):
         return ""
+    if structured and not (VALUE_REQUEST_RE.search(ask_text) or DIRECT_REQUEST_RE.search(ask_text)):
+        return ""  # decision / permission question: options are actions or choices, not values
     if not (ACTION_RE.search(ask_text) and REQUEST_RE.search(ask_text)):
         return ""  # no request that the operator DO something: a plain decision question is not this gate's business
     cred, state = bool(CRED_TOPIC_RE.search(ask_text)), bool(STATE_TOPIC_RE.search(ask_text))
@@ -159,7 +176,7 @@ def on_pre(data: dict) -> None:
     if not turn["calls"] and not turn["human_text"]:
         _release(data, "fail-open-empty-turn")
         return
-    why = evidence_problem(ask_text_of(data), turn)
+    why = evidence_problem(ask_text_of(data), turn, structured=True)
     if not why:
         return
     # per-turn cap: after MAX_DENIES denials in one turn the ask goes through and the exception is recorded

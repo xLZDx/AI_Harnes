@@ -446,7 +446,7 @@ def test_ledger_block_cause_length_boundary():
 
 def test_ledger_block_writes_field_and_event_only_for_that_task():
     repo = mk_ledger_repo("lb3")
-    r = hv2.ledger(repo, "block", "S1-T1", "--class", "OPERATOR", "--cause", GOOD_CAUSE)
+    r = hv2.ledger(repo, "block", "S1-T1", "--class", "OPERATOR", "--case", "money", "--cause", GOOD_CAUSE)
     check(r.rc == 0, r.all)
     b = hv2.task(repo, "S1-T1")["blocked"]
     check(b["class"] == "OPERATOR" and b["cause"] == GOOD_CAUSE, str(b))

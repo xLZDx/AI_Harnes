@@ -75,6 +75,8 @@ def restore_script(home: Path, snap: Path, files: list[str]) -> str:
              "$ErrorActionPreference = 'Stop'", f"$home_ = {_ps(home)}", f"$snap = {_ps(snap)}",
              "$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'",
              "$cur = Join-Path $home_ 'settings.json'; $old = Join-Path $snap 'settings.json'",
+             "if (Test-Path -LiteralPath $old) { Copy-Item -LiteralPath $old -Destination $cur -Force }",
+             "$cur = Join-Path $home_ 'CLAUDE.md'; $old = Join-Path $snap 'CLAUDE.md'",
              "if (Test-Path -LiteralPath $old) { Copy-Item -LiteralPath $old -Destination $cur -Force }"]
     for name in files:
         lines += [f"$f = {_ps(name)}",
@@ -118,6 +120,8 @@ def install(home: Path, snap: Path, source: Path) -> int:
         (snap / "restore.ps1").write_text(restore_script(home, snap, files), encoding="utf-8-sig", newline="\n")
         if settings_path.is_file():
             shutil.copy2(settings_path, snap / "settings.json")
+        if (home / "CLAUDE.md").is_file():
+            shutil.copy2(home / "CLAUDE.md", snap / "CLAUDE.md")
         (snap / "hooks").mkdir()
         for name in files:
             p = home / "hooks" / name
@@ -140,6 +144,9 @@ def install(home: Path, snap: Path, source: Path) -> int:
             if dst.exists():
                 os.chmod(dst, stat.S_IWRITE)
             shutil.copy2(src_hooks / name, dst)
+            _tick()
+        if (source / "CLAUDE.md").is_file():  # the core rules (harness/rules/CORE.md); before S13 only Codex got them
+            shutil.copy2(source / "CLAUDE.md", home / "CLAUDE.md")
             _tick()
         merged = {**settings, "hooks": new_cfg["hooks"]}
         if "statusLine" not in settings and "agents_statusline.py" in files:  # S7-T6: never overwrite the operator's own
@@ -166,7 +173,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
                      {n for c in _commands(new_cfg['hooks']) for n in HOOK_FILE_RE.findall(c)})
     n_new = sum(len(g["hooks"]) for v in new_cfg["hooks"].values() for g in v)
     print(f"installed into {home}: settings.json hooks replaced ({len(old_cmds)} old entries -> {n_new} new), "
-          f"{len(files)} hook files copied.")
+          f"{len(files)} hook files copied" + (", CLAUDE.md replaced." if (source / "CLAUDE.md").is_file() else "."))
     print(f"snapshot and restore script: {snap}")
     if retired:
         print("no longer called (files left in place): " + ", ".join(retired))

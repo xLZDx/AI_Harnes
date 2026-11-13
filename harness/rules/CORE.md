@@ -15,17 +15,44 @@ instruction wins; platform permission and safety controls always apply.
 ## Flow (skill `harness-flow`)
 - Two planning levels: sprint and tasks. Epics only as labels. The ledger
   `.harness/ledger.json` is the single source of task state; `.harness-tools/ledger.py` edits it.
-- `/plan` -> `/next` -> `/verify` -> `/ship` -> `/close`. One task at a time.
+- `/plan` -> `/next` -> `/verify` -> `/ship` -> `/close`. Several tasks of a sprint may run at once and agent review runs
+  once per sprint, not per task (operator 2026-11-11).
 - Documents are written before the project starts and updated once at sprint end.
 - Target budget: code 40 %, tests 40 %, documents 20 %.
+
+## Operator development rules (operator 2026-11-12, binding on every project and both clients)
+1. Documentation first: TDD, design, master plan, sprint planning plan with epics and stories, test coverage derived from
+   requirements and stories (adjusted during development). After all documents exist: several review rounds with internal
+   agents until consensus, then fixes, then a final GPT-PM review. A new project gets this in full; an existing project gets
+   one review of all documentation by a local agent (with fixes if needed) to establish where it stands and what is next.
+2. Implementation starts only after the documentation is approved, on the accepted plan and sprint scope. One PR per
+   sprint. Commit everything as work goes, but ALL testing and checks run only when the sprint's stories are coded, before
+   the push (no automatic tests, see rule 4). Then `functional-test-reviewer` and `e2e-runner` write the functional tests
+   and acceptance criteria and execute them; fix every bug found, then regression, round after round until green. Then
+   only the reviewers this change needs (not all agents) run, reach consensus, and every finding is fixed. Then the final
+   GPT-PM round, which accepts the functional test results and the agent review as evidence.
+3. The final push and the PR go to git only after the GPT-PM APPROVE.
+4. CI, pytest suites and other automatic checks are never run and never used as evidence. GitHub workflows started by
+   push, pull_request or schedule are switched off; the harness refuses such a push. Prohibited: full npm test, vitest
+   suites, lint, typecheck, verify scripts.
+5. Unneeded governance is removed, but the history of every commit stays in git.
+6. Every commit carries a full record of what went in and why (`core/DECISION_LOG.md` entry, or another document that gives
+   a new developer who knows nothing about the project the full picture).
+7. When a sprint reaches its end and the code part is closed at the test and approval stage, close the sprint and start
+   subagents on the next sprint, delegating the document checks and the preparation for implementation.
+8. A gate that depends only on documentation or contradicts these rules closes automatically. A gate never closes while
+   the code has a bug; when the code is green the gate closes.
+9. Every unresolved question goes to the backlog and is reviewed at sprint end if it blocks other work, or at the end of
+   the planned pass.
 
 ## Agents
 - In Claude Code all agents run on Sonnet (latest) with effort medium. Opus only when the
   operator explicitly authorizes that run, effort high. In Codex all agents run on the latest
   Luna model (`gpt-6-luna`) with reasoning effort medium, nothing else; the `agent_model_gate`
   hook enforces both. Never use an agent without a role (`general-purpose`) as a reviewer or tester.
-- Agents are chosen per task by `.harness-tools/route.py` from the changed files: 0-4 reviewers by
-  risk. Choice and reason are written to the ledger. Never launch all agents at once.
+- Agents are chosen once per sprint, at the final task, by `.harness-tools/route.py` from the changed files: 0-4
+  reviewers by risk. Choice and reason are written to the ledger. Never launch all agents at once.
+- Every Agent call's description names the agent role; the START and STOP lines show it.
 - `security-reviewer` is never automatic: only for a trust-boundary change listed in the
   project profile, or on operator request.
 - A reviewer gets the diff file, the changed-file list and the acceptance criteria, not the
@@ -39,7 +66,7 @@ instruction wins; platform permission and safety controls always apply.
 ## Tests
 - Only `functional-test-reviewer`, `tdd-guide` and `e2e-runner` write and run tests.
 - Tests come from acceptance criteria; expected values from spec examples or an independent
-  formula. Task tests run once per task; the full own set once at sprint end.
+  formula. They run when the sprint's stories are coded (rule 2), on named test files only.
 - Prohibited: full test suites, vitest suites, pytest runs the operator banned, lint,
   typecheck, verify scripts, mutation runs. A request for one is recorded as
   "prohibited by operator" and never blocks work.
@@ -104,3 +131,4 @@ instruction wins; platform permission and safety controls always apply.
 ## Continuation
 - Keep working while authorized work remains. End each reply with either
   "Выполнимых задач не осталось" or "Блокеры: <OPERATOR|EXTERNAL|PROHIBITED> - <cause>".
+- The closing line is a claim: "Выполнимых задач не осталось" only when the message lists no open item the agent can do, the ledger has no open task outside running own agents, and the worked repos have no uncommitted change (closing_claim_gate).

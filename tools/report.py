@@ -33,16 +33,19 @@ STATE_VIEW = {
     "not_run": ("registry-progress", "state-registry-progress", "тесты не запускались", "wip"),
     "failed": ("registry-blocked", "state-registry-blocked", "тесты красные", "red"),
     "todo": ("registry-open", "state-registry-open", "не начато", "todo"),
+    "superseded": ("registry-superseded", "state-registry-superseded", "заменено планом", "superseded"),
 }
-GROUPS = [("done", "принято"), ("review", "на ревью"), ("wip", "в работе + код готов"), ("red", "тесты красные"), ("todo", "не начато")]
+GROUPS = [("done", "принято"), ("review", "на ревью"), ("wip", "в работе + код готов"), ("red", "тесты красные"), ("todo", "не начато"),
+          ("superseded", "заменено планом")]
 GROUP_CSS = {"done": ("accepted", "state-accepted"), "review": ("registry-review", "state-registry-review"),
              "wip": ("registry-progress", "state-registry-progress"), "red": ("registry-blocked", "state-blocked"),
-             "todo": ("registry-open", "state-registry-open")}
+             "todo": ("registry-open", "state-registry-open"), "superseded": ("registry-superseded", "state-registry-superseded")}
 REMAINING = {"todo": "Код не написан.", "in_progress": "Закончить код и записать коммит с Task:.",
              "implemented": "Тесты не запускались на последнем коммите задачи.", "not_run": "Тесты не запущены (см. основание).",
-             "verified": "Ревью не принято для последнего коммита.", "failed": "Исправить код и повторить тесты.", "done": "—"}
+             "verified": "Ревью не принято для последнего коммита.", "failed": "Исправить код и повторить тесты.", "done": "—",
+             "superseded": "— (заменено планом)"}
 NEXT_CMD = {"todo": "/next", "in_progress": "/next", "implemented": "/verify", "not_run": "/verify", "verified": "/ship",
-            "failed": "исправить, затем /verify", "done": "—"}
+            "failed": "исправить, затем /verify", "done": "—", "superseded": "—"}
 RISK_RU = {"trivial": "тривиально", "local": "локально", "multi-module": "несколько модулей", "risky": "опасно"}
 BUCKETS = ("code", "docs", "tests", "other")
 
@@ -265,7 +268,8 @@ def sec_hero(d: dict, f: dict, root: Path) -> str:
     closed = sum(1 for x in sprints if x.get("state") == "closed")
     gr = f["groups"]
     tiles = [(f'{f["done"]}/{f["total"]}', "принято"), (gr["review"], "на ревью"), (gr["wip"] + gr["red"], "в работе"),
-             (gr["todo"], "не начато"), (f"{closed}/{len(sprints)}", "спринтов закрыто"), (f["gpt"], "GPT-PM"), (f["remote"], "remote")]
+             (gr["todo"], "не начато"), *([(gr["superseded"], "заменено планом")] if gr["superseded"] else []),
+             (f"{closed}/{len(sprints)}", "спринтов закрыто"), (f["gpt"], "GPT-PM"), (f["remote"], "remote")]
     up = f'upstream {s["upstream"]}' if s["upstream"] else "upstream не настроен"
     return (f'<header class="hero" id="program-progress"><h1>Визуальный прогресс всей программы</h1>'
             f'<p class="headline">{lead} · <b>принято {f["done"]}/{f["total"]} задач</b></p>'
@@ -289,6 +293,7 @@ def sec_program(f: dict) -> str:
     n, m = f["done"], f["total"]
     p = pct(n, m)
     gr = f["groups"]
+    sup = gr["superseded"]
     rows = []
     for key, label in GROUPS:
         css, pill = GROUP_CSS[key]
@@ -300,9 +305,10 @@ def sec_program(f: dict) -> str:
             '<a href="#gate-charts">По состояниям</a><a href="#sprint-distribution">По спринтам</a><a href="#active-sprint">Активный спринт</a></nav>'
             '<p class="chart-note">Принято = задача в состоянии done: тесты зелёные на последнем коммите и ревью принято.</p>'
             f'<div class="program-total"><b>{fmt_pct(p)}</b><span>принято {n} из {m} задач</span></div>'
-            + seg_bar([("accepted", n, f"принято: {n}"), ("remaining", m - n, f"осталось: {m - n}")], m, "bar overall-progress")
-            + f'<p class="progress-caption"><code>{n} ÷ {m} × 100 = {fmt_pct(p)}</code> · знаменатель {m} — число задач в реестре '
-            + f'({E(f.get("source") or ".harness/ledger.json")}, все спринты; SUPERSEDED не считаются).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
+            + seg_bar([("accepted", n, f"принято: {n}"), ("registry-superseded", sup, f"заменено планом: {sup}"),
+                       ("remaining", m - n - sup, f"осталось: {m - n - sup}")], m, "bar overall-progress")
+            + f'<p class="progress-caption"><code>{n} ÷ {m} × 100 = {fmt_pct(p)}</code> · знаменатель {m} — все места задач в плане '
+            + f'({E(f.get("source") or ".harness/ledger.json")}, все спринты; из них {sup} заменено планом: они входят в знаменатель и показаны отдельно).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
             '<p class="gate-chart-note">Один цвет означает одно состояние во всех графиках страницы.</p>'
             '<div class="gate-chart-list">' + "".join(rows) + "</div></section>")
 
@@ -326,7 +332,7 @@ def sprint_row(g: Git, s: dict, active_id: str | None) -> str:
     else:
         dur, dur_tip = fmt_dur(max(stamps) - min(stamps)), f"от {fmt_ts(min(stamps))} до {fmt_ts(max(stamps))}"
     shown, tip = shares_text(counts)
-    summary = f'{gr["done"]}/{m} принято · {gr["review"]} на ревью · {gr["wip"] + gr["red"]} в работе'
+    summary = f'{gr["done"]}/{m} принято · {gr["review"]} на ревью · {gr["wip"] + gr["red"]} в работе' + (f' · {gr["superseded"]} заменено' if gr["superseded"] else "")
     return (f'<div class="sprint-chart-row" id="sp-{E(s["id"])}"><span class="sprint-chart-name"><b>Спринт {E(s["id"])} — {m} задач</b> '
             f'{E(s.get("title", ""))}</span>'
             f'<div class="sprint-chart-bar" role="img" aria-label="{E(aria)}">'
@@ -377,6 +383,7 @@ def sec_active(d: dict, g: Git) -> str:
         return head + '<p class="muted">В реестре нет спринтов.</p></section>'
     tasks = s.get("tasks", [])
     n = sum(1 for t in tasks if t.get("state") == "done")
+    sup = sum(1 for t in tasks if t.get("state") == "superseded")
     rows = []
     for t in tasks:
         st = t.get("state", "todo")
@@ -394,7 +401,7 @@ def sec_active(d: dict, g: Git) -> str:
             f"<td>{cm}<br><span class=\"muted\">{E(window)}</span></td><td title=\"{E(tip)}\">{E(shown)}</td></tr>")
     cols = ["Позиция / задача", "Критерий приёмки", "Фактический статус", "Код / test / Git evidence", "Остаток", "Зависимость",
             "Владелец / следующий шаг", "Exact task-ID commits / окно", "Доли code/docs/tests/other"]
-    return (head + f'<p class="active-summary"><b>Спринт {E(s["id"])}</b> — {E(s.get("title", ""))}: принято {n} из {len(tasks)}, '
+    return (head + f'<p class="active-summary"><b>Спринт {E(s["id"])}</b> — {E(s.get("title", ""))}: принято {n} из {len(tasks)}' + (f', заменено планом {sup}' if sup else "") + ', '
             f'состояние спринта: {E(s.get("state", NR))}.</p><div class="wrap"><table class="active-sprint-table"><thead><tr>'
             + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>")
 
@@ -442,7 +449,7 @@ def sec_freshness(d: dict, f: dict, root: Path) -> str:
     items = [
         f"Источники: реестр {E(lp)}; git в папке {E(root)} (log, rev-list, merge-base, show --numstat).",
         f"Дата отсчёта: {E(tzinfo_text())}; HEAD {E(f['snap']['head'] or NR)}.",
-        f"Формула прогресса: принято ÷ все задачи реестра = {f['done']} ÷ {f['total']}. Знаменатель — число задач во всех спринтах реестра.",
+        f"Формула прогресса: принято ÷ все задачи реестра = {f['done']} ÷ {f['total']}. Знаменатель — все места задач во всех спринтах (включая заменённые планом, SUPERSEDED: они показаны отдельной категорией «заменено планом»).",
         "Формула «закрыто и отправлено»: задача принята и каждый её коммит — предок @{upstream} (git merge-base --is-ancestor). "
         "Без upstream или без git значение не оценивается.",
         "Доли code/docs/tests/other: добавленные + удалённые строки коммитов, записанных на задачах (git numstat); без таких коммитов — NR.",
@@ -597,14 +604,34 @@ def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
     if not led_sprints:  # no ledger tasks to add, but the ledger's approval and events still belong to the report
         return {**plan, "approval": led.get("approval") or plan.get("approval"), "events": led.get("events") or plan.get("events", [])}
     led_ids = {t.get("id") for sp in led_sprints for t in sp["tasks"]}
+    led_sprint_ids = {sp.get("id") for sp in led_sprints}
     merged = []
+    announced: dict = {}  # sprint id -> placements announced by a not-expanded roadmap row
     for sp in plan.get("sprints", []):
+        if sp.get("expanded") is False and sp.get("id") in led_sprint_ids:
+            # a not-expanded roadmap row keeps its announced size: the ledger tasks stay real, the rest become UNVERIFIED placeholders
+            announced[sp.get("id")] = len(sp.get("tasks", []))
+            continue
         kept = [t for t in sp.get("tasks", []) if t.get("id") not in led_ids]
         if kept:
             merged.append({**sp, "tasks": kept})
     taken = {sp.get("id") for sp in merged}
     ledger_part = []
     for sp in led_sprints:
+        n_plan = announced.get(sp.get("id"), 0)
+        k = len(sp["tasks"])
+        if n_plan > k:  # k > N keeps the k ledger tasks only
+            used = {t.get("id") for t in sp["tasks"]}
+            extra = []
+            for j in range(k + 1, n_plan + 1):
+                tid = f"{sp['id']}-PLACEHOLDER-{j}"
+                while tid in used or tid in led_ids:
+                    tid += "x"
+                used.add(tid)
+                extra.append({"id": tid, "title": f"UNVERIFIED: planned placement {j} of {n_plan} not recorded in the ledger",
+                              "criteria": [], "run": "", "risk": "local", "journey": False, "state": "todo", "commits": [],
+                              "verify": None, "review": None, "routing": None, "tokens": None})
+            sp = {**sp, "tasks": list(sp["tasks"]) + extra}
         ledger_part.append({**sp, "id": sp["id"] if sp.get("id") not in taken else f"{sp['id']}-ledger"})
         taken.add(ledger_part[-1]["id"])
     merged = ledger_part + merged  # ledger sprints first: the first sprint that is not closed is the active one, and that is the one being worked

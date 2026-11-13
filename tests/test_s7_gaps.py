@@ -56,7 +56,7 @@ S3 = [("PZ-1", "ACCEPTED", "", "c"), ("PZ-2", "NOT_STARTED", "", "c")]
 S4 = [("PW-1", "SUPERSEDED", "", "c")]
 SPRINTS = [("S1", "First sprint", S1), ("S2", "Second sprint", S2), ("S3", "Third sprint", S3), ("S4", "Fourth sprint", S4)]
 EXPECT_STATE = {"ACCEPTED": "done", "IN_REVIEW": "verified", "IN_PROGRESS": "in_progress", "PARTIAL": "implemented",
-                "NOT_STARTED": "todo", "BLOCKED_OPERATOR": "todo", "BLOCKED_EXTERNAL": "todo", "PARKED": "todo"}
+                "NOT_STARTED": "todo", "BLOCKED_OPERATOR": "todo", "BLOCKED_EXTERNAL": "todo", "PARKED": "todo", "SUPERSEDED": "superseded"}
 
 
 def norm(cell):
@@ -77,7 +77,8 @@ def plan_text(project="DemoProj"):
     return "\n".join(out) + "\n"
 
 
-KEPT = [(sid, r) for sid, _, rows in SPRINTS for r in rows if norm(r[1]) != "SUPERSEDED"]
+# SUPERSEDED rows are KEPT as tasks of state "superseded": a sprint size is its placement count
+KEPT = [(sid, r) for sid, _, rows in SPRINTS for r in rows]
 TOTAL = len(KEPT)
 ACCEPTED = sum(1 for _, r in KEPT if norm(r[1]) == "ACCEPTED")
 
@@ -88,7 +89,7 @@ def test_t8_plan_ledger_parse_mapping_counts_and_sprint_state():
     assert d["project"] == "DemoProj" and d["source"] == "PROJECT_PLAN.md", (d["project"], d.get("source"))
     assert d["sprints"] and [s["id"] for s in d["sprints"]] == ["S1", "S2", "S3", "S4"]
     tasks = {t["id"]: t for s in d["sprints"] for t in s["tasks"]}
-    assert "PX-10" not in tasks and "PY-2" not in tasks and "PW-1" not in tasks, "SUPERSEDED must be left out"
+    assert all(tasks[i]["state"] == "superseded" for i in ("PX-10", "PY-2", "PW-1")), "SUPERSEDED rows are kept with state superseded"
     assert not any("ROADMAP" in t["title"] + "".join(t["criteria"]) for t in tasks.values()), "roadmap rows are not tasks"
     assert len(tasks) == TOTAL, (len(tasks), TOTAL)
     for _, r in KEPT:
@@ -110,7 +111,7 @@ def test_t8_plan_ledger_parse_mapping_counts_and_sprint_state():
     sp = {s["id"]: s for s in d["sprints"]}
     assert sp["S1"]["state"] == "open" and sp["S3"]["state"] == "open"
     assert sp["S2"]["state"] == "closed", "all kept tasks done (SUPERSEDED ignored) -> closed"
-    assert sp["S4"]["state"] == "open" and sp["S4"]["tasks"] == [], "a sprint with nothing kept is not 'closed'"
+    assert sp["S4"]["state"] == "open" and [t["state"] for t in sp["S4"]["tasks"]] == ["superseded"], "a sprint with only superseded tasks is not 'closed'"
 
 
 def test_t8_plan_ledger_sprint_closed_only_when_every_kept_task_is_done():
@@ -155,7 +156,7 @@ def _check_plan_report(r):
     assert f"принято {ACCEPTED}/{TOTAL} задач" in html
     assert "PROJECT_PLAN.md" in html, "the plan must be named as the source"
     assert "PX-4" in html or "PZ-2" in html, "plan tasks are rendered"
-    assert "PX-10" not in html, "SUPERSEDED task must not appear"
+    assert "заменено" in html, "superseded tasks are shown as their own category"
     return html
 
 
@@ -185,9 +186,9 @@ def test_t8_report_with_real_ledger_ignores_the_plan():
         html = found[0] if found else (r / ".harness" / "report.html")
     text = html.read_text(encoding="utf-8")
     assert "S1-T1" in text and "S1-T2" in text, "ledger tasks must be shown"
-    assert "PX-1" not in text and "PZ-2" not in text, "plan tasks must not leak into a ledger-based report"
-    assert f"принято {ACCEPTED} из {TOTAL} задач" not in text
-    assert "принято 0 из 2 задач" in text
+    # S10-T2 contract (supersedes "ledger ignores the plan"): whole program = plan tasks + ledger tasks, ledger sprint collides -> -ledger
+    assert f"принято {ACCEPTED} из {TOTAL + 2} задач" in text, "denominator = plan tasks + 2 ledger tasks"
+    assert "S1-ledger" in text
 
 
 def test_t8_report_never_overwrites_a_hand_made_file():

@@ -32,6 +32,7 @@ unsupported output fields); the Stop block form is identical in both.
 """
 from __future__ import annotations
 
+import calendar
 import importlib.util
 import json
 import os
@@ -225,13 +226,25 @@ def _ledger_root_of(path: str) -> Path | None:
     return None
 
 
+def _start_cwd(tp: str) -> str:
+    """The cwd the session started in (first transcript row that carries one); '' when unknown."""
+    try:
+        from _turn import _rows
+        for r in _rows(tp) if tp else []:
+            if isinstance(r.get("cwd"), str) and r["cwd"]:
+                return r["cwd"]
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def ledger_projects(data: dict) -> tuple[dict, set]:
     """({root: worked}, my task ids). Priority (GPT-PM plan round 1, MAJOR-05): the git/ledger root of the session cwd, then the
     ledger roots of ABSOLUTE paths in this session's Edit/Write/NotebookEdit calls. Shell text is used only to find task ids
     this session started or reported (ledger.py start|verify|review <ID>, `Task: <ID>` trailers), never to pick a project."""
     roots: dict[Path, bool] = {}
     mine: set[str] = set()
-    cwd_root = _ledger_root_of(data.get("cwd") or "")
+    cwd_root = _ledger_root_of(_start_cwd(data.get("transcript_path") or "") or data.get("cwd") or "")  # start cwd, not a cwd the session moved to
     if cwd_root:
         roots[cwd_root] = True
     tp = data.get("transcript_path") or ""
@@ -273,7 +286,7 @@ def ledger_open_tasks(root: Path, mine: set) -> list[tuple[str, str]] | None:
         return None
 
 
-def ledger_stop(data: dict, msg: str) -> bool:
+def ledger_stop(data: dict, msg: str, waiting: list | None = None) -> bool:
     """Tasks-left check on the Harness v2 ledger (S7-T2). True = handled (blocked or released), caller stops."""
     roots, mine = ledger_projects(data)
     if not roots:
@@ -296,6 +309,11 @@ def ledger_stop(data: dict, msg: str) -> bool:
             continue
         if msg.endswith("?"):
             log({"event": "stop", "verdict": "allow-question", "project": key, "open": len(tasks)})
+            continue
+        if waiting:  # an own FRESH agent is running: ending the turn is valid, so the open tasks are logged, not blocked
+            for aid, age in waiting[:6]:
+                log({"event": "stop", "verdict": "allow-waiting-for-agent", "project": key, "open": len(tasks),
+                     "detail": f"waiting for agent {aid}, age {age}s"})
             continue
         sig = "|".join(f"{i}:{s}" for i, s in sorted(tasks))
         rec = streaks.get(key) or {}
@@ -337,15 +355,149 @@ def ledger_stop(data: dict, msg: str) -> bool:
     return False
 
 
+ASYNC_LAUNCH_RE = re.compile(r"Async agent launched successfully", re.I)
+AGENT_ID_RE = re.compile(r"agentId:\s*([A-Za-z0-9_-]+)")
+NOTIF_ID_RE = re.compile(r"<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>")
+PENDING_MAX_AGE = 30 * 60  # a launch older than this without a notification is treated as dead, not as "still running"
+
+
+def _row_texts(row: dict) -> list[tuple[str, str]]:
+    """[(role, text)] of one transcript row; role 'result' for tool results, 'text' for everything else."""
+    msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+    content = msg.get("content")
+    out: list[tuple[str, str]] = []
+    if isinstance(content, str):
+        return [("text", content)]
+    for b in content if isinstance(content, list) else []:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "tool_result":
+            c = b.get("content")
+            out.append(("result", c if isinstance(c, str) else " ".join(str(x.get("text", "")) for x in c or [] if isinstance(x, dict))))
+        elif b.get("type") == "text":
+            out.append(("text", str(b.get("text") or "")))
+    if isinstance(row.get("toolUseResult"), (dict, str)):
+        out.append(("result", json.dumps(row["toolUseResult"], ensure_ascii=False)[:2000] if isinstance(row["toolUseResult"], dict) else row["toolUseResult"]))
+    return out
+
+
+def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
+    """[(id, age in seconds)] of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
+    later <task-notification> with the same <task-id>. Transcript only; [] when unreadable or on any error."""
+    try:
+        from _turn import _rows
+        rows = _rows(transcript_path) if transcript_path else []
+        pending: dict[str, float] = {}
+        now = time.time()
+        for r in rows:
+            if r.get("isSidechain"):
+                continue
+            for role, text in _row_texts(r):
+                if role == "result" and ASYNC_LAUNCH_RE.search(text):
+                    m = AGENT_ID_RE.search(text)
+                    if m:
+                        try:
+                            ts = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))  # stamps are UTC
+                            pending[m.group(1)] = ts
+                        except (ValueError, TypeError, OverflowError):
+                            pending.pop(m.group(1), None)  # no usable launch time: cannot prove it is fresh, so it is NOT pending
+                if "<task-notification>" in text:
+                    for m in NOTIF_ID_RE.finditer(text):
+                        pending.pop(m.group(1), None)
+        return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE]
+    except Exception:  # noqa: BLE001  detection must never break a gate
+        return []
+
+
+def pending_agents(transcript_path: str) -> list[str]:
+    """Ids only of pending_agents_aged()."""
+    return [a for a, _ in pending_agents_aged(transcript_path)]
+
+
+def _norm(p) -> str:
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def _msys_path(s: str) -> str:
+    s = s.strip().strip("\"'")
+    m = re.match(r"^/([A-Za-z])/(.*)$", s)  # Git Bash path /d/Repo -> D:/Repo
+    return f"{m.group(1).upper()}:/{m.group(2)}" if m else s
+
+
+COMMIT_DIR_RES = (
+    re.compile(r"git\s+-C\s+(\"[^\"]+\"|'[^']+'|\S+)[^;&|\n]*?\bcommit\b"),
+    re.compile(r"\bcd\s+(\"[^\"]+\"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)[^\n]*?\bgit\s+commit\b"),
+)
+
+
+def session_scope(data: dict) -> tuple[set, str]:
+    """(normalized plan-dir paths of this session's own work, description). Own work = the session start cwd, repos of files this
+    session Edit/Write-ed, repos where it ran `git commit` (git -C <dir> / cd <dir> && git commit). Repos only read never count."""
+    dirs: list[str] = []
+    tp = data.get("transcript_path") or ""
+    start = ""
+    if tp:
+        try:
+            from _turn import _rows
+            for r in _rows(tp):
+                if isinstance(r.get("cwd"), str) and r["cwd"]:
+                    start = r["cwd"]
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        for r in _agentio.records(tp):
+            if r.get("kind") != "tool_use":
+                continue
+            inp = r.get("input") if isinstance(r.get("input"), dict) else {}
+            if r.get("name") in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+                for key in ("file_path", "notebook_path"):
+                    if inp.get(key) and Path(str(inp[key])).is_absolute():
+                        dirs.append(str(Path(str(inp[key])).parent))
+            cmd = str(inp.get("command") or inp.get("cmd") or "")
+            if "commit" in cmd:
+                for rx in COMMIT_DIR_RES:
+                    for m in rx.finditer(cmd):
+                        d = _msys_path(m.group(1))
+                        if Path(d).is_absolute():
+                            dirs.append(d)
+    dirs.append(start or str(data.get("cwd") or ""))
+    out = set()
+    for d in dirs:
+        if not d:
+            continue
+        pd = find_plan_dir(d)
+        if pd:
+            out.add(_norm(pd))
+    return out, ("start=" + (start or "payload-cwd"))
+
+
+def agents_running(data: dict) -> list[str]:
+    return pending_agents(data.get("transcript_path") or "")
+
+
 def on_stop(data: dict) -> None:
+    aged = pending_agents_aged(data.get("transcript_path") or "")
+    running = [a for a, _ in aged]
+    if running:  # waiting for an own fresh background agent is not a stall: a short status line is a valid end of turn
+        log({"event": "stop", "verdict": "waiting-for-own-agents", "agents": running[:6],
+             "ages_s": {a: age for a, age in aged[:6]}})
     msg0 = data.get("last_assistant_message") or ""
     if not msg0 and _CODEX:
         msg0 = _agentio.last_assistant_text(data)
-    if ledger_stop(data, msg0.rstrip()):
+    if ledger_stop(data, msg0.rstrip(), waiting=aged):
+        return
+    if running:  # stall/ask verdicts are skipped while an own agent runs
         return
     plan_dir = find_plan_dir(data.get("cwd") or "")
     if not plan_dir:
         log({"event": "stop", "verdict": "no-plan", "cwd": data.get("cwd")})
+        return
+    scope, how = session_scope(data)
+    if not scope:
+        log({"event": "stop", "verdict": "plan-scope-unknown", "project": str(plan_dir), "how": how})
+        return
+    if _norm(plan_dir) not in scope:  # cwd moved to a repo this session only read or visited: its plan is not this session's business
+        log({"event": "stop", "verdict": "plan-out-of-scope", "project": str(plan_dir), "own": sorted(scope)[:4], "how": how})
         return
     if not TOOL.is_file():
         log({"event": "stop", "verdict": "no-tool", "tool": str(TOOL)})

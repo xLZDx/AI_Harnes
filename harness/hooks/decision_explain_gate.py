@@ -40,9 +40,39 @@ DECISION_REF_RE = re.compile(
 GIT_HASH_RE = re.compile(r'\([0-9a-f]{7,40}\)', re.IGNORECASE)  # "(dc47d8a)" is a commit hash, not a decision code
 
 
-def is_decision_ref(ref: str) -> bool:
-    """False for a git commit hash in brackets (7-40 hex characters); True for every other bracketed code."""
-    return not GIT_HASH_RE.fullmatch(ref)
+REAL_DECISION_RE = re.compile(r'(?:D-?\d+[A-Z]?|DEC-\d+[A-Z]?)', re.IGNORECASE)  # D-1, D1, D-2b, DEC-7
+# Task / sprint / finding ids: S00, S11-T1, S13-R4, ST-SEC-01.01#1 ... are never decision refs.
+TASK_ID_RE = re.compile(r'(?:S\d+(?:[-.][A-Z]*\d+[A-Z]?)*|ST-[A-Z0-9.\-#]+|[A-Z]+-[A-Z]+-\d[\w.\-]*|.*#.*)', re.IGNORECASE)
+LOG_CODE_RE = re.compile(r'^\s*(?:[#>*\-|]+\s*)*\**([A-Z][A-Z0-9]*-\d+[A-Z]?)\**\s*(?:[:.)|—–\-]|$|\s)', re.IGNORECASE)
+
+
+def project_codes(cwd: str) -> frozenset:
+    """Codes that the project's DECISION_LOG.md defines as decisions (a log line or heading that starts with the code)."""
+    try:
+        p = Path(cwd or ".").resolve()
+        for d in [p, *p.parents][:8]:
+            for cand in (d / "core" / "DECISION_LOG.md", d / "DECISION_LOG.md"):
+                if cand.is_file():
+                    out = set()
+                    for ln in cand.read_text(encoding="utf-8", errors="replace").splitlines():
+                        m = LOG_CODE_RE.match(ln)
+                        if m and not TASK_ID_RE.fullmatch(m.group(1)):
+                            out.add(m.group(1).upper())
+                    return frozenset(out)
+    except (OSError, ValueError):
+        pass
+    return frozenset()
+
+
+def is_decision_ref(ref: str, codes=frozenset()) -> bool:
+    """True only for a real decision ref: D-<n>, D<n>, DEC-<n>, or a code DECISION_LOG.md defines.
+    False for a git hash, a task/sprint id such as (S11-T1), (S00), (S13-R4), (ST-SEC-01.01#1), and any other bracketed code."""
+    if GIT_HASH_RE.fullmatch(ref):
+        return False
+    code = ref.strip('()').strip()
+    if TASK_ID_RE.fullmatch(code):
+        return False
+    return bool(REAL_DECISION_RE.fullmatch(code)) or code.upper() in codes
 EXPLANATION_WINDOW = 200  # chars after (D-N) to look for explanation
 
 
@@ -80,6 +110,33 @@ def log(rec: dict) -> None:
         pass
 
 
+MAX_SAME_BLOCKS = 2
+
+
+def _loop(data: dict, sig: str, reset: bool = False) -> int:
+    """Consecutive blocks of the same signature (unexplained refs) in this session; 0 after a reset. Fails to 1 on error."""
+    path = _agentio.state_dir("citation_gate") / "decision_explain_loop.json"
+    key = str(data.get("session_id") or "default")
+    try:
+        try:
+            st = json.loads(path.read_text(encoding="utf-8"))
+            st = st if isinstance(st, dict) else {}
+        except (OSError, ValueError):
+            st = {}
+        if reset:
+            st.pop(key, None)
+            n = 0
+        else:
+            rec = st.get(key) or {}
+            n = int(rec.get("n", 0)) + 1 if rec.get("sig") == sig else 1
+            st[key] = {"sig": sig, "n": n}
+        st = dict(list(st.items())[-40:])
+        _agentio.atomic_write_text(path, json.dumps(st))
+        return n
+    except (OSError, ValueError, TypeError):
+        return 1
+
+
 SELF_CHECK = (
     "DECISION REFS UNEXPLAINED: your message contains (D-N) decision references but does not explain what each one means. "
     "For each (D-1), (D-2), etc.: write inline what decision/option it names, why it matters, and what the choice affects. "
@@ -102,7 +159,8 @@ def main() -> int:
     if len(message) < MIN_CHARS:
         return 0
 
-    refs = [(m.group(), m.start()) for m in DECISION_REF_RE.finditer(message) if is_decision_ref(m.group())]
+    codes = project_codes(str(data.get("cwd") or ""))
+    refs = [(m.group(), m.start()) for m in DECISION_REF_RE.finditer(message) if is_decision_ref(m.group(), codes)]
     if not refs:
         return 0
 
@@ -112,8 +170,13 @@ def main() -> int:
             unexplained.append(ref)
 
     if not unexplained:
+        _loop(data, "", reset=True)
         log({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "verdict": "pass", "refs_found": len(refs)})
         return 0
+
+    if _loop(data, "|".join(sorted(set(unexplained)))) > MAX_SAME_BLOCKS:
+        log({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "verdict": "loop-release", "unexplained": unexplained, "cap": MAX_SAME_BLOCKS})
+        return 0  # loop guard: the same message signature is never blocked more than MAX_SAME_BLOCKS times in a row
 
     log({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "verdict": "block", "unexplained": unexplained, "total_refs": len(refs)})
     print(json.dumps({"decision": "block", "reason": SELF_CHECK}, ensure_ascii=False))
