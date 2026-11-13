@@ -353,7 +353,7 @@ def c_commit_hook(a, d):
     if not m:
         return
     tid = m.group(1)
-    if tid in HOUSEKEEPING_TASKS:  # harness maintenance commits (tools/ci_triggers_off.py) are not project tasks
+    if tid in HOUSEKEEPING_TASKS:  # harness maintenance commits (the retired ci_triggers_off tool used CI-OFF) are not project tasks
         event(d, "housekeeping-commit", task=tid, sha=sha)
         return
     if not any(t["id"] == tid for s in d["sprints"] for t in s["tasks"]):

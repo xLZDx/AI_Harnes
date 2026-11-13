@@ -546,7 +546,7 @@ def _kill_process_tree(proc) -> list[str]:
     try:
         if proc.poll() is None and os.name == "nt":
             try:
-                # B43: the system taskkill.exe by absolute path, not through PATH or the cwd (as ci_triggers_off.py does)
+                # B43: the system taskkill.exe by absolute path, not through PATH or the cwd
                 taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
                 r = subprocess.run([taskkill, "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=15)
                 # B41: exit 128 is "process not found"; when a re-poll shows the process already exited, that is success
