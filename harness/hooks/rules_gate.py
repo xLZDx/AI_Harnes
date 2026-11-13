@@ -102,15 +102,18 @@ def _in_quote(line: str, pos: int) -> bool:
 
 
 PY_SHELLS_OUT_RE = re.compile(
-    r"os\s*\.\s*(?:system|popen|exec\w*|spawn\w*)"
-    r"|from\s+os\s+import\b[^\n]*\b(?:system|popen|exec\w*|spawn\w*|\*)"
+    r"os\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)"
+    r"|from\s+os\s+import\b[^\n]*(?:\b(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\*)"
+    r"|\bimport\s+os\s+as\b|\bimport\s+posix\b|\bfrom\s+posix\b"
+    r"|\b(?:exec|spawn|posix_spawn)\w*\s*\("
     r"|subprocess|shell\s*=\s*True"
     r"|__import__\s*\("
-    r"|pty\s*\.\s*spawn|\bpty\b"
+    r"|\bpty\s*\.\s*\w+|\bimport\s+pty\b|\bfrom\s+pty\b"
+    r"|\bpexpect\b|\bimport\s+sh\b|\bfrom\s+sh\b|\bplumbum\b|\brunpy\b"
     r"|ctypes"
     r"|importlib"
     r"|\bexec\s*\(|\beval\s*\("
-    r"|commands\s*\.\s*getoutput|\bcommands\b"
+    r"|\bcommands\s*\.\s*\w+\s*\(|\bimport\s+commands\b|\bfrom\s+commands\b"
     r"|from\s+os\s+import\s*\("
     r"|\b(?:system|popen)\s*\(|\bgetattr\s*\("
 )

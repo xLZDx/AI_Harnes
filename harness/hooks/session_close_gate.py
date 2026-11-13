@@ -49,6 +49,8 @@ import _agentio  # noqa: E402  shared Claude Code / Codex adapter
 _STATE_DIR = _agentio.state_dir("session_close")
 LOG = _STATE_DIR / "session_close_gate.jsonl"
 STATE = _STATE_DIR / "session_close_state.json"
+FINISHED = _STATE_DIR / "finished_agents.json"  # {agent id: unix time it was seen finished}; its own file, never the shared STATE
+FINISHED_MAX = 500
 TOOL = Path(os.environ.get("SESSION_CLOSE_PLAN_TOOL") or (Path(__file__).resolve().parent.parent / "tools" / "project_plan.py"))
 _CODEX = False  # set in main() from the hook payload
 MAX_NO_PROGRESS = 5
@@ -384,6 +386,21 @@ def _row_texts(row: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _load_finished() -> dict[str, float]:
+    """{id: unix time}. Any read or shape error = empty (fail-safe: the transcript replay still decides)."""
+    try:
+        raw = json.loads(FINISHED.read_text(encoding="utf-8"))
+        return {str(k): float(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def _save_finished(done: dict[str, float]) -> None:
+    """Atomic write of the newest FINISHED_MAX entries (oldest by time evicted)."""
+    keep = dict(sorted(done.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
+    _agentio.atomic_write_text(FINISHED, json.dumps(keep))
+
+
 def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
     """[(id, age in seconds)] of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
     later <task-notification> with the same <task-id>. Transcript only; [] when unreadable or on any error."""
@@ -391,8 +408,9 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
         from _turn import _rows
         rows = _rows(transcript_path) if transcript_path else []
         pending: dict[str, float] = {}
-        finished_before = set(str(x) for x in (load_state().get("finished_agents") or []))
-        finished = set(finished_before)
+        finished_before = _load_finished()
+        finished_map = dict(finished_before)
+        finished = set(finished_map)
         now = time.time()
         for r in rows:
             if r.get("isSidechain"):
@@ -413,7 +431,8 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                     for m in RESUMED_RE.finditer(text):  # SendMessage resumed a finished agent: running again from now
                         try:
                             pending[m.group(1)] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
-                            finished.discard(m.group(1))  # an explicit SendMessage resume is the only way back
+                            finished.discard(m.group(1))
+                            finished_map.pop(m.group(1), None)  # an explicit SendMessage resume is the only way back
                         except (ValueError, TypeError, OverflowError):
                             pass
                 if "<task-notification>" in text:
@@ -430,15 +449,15 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                                 pending[aid] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
                             except (ValueError, TypeError, OverflowError):
                                 pass
-                        else:
+                        elif NOTIF_HEAD_RE.search(block.split("</task-notification>")[0]):
                             pending.pop(aid, None)
                             finished.add(aid)  # an id that finished never counts as running again
-        if finished != finished_before:
+                            finished_map.setdefault(aid, now)
+                        # else: no <summary>/<status> at all = malformed block, changes nothing
+        if finished_map != finished_before:
             try:
-                state = load_state()
-                state["finished_agents"] = sorted(finished)[-500:]
-                save_state(state)
-            except Exception:  # noqa: BLE001
+                _save_finished(finished_map)
+            except Exception:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
                 pass
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]
     except Exception:  # noqa: BLE001  detection must never break a gate
