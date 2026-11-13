@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """pre-push helper (recovery plan R1): refuse a push whose tip commit carries a GitHub workflow that CI would start
 automatically. Reads git's pre-push lines on stdin (`<local ref> <local sha> <remote ref> <remote sha>`), looks at the tree
-of each pushed tip commit (`git ls-tree`, `git show <sha>:<path>`), and exits 1 when a file under .github/workflows has an
-`on:` trigger containing push, pull_request, pull_request_target or schedule. Stdlib only (no YAML library)."""
+of each pushed tip commit (`git ls-tree -z`, `git show <sha>:<path>`), and exits 1 when a file under .github/workflows has an
+`on:` trigger containing push, pull_request, pull_request_target or schedule, or has no readable top-level `on:` key (fail
+closed). A git call that exceeds 60 s also blocks the push. Stdlib only (no YAML library)."""
 from __future__ import annotations
 
 import re
@@ -26,14 +27,18 @@ def _unquote(tok: str) -> str:
 
 
 def git(*args) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
 
 
 def triggers(text: str) -> set[str]:
     """Event names in the top-level `on:` key of a workflow file (inline, list, mapping and block forms)."""
-    lines = text.splitlines()
+    lines = text.lstrip("\ufeff").splitlines()
+    base = next((len(l) - len(l.lstrip(" ")) for l in lines
+                 if l.strip() and not l.lstrip().startswith("#") and not l.startswith(("---", "%"))), 0)
     for i, line in enumerate(lines):
-        m = ON_RE.match(line)
+        if len(line) - len(line.lstrip(" ")) != base:
+            continue
+        m = ON_RE.match(line[base:])
         if not m:
             continue
         rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
@@ -57,7 +62,7 @@ def triggers(text: str) -> set[str]:
             if not nxt.strip() or nxt.lstrip().startswith("#"):
                 continue
             ind = len(nxt) - len(nxt.lstrip())
-            if ind == 0:
+            if ind <= base:
                 break
             if indent is None:
                 indent = ind
@@ -69,7 +74,7 @@ def triggers(text: str) -> set[str]:
             if name:
                 events.add(name if NAME_RE.match(name) else UNPARSABLE)
         return events or {UNPARSABLE}  # an `on:` with no readable value counts as a hit
-    return set()
+    return {UNPARSABLE}  # no top-level `on:` key found: a workflow with no readable trigger counts as a hit
 
 
 def main() -> int:
@@ -78,14 +83,23 @@ def main() -> int:
     for l in refs:
         if len(l) == 4 and set(l[1]) != {"0"} and l[1] not in shas:
             shas.append(l[1])
+    try:
+        return _check(shas)
+    except subprocess.TimeoutExpired as exc:
+        print(f"push blocked: git {' '.join(str(a) for a in exc.cmd[1:3])} timed out after {exc.timeout}s; cannot check .github/workflows.",
+              file=sys.stderr)
+        return 1
+
+
+def _check(shas: list[str]) -> int:
     bad: list[tuple[str, str, list[str]]] = []
     for sha in shas:
-        r = git("ls-tree", "-r", "--name-only", sha, "--", ".github/workflows")
+        r = git("ls-tree", "-r", "-z", "--name-only", sha, "--", ".github/workflows")
         if r.returncode != 0:
             print(f"push blocked: git ls-tree failed for {sha[:12]} ({r.stderr.strip()[:200]}); cannot check .github/workflows.",
                   file=sys.stderr)
             return 1
-        for path in r.stdout.splitlines():
+        for path in (p for p in r.stdout.split("\0") if p):
             if not path.lower().endswith((".yml", ".yaml")):
                 continue
             s = git("show", f"{sha}:{path}")

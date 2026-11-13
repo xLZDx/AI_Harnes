@@ -169,6 +169,7 @@ def chk_ci_local(d: Path):
         try:
             hit = sorted(workflow_guard.triggers(f.read_text(encoding="utf-8", errors="replace")) & BAD)
         except OSError:
+            bad.append(f"{f.name} (unreadable)")
             continue
         if hit:
             bad.append(f"{f.name} ({','.join(hit)})")
