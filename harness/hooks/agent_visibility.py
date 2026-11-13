@@ -283,15 +283,22 @@ def announce_stop(data: dict, client: str) -> None:
                         e["agent_id"] = aid
                         return finish(e)
                 return False
-            # no agent id in the payload: oldest unfinished entry of the same type (and session when known)
-            for e in d["agents"]:
-                if (e.get("type") == name and not e.get("stop")
-                        and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))):
-                    return finish(e)
+            # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
+            # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
+            # finished (fail closed: the ledger refuses the run instead of crediting a run that never finished)
+            cands = [e for e in d["agents"] if e.get("type") == name and not e.get("stop")
+                     and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))]
+            if len(cands) == 1:
+                return finish(cands[0])
+            res["ambiguous"] = len(cands)
             return False
         mutate(apply)
         hit, secs = res["hit"], res["secs"]
-        _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
+        if res.get("ambiguous"):
+            tail = f" | not paired: {res['ambiguous']} unfinished {name} runs and no agent id"
+        else:
+            tail = "" if hit else " | start was not observed"
+        _emit(f"[agent STOP] {name} | {secs} s" + tail, client)
         if hit:
             try:
                 import hook_metrics
