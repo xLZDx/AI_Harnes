@@ -200,7 +200,7 @@ def test_commit_timeout_with_unreadable_head_keeps_the_files():
     assert wg.triggers(rd(repo / WF).decode()) == {"workflow_dispatch"}, "the rewritten workflow must stay as written"
 
 
-def test_taskkill_is_the_absolute_system32_path_and_the_timeout_kill_uses_it():
+def test_taskkill_is_the_absolute_system32_path_and_the_windows_timeout_kill_goes_through_the_job_object():
     assert os.path.isabs(ci.TASKKILL), ci.TASKKILL
     assert ci.TASKKILL.lower().endswith(os.path.join("system32", "taskkill.exe")), ci.TASKKILL
     real, cmds = subprocess.run, []
@@ -215,7 +215,8 @@ def test_taskkill_is_the_absolute_system32_path_and_the_timeout_kill_uses_it():
         except ci.GitTimeout:
             pass
     if os.name == "nt":
-        assert cmds and cmds[0][0] == ci.TASKKILL and cmds[0][1:4] == ["/T", "/F", "/PID"], cmds
+        # S19-T2: a usable Job Object replaces taskkill as the kill path; taskkill is only the fallback (see test_s19_ci_triggers_off)
+        assert not any(c[0] == ci.TASKKILL for c in cmds), cmds
 
 
 def test_keyboard_interrupt_in_a_dirty_run_still_removes_the_private_ref_and_worktree_then_reraises():
