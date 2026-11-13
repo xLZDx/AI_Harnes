@@ -614,3 +614,4 @@ Decisions:
 - S16-T3 tests (6c93c9f): added the unrecorded-id fallback cases (newest PreToolUse-only entry, never an entry SubagentStart reported) and the retried-PreToolUse case; the retry test fails because a claim does not store the tool_use_id on the claimed entry.
 - S16-T3 tester fix (functional-test-reviewer, test_c6b): a PreToolUse that claims a SubagentStart entry now stores its tool_use_id on it, so a retried PreToolUse finds that entry instead of claiming a parallel run's start entry (repro: Start aid1, Pre T, Start aid2, Pre T again).
 - S16-T3 test (criterion 6b): test_c6b now also asserts that the entry claimed by a PreToolUse carries its tool_use_id and both sources right after the claim, so removing the one-line fix in agent_visibility.py fails the test at that line, not only later.
+- S16 backlog: B33 records the pre-existing retried-PreToolUse-after-stop MINOR from the S16-T3 review (display only, never credited).
