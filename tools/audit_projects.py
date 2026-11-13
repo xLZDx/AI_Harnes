@@ -35,7 +35,7 @@ import workflow_guard  # noqa: E402
 
 HOME = Path.home()
 SKIP = {"virtual_marketing_company"}
-COLS = ["hooks_path", "tools_current", "prepush_current", "ci_local", "ci_github", "ledger_whole", "gates_live", "client_cfg"]
+COLS = ["hooks_path", "tools_current", "prepush_current", "ci_local", "ci_github", "ledger_whole", "gates_live", "client_cfg", "kill_switch"]
 TOOL_FILES = ["ledger.py", "report.py", "workflow_guard.py", "plan_ledger.py"]
 BAD = set(workflow_guard.BAD)
 AUDIT_TMP = Path(r"D:\tmp\harness_audit")
@@ -44,6 +44,19 @@ ALLOW_CMDS = ["git status"]
 RULES_BLOCK = "Operator development rules"
 CODEX_HOOKS_BY_CWD: dict[str, dict] = {}
 CODEX_HOOKS_ERROR: str | None = None
+CODEX_CLIENT_FLAG = "--harness-client=codex"
+KILL_VALUES = {"off", "0", "false"}
+# A kill switch is an environment variable a hook compares (lower-cased) with "off" / {"off","0","false"}; each name keeps
+# the values its hook really honours ("== 'off'" honours only off). Mode variables whose "off" disables the gate are listed
+# in KILL_MODE_OFF (they are read into a local first, so the line scan cannot see them). Opt-in variables (default off,
+# enabled by on/1/true) are not kill switches: CLAUDE_ROSETTA_GATE, CLAUDE_SHELL_POLICY_AUDIT.
+KILL_MODE_VARS = {"CLAUDE_ROSETTA_GATE", "CLAUDE_SHELL_POLICY_AUDIT"}
+KILL_MODE_OFF = {"SESSION_SUPERVISOR_MODE": {"off"}, "SESSION_CLOSE_GATE_MODE": {"off"}}
+REG_NO_MORE_ITEMS = 259
+KILL_LINE_RE = re.compile(r"\.lower\(\)\s*(?:==|!=|in)\s*(?:\{[^}]*[\"']off[\"'][^}]*\}|[\"']off[\"'])")
+KILL_NAME_RE = re.compile(r"[\"']([A-Z][A-Z0-9_]{3,})[\"']")
+KILL_OFF_CALL_RE = re.compile(r"\boff\(\s*[\"']([A-Z][A-Z0-9_]{3,})[\"']\s*\)")  # evidence_gate.off(var): indirect name
+REG_SCOPES = [("user", r"Environment"), ("machine", r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")]
 
 OK, FAIL, NA = "OK", "FAIL", "n.a."
 
@@ -587,12 +600,101 @@ def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
             pass
 
 
-def chk_codex_cfg(cwd: Path | None = None):
+def kill_switch_values() -> dict[str, set[str]]:
+    """Kill-switch variable name -> the values that switch its hook off, from harness/hooks/*.py: names on a line that
+    tests .lower() against off (a set literal with "0" means off/0/false, else only off), the literal arguments of
+    evidence_gate.off('NAME') (off/0/false), and the mode variables of KILL_MODE_OFF."""
+    vals: dict[str, set[str]] = {}
+    for f in sorted((HARNESS / "harness" / "hooks").glob("*.py")):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for ln in text.splitlines():
+            m = KILL_LINE_RE.search(ln)
+            if m:
+                honoured = set(KILL_VALUES) if re.search(r"[\"']0[\"']", m.group(0)) else {"off"}
+                for n in KILL_NAME_RE.findall(ln):
+                    vals.setdefault(n, set()).update(honoured)
+        for n in KILL_OFF_CALL_RE.findall(text):
+            vals.setdefault(n, set()).update(KILL_VALUES)
+    for n, v in KILL_MODE_OFF.items():
+        vals.setdefault(n, set()).update(v)
+    return {n: v for n, v in vals.items() if n not in KILL_MODE_VARS}
+
+
+def kill_switch_names() -> set[str]:
+    return set(kill_switch_values())
+
+
+def chk_kill_switch():
+    """Report only kill-switch variables set to off/0/false, in the process, user and machine environments."""
+    honoured = kill_switch_values()
+    names = set(honoured)
+    upper = {n.upper(): n for n in names}  # Windows variable names are case-insensitive
+    if not names:
+        return NA, "no kill-switch names found in harness/hooks/*.py"
+    found, errors = [], []
+    for n in sorted(names):
+        v = os.environ.get(n)
+        if v is not None and v.strip().lower() in honoured[n]:
+            found.append(f"{n}={v} (process)")
+    skipped = ""
+    if os.name != "nt":
+        skipped = "registry scopes not read (not Windows): only the process environment was checked"
+    else:
+        import winreg
+        for scope, sub in REG_SCOPES:
+            root = winreg.HKEY_CURRENT_USER if scope == "user" else winreg.HKEY_LOCAL_MACHINE
+            try:
+                with winreg.OpenKey(root, sub) as key:
+                    i = 0
+                    while True:
+                        try:
+                            n, v, _t = winreg.EnumValue(key, i)
+                        except OSError as exc:
+                            if REG_NO_MORE_ITEMS in (getattr(exc, "winerror", None), getattr(exc, "errno", None)):
+                                break  # the end of the list
+                            raise  # a real read error: reported below, never taken as "nothing set"
+                        i += 1
+                        canon = upper.get(str(n).upper())
+                        if canon and isinstance(v, str) and v.strip().lower() in honoured[canon]:
+                            found.append(f"{n}={v} ({scope})")
+            except FileNotFoundError:
+                continue  # key absent: nothing set in this scope
+            except OSError as exc:
+                errors.append(f"{scope} registry unreadable: {exc}")
+    if found:
+        return FAIL, ", ".join(found) + (("; " + "; ".join(errors)) if errors else "")
+    if errors:  # a scope that could not be read is a failed check, not "nothing set" (the audit exit code must show it)
+        return FAIL, "; ".join(errors)
+    if skipped:
+        return NA, skipped
+    return OK, f"{len(names)} kill switches checked, none off"
+
+
+def codex_commands_lacking_flag(cfg, where: str) -> list[str]:
+    bad = []
+    groups = (cfg.get("hooks") or {}) if isinstance(cfg, dict) else {}
+    for event, gl in (groups.items() if isinstance(groups, dict) else []):
+        for g in (gl if isinstance(gl, list) else []):
+            for h in (g.get("hooks", []) if isinstance(g, dict) else []):
+                if not isinstance(h, dict):
+                    continue
+                for k in ("command", "commandWindows"):
+                    c = h.get(k)
+                    # only harness hooks (started through run_hook.py) must name the client; a foreign hook the
+                    # installer keeps (e.g. the operator's own completion_gate.py) is not the harness's to judge
+                    if c and "run_hook.py" in str(c) and CODEX_CLIENT_FLAG not in str(c):
+                        bad.append(f"{where} {event} {k}: {hook_name(str(c))}")
+    return bad
+
+
+def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
     hp = HOME / ".codex" / "hooks.json"
     cfg = load_json(hp)
     if cfg is None:
         return FAIL, "hooks.json unreadable"
     probs = []
+    if home:
+        probs += [f"{m} lacks {CODEX_CLIENT_FLAG}" for m in codex_commands_lacking_flag(cfg, "~/.codex/hooks.json")]
     raw = json.dumps(cfg)
     for s in ("rules_gate.py", "agent_visibility.py"):
         if s not in raw:
@@ -634,6 +736,7 @@ def chk_codex_cfg(cwd: Path | None = None):
         if project_cfg is None:
             probs.append(f"project hooks.json unreadable: {project_hooks_path}")
         else:
+            probs += [f"{m} lacks {CODEX_CLIENT_FLAG}" for m in codex_commands_lacking_flag(project_cfg, ".codex/hooks.json")]
             project_groups = (project_cfg.get("hooks") or {}) if isinstance(project_cfg, dict) else None
             if not isinstance(project_groups, dict) or any(
                     not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks", []), list)
@@ -688,6 +791,7 @@ def audit_project(d: Path, github: bool) -> dict:
     put("ledger_whole", chk_ledger_whole, d)
     put("gates_live", chk_gates_live, d, HOME / ".claude" / "settings.json", "claude", True)
     put("client_cfg", chk_codex_cfg, d)
+    cells["kill_switch"] = (NA, "")
     return {"project": d.name, "cells": cells}
 
 
@@ -703,9 +807,11 @@ def audit_client(name: str) -> dict:
     if name == "claude-home":
         put("gates_live", chk_gates_live, HARNESS, HOME / ".claude" / "settings.json", "claude", False)
         put("client_cfg", chk_claude_cfg)
+        put("kill_switch", chk_kill_switch)
     else:
         put("gates_live", chk_gates_live, HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
-        put("client_cfg", chk_codex_cfg, HARNESS)
+        put("client_cfg", chk_codex_cfg, HARNESS, True)
+        put("kill_switch", chk_kill_switch)
     return {"project": name, "cells": cells}
 
 
