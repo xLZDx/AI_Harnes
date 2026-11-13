@@ -1067,6 +1067,24 @@ def context_unavailable(data: dict, reason: str) -> None:
     allow()
 
 
+def _has_json_object_row(transcript_path) -> bool:
+    """True when the transcript is a regular file with at least one line that parses as a JSON object."""
+    try:
+        path = Path(transcript_path)
+        if not path.is_file():
+            return False
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    if isinstance(json.loads(raw.decode("utf-8", "replace")), dict):
+                        return True
+                except ValueError:
+                    continue
+    except (OSError, TypeError, ValueError):
+        return False
+    return False
+
+
 def _clean_token(token: str) -> str:
     return token.strip(_PUNCT_STRIP)
 
@@ -1689,6 +1707,13 @@ def main():
         # (GPT-PM receipt, plan GO) must still be checked; the final deny below applies if none covers.
         if agentio.client(data) != "codex":
             allow()
+            return
+        # _tail_rows yields nothing for a missing file, a directory or unparsable content, and also for a
+        # transcript whose only user rows are injected context. Only the first three are an unreadable
+        # context; a subagent transcript has at least one JSON object row.
+        readable = _has_json_object_row(transcript_path)
+        if not readable:
+            context_unavailable(data, "transcript is missing, not a file, or has no readable rows")
             return
         last_text = ""
 
