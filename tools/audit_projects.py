@@ -383,50 +383,71 @@ def chk_gates_live(cwd: Path, cfg_path: Path, client: str, is_project_dir: bool)
     handlers = registered_handlers(cfg, "PreToolUse", "Bash")
     if not handlers:
         return FAIL, "no PreToolUse Bash hooks registered"
-    AUDIT_TMP.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="g_", dir=str(AUDIT_TMP)))
-    probe_cwd = cwd
-    disposable_probe_cwd = None
-    if not is_project_dir:
-        try:
-            disposable_probe_cwd = make_unapproved_probe_repo(tmp)
-            probe_cwd = disposable_probe_cwd
-        except (OSError, RuntimeError) as exc:
-            partial_probe = tmp / "unapproved-probe"
-            if partial_probe.exists() and partial_probe.parent.resolve() == tmp.resolve():
-                shutil.rmtree(partial_probe)
-            return FAIL, f"could not create disposable no-approval probe repo: {exc}"
-    deny = list(DENY_CMDS)
-    skipped = ""
-    if is_project_dir and approval_on_head(probe_cwd):
-        deny.remove("git push")
-        skipped = "git push skipped (ledger approval is on HEAD)"
-    todo = [(c, True) for c in deny] + [(c, False) for c in ALLOW_CMDS]
     try:
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            results = list(ex.map(lambda t: run_gate(handlers, t[0], probe_cwd, tmp, client), todo))
-        not_denied, wrongly_denied, notes = [], [], []
-        for (c, want_deny), (by, nts) in zip(todo, results):
-            notes += nts
-            if want_deny and by is None:
-                not_denied.append(c)
-            if not want_deny and by is not None:
-                wrongly_denied.append(f"{c} (by {by})")
-        reg = [hook_name(c) for c, _ in handlers]
-        msgs = []
-        if not_denied:
-            msgs.append("not denied: " + ", ".join(not_denied))
-        if wrongly_denied:
-            msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
-        if "rules_gate.py" not in reg:
-            msgs.append("rules_gate.py not registered")
-        if msgs:
-            extra = ("; " + skipped) if skipped else ""
-            return FAIL, "; ".join(msgs) + extra
-        return OK, (skipped or f"{len(deny)} denied, git status allowed") + (f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]" if notes else "")
+        AUDIT_TMP.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="g_", dir=str(AUDIT_TMP)))
+    except OSError as exc:
+        return FAIL, f"could not create temporary audit directory: {exc}"
+    probe_cwd = cwd
+    result = None
+    probe_error = None
+    try:
+        if not is_project_dir:
+            try:
+                probe_cwd = make_unapproved_probe_repo(tmp)
+            except (OSError, RuntimeError) as exc:
+                result = (FAIL, f"could not create disposable no-approval probe repo: {exc}")
+        if result is None:
+            deny = list(DENY_CMDS)
+            skipped = ""
+            if is_project_dir and approval_on_head(probe_cwd):
+                deny.remove("git push")
+                skipped = "git push skipped (ledger approval is on HEAD)"
+            todo = [(c, True) for c in deny] + [(c, False) for c in ALLOW_CMDS]
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                results = list(ex.map(lambda t: run_gate(handlers, t[0], probe_cwd, tmp, client), todo))
+            not_denied, wrongly_denied, notes = [], [], []
+            for (c, want_deny), (by, nts) in zip(todo, results):
+                notes += nts
+                if want_deny and by is None:
+                    not_denied.append(c)
+                if not want_deny and by is not None:
+                    wrongly_denied.append(f"{c} (by {by})")
+            reg = [hook_name(c) for c, _ in handlers]
+            msgs = []
+            if not_denied:
+                msgs.append("not denied: " + ", ".join(not_denied))
+            if wrongly_denied:
+                msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
+            if "rules_gate.py" not in reg:
+                msgs.append("rules_gate.py not registered")
+            if msgs:
+                extra = ("; " + skipped) if skipped else ""
+                result = (FAIL, "; ".join(msgs) + extra)
+            else:
+                detail = skipped or f"{len(deny)} denied, git status allowed"
+                if notes:
+                    detail += f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]"
+                result = (OK, detail)
+    except Exception as exc:
+        probe_error = exc
     finally:
-        if disposable_probe_cwd is not None and disposable_probe_cwd.parent.resolve() == tmp.resolve():
-            shutil.rmtree(disposable_probe_cwd)
+        try:
+            if tmp.parent.resolve() != AUDIT_TMP.resolve():
+                raise RuntimeError("temporary audit directory escaped its configured parent")
+            shutil.rmtree(tmp)
+        except (OSError, RuntimeError) as exc:
+            cleanup_error = exc
+        else:
+            cleanup_error = None
+    if probe_error is not None:
+        if cleanup_error is not None:
+            raise RuntimeError(f"gate probe failed ({type(probe_error).__name__}) and temporary audit cleanup failed: {cleanup_error}") from probe_error
+        raise probe_error
+    if cleanup_error is not None:
+        detail = result[1] if result is not None else "gate probe did not complete"
+        return FAIL, f"{detail}; temporary audit cleanup failed: {cleanup_error}"
+    return result
 
 
 # ---- client rows --------------------------------------------------------------------------------------------------------------
@@ -624,7 +645,7 @@ def chk_codex_cfg(cwd: Path | None = None):
                 labels = []
                 for identity, count in missing.items():
                     event, matcher, _kind, command = identity
-                    command_names = re.findall(r"[\w.-]+\.py", command, re.IGNORECASE)
+                    command_names = re.findall(r"[\w.-]+\.[A-Za-z0-9]{1,10}", command)
                     command_name = command_names[-1] if command_names else "command"
                     labels.extend(f"{event}/{matcher or '*'}: {command_name}" for _ in range(count))
                 probs.append(f"project hooks.json handlers missing from hooks/list: {', '.join(labels)} ({project_hooks_path})")

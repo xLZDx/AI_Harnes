@@ -114,6 +114,36 @@ def test_codex_project_hook_identity_compares_command_not_only_count_and_source_
         assert "different_guard.py" not in detail
 
 
+def test_codex_missing_ps1_handler_reports_filename_without_full_command():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = root / "project"
+        hooks_file = project / ".codex" / "hooks.json"
+        _write(project / ".harness" / "ledger.json", "{}")
+        configured_command = r"C:\Program Files\Project Guards\guard.ps1 --private-flag"
+        _write(hooks_file, json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{
+                "command": configured_command,
+                "statusMessage": "powershell project guard",
+            }]}
+        ]}}))
+        home = _fake_home(root)
+        listed = _hook("project", "trusted", "powershell project guard", hooks_file,
+                       "other_guard.ps1", matcher="Bash")
+        item = _record(project, [listed])
+
+        with patch.object(au, "HOME", home), \
+                patch.object(au, "CODEX_HOOKS_BY_CWD", {au.norm_path(project): item}), \
+                patch.object(au, "CODEX_HOOKS_ERROR", None):
+            status, detail = au.chk_codex_cfg(project)
+
+        assert status == au.FAIL, detail
+        assert "project hooks.json handlers missing from hooks/list" in detail
+        assert "guard.ps1" in detail
+        assert configured_command not in detail
+        assert "private-flag" not in detail
+
+
 def test_codex_audit_reports_warnings_and_errors_from_app_server():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

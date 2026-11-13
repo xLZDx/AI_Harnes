@@ -102,6 +102,7 @@ def test_client_rows_probe_push_from_no_approval_no_remote_repo_and_remove_it():
 
         assert claude["cells"]["gates_live"][0] == au.OK, claude["cells"]["gates_live"]
         assert codex["cells"]["gates_live"][0] == au.OK, codex["cells"]["gates_live"]
+        assert list(audit_tmp.iterdir()) == [], list(audit_tmp.iterdir())
         assert len(observed) == 2, observed
         assert {entry[1] for entry in observed} == {"claude", "codex"}, observed
         for probe, _client, approval, remotes, remote_rc in observed:
@@ -138,6 +139,7 @@ def test_project_row_skips_push_only_for_approval_matching_project_head():
         assert gate_status == au.OK, (gate_status, gate_detail)
         assert "git push skipped" in gate_detail, gate_detail
         assert "git push" not in seen, seen
+        assert list(audit_tmp.iterdir()) == [], list(audit_tmp.iterdir())
 
         ledger["approval"] = {"head": "stale-head", "result": "APPROVE"}
         _write(ledger_path, json.dumps(ledger))
@@ -149,6 +151,7 @@ def test_project_row_skips_push_only_for_approval_matching_project_head():
         assert gate_status == au.OK, (gate_status, gate_detail)
         assert "git push skipped" not in gate_detail, gate_detail
         assert "git push" in seen, seen
+        assert list(audit_tmp.iterdir()) == [], list(audit_tmp.iterdir())
 
 
 def test_client_probe_repo_is_removed_when_probe_fails_or_raises():
@@ -170,6 +173,7 @@ def test_client_probe_repo_is_removed_when_probe_fails_or_raises():
             status, detail = au.chk_gates_live(harness, home / ".claude" / "settings.json", "claude", False)
         assert status == au.FAIL and "not denied: git push" in detail, (status, detail)
         assert len(probes) == 1 and not probes[0].exists(), probes
+        assert list(audit_tmp.iterdir()) == [], list(audit_tmp.iterdir())
 
         probes.clear()
 
@@ -185,6 +189,7 @@ def test_client_probe_repo_is_removed_when_probe_fails_or_raises():
             else:
                 raise AssertionError("probe exception was swallowed")
         assert probes and all(not probe.exists() for probe in probes), probes
+        assert list(audit_tmp.iterdir()) == [], list(audit_tmp.iterdir())
 
 
 if __name__ == "__main__":

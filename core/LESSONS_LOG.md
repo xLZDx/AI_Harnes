@@ -361,3 +361,5 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-13 S15-T1: the focused regression now proves a configured project command is reported missing when a different command from the same source path is returned with matching counts and metadata.
 - FAILURE 2026-11-13 S15-T1: Codex config event names are PascalCase while hooks/list uses camelCase; lowercasing the whole name made valid handlers appear absent. Convert the first character and preserve the remainder when normalizing.
 - SUCCESS 2026-11-13 S15: after the equal-count handler and event-normalization fixes, all five named audit and hook test files passed again at the final code HEAD (81 checks total).
+- SHORTCOMING 2026-11-13 S15-T3: deleting only the disposable Git repo left its parent metrics/state directory behind. Remove the entire direct child created by `mkdtemp` after worker completion and surface cleanup failures.
+- SHORTCOMING 2026-11-13 S15-T1: a missing-handler diagnostic limited filename extraction to `.py`; retain actionable names for PowerShell and other script extensions while redacting the full command.
