@@ -523,12 +523,14 @@ def _codex_executable() -> str | None:
         # <shim dir>/node_modules/@openai/codex/node_modules/@openai/codex-<platform>/vendor/<triple>/bin/codex.exe.
         base = Path(found).resolve().parent / "node_modules" / "@openai" / "codex"
         machine = platform.machine().lower()
-        want = "arm64" if machine in ("arm64", "aarch64") else "x64" if machine in ("amd64", "x86_64", "x64") else machine
+        # B43/B41: match the Rust target triple directory (<vendor>/<triple>/bin/codex.exe) exactly, never a substring
+        want = ("aarch64-pc-windows-msvc" if machine in ("arm64", "aarch64")
+                else "x86_64-pc-windows-msvc" if machine in ("amd64", "x86_64", "x64") else None)
         for pattern in ("node_modules/@openai/codex-*/vendor/*/bin/codex.exe", "vendor/*/bin/codex.exe"):
             vendor = sorted(base.glob(pattern))
             if vendor:
                 for cand in vendor:
-                    if want in str(cand.relative_to(base)).lower():
+                    if want is not None and cand.parent.parent.name.lower() == want:
                         return str(cand)
                 global CODEX_EXE_NOTE
                 CODEX_EXE_NOTE = f"no vendor codex.exe matches machine {platform.machine()}; used first entry {vendor[0]}"
@@ -543,8 +545,11 @@ def _kill_process_tree(proc) -> list[str]:
     try:
         if proc.poll() is None and os.name == "nt":
             try:
-                r = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=15)
-                if r.returncode != 0:
+                # B43: the system taskkill.exe by absolute path, not through PATH or the cwd (as ci_triggers_off.py does)
+                taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
+                r = subprocess.run([taskkill, "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=15)
+                # B41: exit 128 is "process not found"; when a re-poll shows the process already exited, that is success
+                if r.returncode != 0 and not (r.returncode == 128 and proc.poll() is not None):
                     warns.append(f"taskkill for app-server pid {proc.pid} exited {r.returncode}")
             except (OSError, subprocess.SubprocessError) as exc:
                 warns.append(f"taskkill for app-server pid {proc.pid} failed: {type(exc).__name__}: {exc}")
@@ -749,6 +754,12 @@ def codex_commands_lacking_flag(cfg, where: str) -> list[str]:
     return bad
 
 
+def codex_source_keys(hooks_json: Path) -> set[str]:
+    """B40: the hooks/list sourcePath values that count as the same layer as `hooks_json`: the hooks.json itself and the
+    config.toml beside it (Codex reports inline [hooks] tables with that sourcePath). Any other path stays foreign."""
+    return {_codex_key(hooks_json), _codex_key(hooks_json.parent / "config.toml")}
+
+
 def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
     hp = HOME / ".codex" / "hooks.json"
     cfg = load_json(hp)
@@ -797,7 +808,7 @@ def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
         # by hooks/list for that home as loaded, and hooks/list must not report it as disabled (field "enabled").
         user_groups = (cfg.get("hooks") or {}) if isinstance(cfg, dict) else {}
         listed_user = [h for h in hooks if h.get("source") == "user"
-                       and _codex_key(h.get("sourcePath", "")) == _codex_key(hp)]
+                       and _codex_key(h.get("sourcePath", "")) in codex_source_keys(hp)]
         loaded_ids = Counter(listed_hook_identity(h) for h in listed_user)
         for event, groups in (user_groups.items() if isinstance(user_groups, dict) else []):
             for group in (groups if isinstance(groups, list) else []):
@@ -841,7 +852,7 @@ def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
                 listed_hook_identity(hook)
                 for hook in hooks
                 if hook.get("source") == "project"
-                and _codex_key(hook.get("sourcePath", "")) == _codex_key(project_hooks_path)
+                and _codex_key(hook.get("sourcePath", "")) in codex_source_keys(project_hooks_path)
             )
             missing = expected - loaded
             if missing:
