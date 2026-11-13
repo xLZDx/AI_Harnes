@@ -157,12 +157,12 @@ def test_c4_stop_without_id_two_candidates_finishes_nothing_and_says_not_paired(
 
 
 def test_c4_stop_without_id_two_candidates_with_ids_finishes_nothing():
-    # S17-T3: id-bearing entries are never candidates of an id-less stop, so there are zero candidates
+    # S17-T3 review fix: an id-bearing entry counts for ambiguity but is never finished by an id-less stop
     st = h.fresh("s16t3_c4b")
     _seed(st, [_e(200, "A"), _e(100, "B")])
     r = _stop(st)
     assert _stopped(_agents(st)) == [False, False], _agents(st)
-    assert "start was not observed" in r.all and "not paired" not in r.all, r.all
+    assert "not paired: 2 unfinished tester runs and no agent id" in r.all and "start was not observed" not in r.all, r.all
 
 
 def test_c4_incident_dead_older_run_then_newer_run_idless_stop_finishes_neither():
@@ -172,15 +172,23 @@ def test_c4_incident_dead_older_run_then_newer_run_idless_stop_finishes_neither(
     r = _stop(st)  # stop without agent_id
     a = _agents(st)
     assert [e["agent_id"] for e in a] == ["A", "B"] and _stopped(a) == [False, False], a
-    assert "start was not observed" in r.all and "not paired" not in r.all, r.all  # S17-T3: both carry ids
+    assert "not paired: 2" in r.all and "start was not observed" not in r.all, r.all  # both carry ids, both count
 
 
 def test_c4_stop_without_id_single_candidate_is_finished():
     st = h.fresh("s16t3_c4s")
-    _seed(st, [_e(100), _e(50, "A"), _e(40, typ="python-reviewer")])  # S17-T3: one id-less candidate, one id-bearing
+    _seed(st, [_e(100), _e(50, "A", sid="other"), _e(40, "P", typ="python-reviewer")])  # one candidate of type and session
     r = _stop(st)
     assert _stopped(_agents(st)) == [True, False, False], _agents(st)
     assert "[agent STOP] tester" in r.all and "not paired" not in r.all and "start was not observed" not in r.all, r.all
+
+
+def test_c4_stop_without_id_idless_next_to_id_bearing_same_session_is_ambiguous():
+    st = h.fresh("s16t3_c4s2")
+    _seed(st, [_e(100), _e(50, "A")])  # S17-T3 review fix: the id-bearing entry counts, so nothing is finished
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, False], _agents(st)
+    assert "not paired: 2" in r.all and "start was not observed" not in r.all, r.all
 
 
 def test_c4_stop_without_id_counts_only_own_session_for_ambiguity():

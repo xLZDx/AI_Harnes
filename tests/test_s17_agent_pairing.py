@@ -1,8 +1,8 @@
 """S17-T3 tests (B33, B34): harness/hooks/agent_visibility.py. Written from the S17-T3 acceptance criteria, not from the code.
 1. A PreToolUse retried after its run stopped (same tool_use_id on a finished entry) adds no entry and prints no START line.
-2. A stop without agent_id counts only unfinished candidates that carry no agent_id; an entry with an id is never finished
-   by an id-less stop. One id-less candidate: finished. Two or more: nothing finished, 'not paired: N'. Zero: nothing
-   finished, 'start was not observed'.
+2. A stop without agent_id counts EVERY unfinished entry of its type and session (with or without an id) for ambiguity and
+   finishes only a single candidate that has no agent_id. One candidate that carries an id: nothing finished, 'not paired: 1'.
+   Two or more: nothing finished, 'not paired: N'. Zero: nothing finished, 'start was not observed'.
 3. The not-paired STOP line has no duration (no ' s |').
 The hook runs as a real subprocess with JSON on stdin; HARNESS_HOOK_STATE is a temp folder.
 Run: C:\\Python314\\python.exe -I tests/test_s17_agent_pairing.py"""
@@ -95,20 +95,36 @@ def test_c1_other_tool_use_id_after_stop_is_a_new_run():
 
 
 # ---------------------------------------------------------------- criterion 2
-def test_c2_one_idless_candidate_is_finished_id_bearing_untouched():
+def test_c2_one_idless_candidate_is_finished():
     st = h.fresh("s17t3_c2a")
-    _seed(st, [_e(300, "A"), _e(200), _e(100, "B")])
+    _seed(st, [_e(200)])
     r = _stop(st)
-    assert _stopped(_agents(st)) == [False, True, False], _agents(st)
+    assert _stopped(_agents(st)) == [True], _agents(st)
     assert "not paired" not in r.all and "start was not observed" not in r.all, r.all
 
 
-def test_c2_two_idless_candidates_finish_nothing_not_paired_counts_only_idless():
+def test_c2_one_idless_finished_when_other_types_and_sessions_hold_entries():
+    st = h.fresh("s17t3_c2a2")
+    _seed(st, [_e(300, "A", sid="s2"), _e(250, typ="other"), _e(200), _e(100, "B", sid="s2")])
+    r = _stop(st)  # only the s1 'tester' entry is a candidate
+    assert _stopped(_agents(st)) == [False, False, True, False], _agents(st)
+    assert "not paired" not in r.all, r.all
+
+
+def test_c2_idless_stop_counts_id_bearing_entries_for_ambiguity_nothing_finished():
     st = h.fresh("s17t3_c2b")
-    _seed(st, [_e(300, "A"), _e(200), _e(100), _e(50, "B")])  # 2 id-less + 2 id-bearing
+    _seed(st, [_e(300, "A"), _e(200), _e(100), _e(50, "B")])  # 2 id-less + 2 id-bearing = 4 candidates
     r = _stop(st)
     assert _stopped(_agents(st)) == [False] * 4, _agents(st)
-    assert "not paired: 2 unfinished tester runs and no agent id" in r.all, r.all
+    assert "not paired: 4 unfinished tester runs and no agent id" in r.all, r.all
+
+
+def test_c2_one_idless_next_to_two_id_bearing_is_ambiguous_nothing_finished():
+    st = h.fresh("s17t3_c2b2")
+    _seed(st, [_e(300, "A"), _e(200), _e(100, "B")])
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, False, False], _agents(st)
+    assert "not paired: 3 unfinished" in r.all, r.all
 
 
 def test_c2_three_idless_candidates_not_paired_three():
@@ -118,19 +134,30 @@ def test_c2_three_idless_candidates_not_paired_three():
     assert _stopped(_agents(st)) == [False] * 3 and "not paired: 3" in r.all, (_agents(st), r.all)
 
 
-def test_c2_zero_idless_candidates_only_id_bearing_says_start_not_observed():
+def test_c2_two_id_bearing_entries_idless_stop_not_paired_two():
     st = h.fresh("s17t3_c2d")
     _seed(st, [_e(200, "A"), _e(100, "B")])
     r = _stop(st)
     assert _stopped(_agents(st)) == [False, False], _agents(st)
-    assert "start was not observed" in r.all and "not paired" not in r.all, r.all
+    assert "not paired: 2" in r.all and "start was not observed" not in r.all, r.all
 
 
-def test_c2_single_id_bearing_entry_is_not_finished_by_idless_stop():
+def test_c2_single_id_bearing_entry_is_not_finished_by_idless_stop_not_paired_one():
     st = h.fresh("s17t3_c2e")
     _seed(st, [_e(100, "A")])
     r = _stop(st)
-    assert _stopped(_agents(st)) == [False] and "start was not observed" in r.all, (_agents(st), r.all)
+    assert _stopped(_agents(st)) == [False], _agents(st)
+    assert "not paired: 1" in r.all and "start was not observed" not in r.all, r.all
+    assert not [e for e in _agents(st) if e.get("stop")], _agents(st)
+
+
+def test_c2_dead_idless_plus_live_id_bearing_idless_stop_finishes_neither():
+    st = h.fresh("s17t3_c2h")
+    _seed(st, [_e(900), _e(30, "LIVE")])  # a dead id-less run (never stopped) and a live run that has an id
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, False], _agents(st)  # the dead one must not take the live run's stop
+    assert "not paired: 2 unfinished tester runs and no agent id" in r.all, r.all
+    assert not re.search(r"\d+ s\b", json.loads(r.out)["systemMessage"]), r.all
 
 
 def test_c2_zero_candidates_empty_state_says_start_not_observed():
@@ -144,6 +171,8 @@ def test_c2_id_bearing_stop_still_finishes_its_own_entry():
     _seed(st, [_e(200), _e(100, "A")])
     _stop(st, "A")
     assert _stopped(_agents(st)) == [False, True], _agents(st)
+    r = _stop(st)  # now the id-less entry is the only unfinished candidate
+    assert _stopped(_agents(st)) == [True, True] and "not paired" not in r.all, (_agents(st), r.all)
 
 
 # ---------------------------------------------------------------- criterion 3
