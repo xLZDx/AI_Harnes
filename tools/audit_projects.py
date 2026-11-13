@@ -485,6 +485,20 @@ def chk_claude_cfg():
     return (FAIL, "; ".join(probs)) if probs else (OK, "rules_gate, agent_visibility (3 events), rules block present")
 
 
+def _codex_key(p) -> str:
+    """One comparable form for a path sent to or returned by app-server: no \\\\?\\ prefix, resolved, normalised."""
+    s = str(p or "")
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    if not s:
+        return ""
+    try:
+        s = str(Path(s).resolve())
+    except OSError:
+        pass
+    return norm_path(s)
+
+
 def _codex_executable() -> str | None:
     """Find the installed Codex executable without depending on its package-manager layout."""
     return shutil.which("codex.exe") or shutil.which("codex")
@@ -560,7 +574,7 @@ def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
         for item in data:
             if not isinstance(item, dict) or not item.get("cwd"):
                 return {}, "Codex app-server hooks/list returned an invalid cwd entry"
-            by_cwd[norm_path(item["cwd"])] = item
+            by_cwd[_codex_key(item["cwd"])] = item
         return by_cwd, None
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         return {}, f"Codex app-server hooks/list failed: {exc}"
@@ -592,7 +606,7 @@ def chk_codex_cfg(cwd: Path | None = None):
     if CODEX_HOOKS_ERROR:
         probs.append(CODEX_HOOKS_ERROR)
         return FAIL, "; ".join(probs)
-    item = CODEX_HOOKS_BY_CWD.get(norm_path(target))
+    item = CODEX_HOOKS_BY_CWD.get(_codex_key(target))
     if item is None:
         probs.append(f"Codex app-server hooks/list returned no entry for {target}")
         return FAIL, "; ".join(probs)
@@ -620,7 +634,7 @@ def chk_codex_cfg(cwd: Path | None = None):
         if project_cfg is None:
             probs.append(f"project hooks.json unreadable: {project_hooks_path}")
         else:
-            project_groups = project_cfg.get("hooks") or {}
+            project_groups = (project_cfg.get("hooks") or {}) if isinstance(project_cfg, dict) else None
             if not isinstance(project_groups, dict) or any(
                     not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks", []), list)
                                                        for group in groups)
@@ -638,7 +652,7 @@ def chk_codex_cfg(cwd: Path | None = None):
                 listed_hook_identity(hook)
                 for hook in hooks
                 if hook.get("source") == "project"
-                and norm_path(hook.get("sourcePath", "")) == norm_path(project_hooks_path)
+                and _codex_key(hook.get("sourcePath", "")) == _codex_key(project_hooks_path)
             )
             missing = expected - loaded
             if missing:
@@ -673,18 +687,25 @@ def audit_project(d: Path, github: bool) -> dict:
     put("ci_github", chk_ci_github, d, github)
     put("ledger_whole", chk_ledger_whole, d)
     put("gates_live", chk_gates_live, d, HOME / ".claude" / "settings.json", "claude", True)
-    cells["client_cfg"] = chk_codex_cfg(d)
+    put("client_cfg", chk_codex_cfg, d)
     return {"project": d.name, "cells": cells}
 
 
 def audit_client(name: str) -> dict:
     cells = {c: (NA, "") for c in COLS}
+
+    def put(col, fn, *a):
+        try:
+            cells[col] = fn(*a)
+        except Exception as e:  # a broken check must not abort the whole audit
+            cells[col] = (FAIL, f"check crashed: {type(e).__name__}: {e}")
+
     if name == "claude-home":
-        cells["gates_live"] = chk_gates_live(HARNESS, HOME / ".claude" / "settings.json", "claude", False)
-        cells["client_cfg"] = chk_claude_cfg()
+        put("gates_live", chk_gates_live, HARNESS, HOME / ".claude" / "settings.json", "claude", False)
+        put("client_cfg", chk_claude_cfg)
     else:
-        cells["gates_live"] = chk_gates_live(HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
-        cells["client_cfg"] = chk_codex_cfg(HARNESS)
+        put("gates_live", chk_gates_live, HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
+        put("client_cfg", chk_codex_cfg, HARNESS)
     return {"project": name, "cells": cells}
 
 
@@ -717,7 +738,8 @@ def main(argv=None) -> int:
     if names is None or "codex-home" in names:
         codex_cwds.append(HARNESS)
     global CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR
-    CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR = codex_hooks_list(codex_cwds)
+    if codex_cwds:
+        CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR = codex_hooks_list(codex_cwds)
     for d in projects:
         rows.append(audit_project(d, not a.no_github))
     for c in ("claude-home", "codex-home"):

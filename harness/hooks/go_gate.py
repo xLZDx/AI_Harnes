@@ -1056,6 +1056,9 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
+_PAYLOAD: dict = {}  # the parsed PreToolUse payload, for the crash handler in __main__
+
+
 def context_unavailable(data: dict, reason: str) -> None:
     """Codex mutations cannot proceed when the operator authorization context is unreadable."""
     try:
@@ -1634,6 +1637,8 @@ def main():
     if not isinstance(data, dict):
         context_unavailable({}, "PreToolUse payload is not an object")
         return
+    global _PAYLOAD
+    _PAYLOAD = data
 
     if agentio.client(data) == "codex":
         if not data.get("tool_name") or not isinstance(data.get("tool_input"), dict):
@@ -1775,6 +1780,7 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except Exception:
-        # A safety hook must never be the thing that breaks a session.
-        allow()
+    except Exception as exc:
+        # A safety hook must never be the thing that breaks a Claude session (allow there); in Codex an
+        # unexpected crash means the authorization context could not be checked, so it fails closed.
+        context_unavailable(_PAYLOAD, f"gate crashed: {type(exc).__name__}")
