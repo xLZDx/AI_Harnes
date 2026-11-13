@@ -232,5 +232,64 @@ def test_c6_start_claims_newest_matching_entry_not_dead_runs_older_one():
     assert _stopped(a) == [False, True], a
 
 
+# ------------------------------------------- criterion 3 (refined): unrecorded id, PreToolUse-only fallback
+def test_c3r_unrecorded_id_finishes_newest_pre_only_idless_entry_and_stamps_id():
+    st = h.fresh("s16t3_c3r1")
+    _seed(st, [_e(300, sources=("pre",), tuid="a"), _e(100, sources=("pre",), tuid="b")])
+    _stop(st, "X")
+    a = _agents(st)
+    assert _stopped(a) == [False, True] and a[1]["agent_id"] == "X" and "agent_id" not in a[0], a
+
+
+def test_c3r_incident_dead_run_reported_by_start_is_never_a_fallback_target():
+    st = h.fresh("s16t3_c3r2")
+    _seed(st, [_e(5000, sources=("pre", "start"), tuid="dead")])  # dead run: start seen, no id
+    r = _stop(st, "X")
+    a = _agents(st)
+    assert _stopped(a) == [False] and "agent_id" not in a[0], a
+    assert "start was not observed" in r.all
+
+
+def test_c3r_fallback_skips_start_entry_but_takes_pre_only_one_even_if_older():
+    st = h.fresh("s16t3_c3r3")
+    _seed(st, [_e(300, sources=("pre",), tuid="live"), _e(100, sources=("pre", "start"), tuid="dead")])
+    _stop(st, "X")
+    a = _agents(st)
+    assert _stopped(a) == [True, False] and a[0]["agent_id"] == "X", a
+
+
+def test_c3r_fallback_ignores_other_type_other_session_and_entries_with_other_id():
+    st = h.fresh("s16t3_c3r4")
+    _seed(st, [_e(300, sources=("pre",), typ="python-reviewer"), _e(200, sources=("pre",), sid="other"),
+               _e(100, "A", sources=("pre",))])
+    _stop(st, "X")
+    assert _stopped(_agents(st)) == [False, False, False]
+
+
+def test_c3r_stamped_fallback_makes_a_second_stop_a_duplicate():
+    st = h.fresh("s16t3_c3r5")
+    _seed(st, [_e(300, sources=("pre",), tuid="a"), _e(100, sources=("pre",), tuid="b")])
+    _stop(st, "X")
+    _stop(st, "X")  # duplicate: must not take the older pre-only entry
+    assert _stopped(_agents(st)) == [False, True]
+
+
+# ---------------------------------------------------------------- retried PreToolUse
+def test_c6b_retried_pre_finds_its_own_entry_and_never_claims_another_run():
+    st = h.fresh("s16t3_c6b")
+    _start(st, "aid1")
+    _pre(st, tuid="T")  # claims A
+    _start(st, "aid2")  # B: new entry
+    a = _agents(st)
+    assert len(a) == 2 and a[0]["agent_id"] == "aid1" and a[1]["agent_id"] == "aid2", a
+    r = _pre(st, tuid="T")  # retry of A's PreToolUse
+    a = _agents(st)
+    assert len(a) == 2 and "[agent START]" not in r.all, a
+    assert a[1]["agent_id"] == "aid2" and a[1]["sources"] == ["start"] and a[1]["tool_use_id"] == "", a
+    _pre(st, tuid="U")  # B's own PreToolUse claims B
+    a = _agents(st)
+    assert len(a) == 2 and a[1]["tool_use_id"] == "U" and sorted(a[1]["sources"]) == ["pre", "start"], a
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))
