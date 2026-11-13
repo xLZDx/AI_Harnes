@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import functools
 import json
 import os
 import re
@@ -171,6 +170,7 @@ def counter(sprint: dict) -> tuple[int, int]:
 DOC_EXTS = {".md", ".rst", ".txt"}
 DEPENDENCY_NAMES = re.compile(r"^(requirements|constraints|dev-requirements|pipfile|cmakelists)[\w.-]*$", re.I)
 REPORT_RE = re.compile(r"^(reports/[^/]+\.html|\.harness/report\.html)$", re.I)
+LEDGER_FILE = ".harness/ledger.json"
 AGENT_CONFIG_RE = re.compile(r"(^|/)\.(claude|codex|agents)/|(^|/)harness/(agents|skills|commands|rules)/", re.I)
 TEST_CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".dart", ".go", ".rs", ".java", ".kt", ".cs",
                   ".rb", ".ps1", ".sh"}
@@ -196,7 +196,7 @@ def safe_non_code_path(f: str) -> bool:
     f = f.replace("\\", "/")
     name = f.rsplit("/", 1)[-1]
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-    if REPORT_RE.match(f):
+    if REPORT_RE.match(f) or f == LEDGER_FILE:  # B30: the ledger itself is state, not product code
         return True
     if AGENT_CONFIG_RE.search(f):  # agent, command and skill definitions change agent behaviour
         return False
@@ -206,17 +206,26 @@ def safe_non_code_path(f: str) -> bool:
     return ext in TEST_CODE_EXTS and in_test_dir
 
 
-@functools.lru_cache(maxsize=512)
+_CLASSIFIED: dict[str, bool] = {}
+
+
 def _docs_or_tests_only(sha: str) -> bool:
     """True when commit sha touches only safe non-code files (safe_non_code_path). Any doubt (git or rules unreadable,
     empty file list) counts as a code commit, so evidence is never kept fresh by mistake. A commit's file list never
-    changes, so the answer is cached per sha."""
+    changes, so a successful answer is cached per sha; a failure is not cached (B30: a transient git error must not
+    make the commit count as code for the rest of the process)."""
+    if sha in _CLASSIFIED:
+        return _CLASSIFIED[sha]
     try:
         files = [f for f in git("-c", "core.quotepath=off", "diff-tree", "--no-commit-id", "--name-only", "-r", "-m",
                                 "--root", sha).splitlines() if f]
-        return bool(files) and all(safe_non_code_path(f) for f in files)
+        answer = bool(files) and all(safe_non_code_path(f) for f in files)
     except Exception:
         return False
+    if len(_CLASSIFIED) >= 512:
+        _CLASSIFIED.clear()
+    _CLASSIFIED[sha] = answer
+    return answer
 
 
 def _evidence_fresh(t: dict, evidence_commit) -> bool:
