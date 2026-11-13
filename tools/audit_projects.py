@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
+import queue
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,6 +42,8 @@ AUDIT_TMP = Path(r"D:\tmp\harness_audit")
 DENY_CMDS = ["npm test", "npx vitest", "npm run lint", "tsc --noEmit", "npm run verify", "pytest", "gh workflow run ci.yml", "git push"]
 ALLOW_CMDS = ["git status"]
 RULES_BLOCK = "Operator development rules"
+CODEX_HOOKS_BY_CWD: dict[str, dict] = {}
+CODEX_HOOKS_ERROR: str | None = None
 
 OK, FAIL, NA = "OK", "FAIL", "n.a."
 
@@ -57,6 +64,24 @@ def git(d: Path, *args, timeout=20):
 
 def norm_path(p) -> str:
     return os.path.normcase(os.path.normpath(str(p))).replace("\\", "/")
+
+
+def codex_hook_event(event: str) -> str:
+    parts = re.split(r"[_\W]+", event)
+    if len(parts) > 1:
+        return parts[0].lower() + "".join(part.capitalize() for part in parts[1:])
+    return event[:1].lower() + event[1:]
+
+
+def codex_hook_identity(event: str, matcher, hook: dict) -> tuple:
+    command = hook.get("commandWindows") or hook.get("command") or ""
+    normalized_command = re.sub(r"[\\/]+", lambda _match: chr(92), str(command)).casefold()
+    return (codex_hook_event(event), matcher, hook.get("type", "command"), normalized_command)
+
+
+def listed_hook_identity(hook: dict) -> tuple:
+    command = re.sub(r"[\\/]+", lambda _match: chr(92), str(hook.get("command") or "")).casefold()
+    return (hook.get("eventName"), hook.get("matcher"), hook.get("handlerType"), command)
 
 
 # ---- discovery ---------------------------------------------------------------------------------------------------------
@@ -313,6 +338,21 @@ def approval_on_head(d: Path) -> bool:
     return bool(ap and head and ap == head)
 
 
+def make_unapproved_probe_repo(parent: Path) -> Path:
+    """Create an isolated harness repo with no remote or approval for client-level hook probes."""
+    probe = parent / "unapproved-probe"
+    probe.mkdir()
+    init = run(["git", "init", "-q"], cwd=probe)
+    if init is None or init.returncode != 0:
+        raise RuntimeError("git init failed for disposable no-approval probe")
+    ledger_dir = probe / ".harness"
+    ledger_dir.mkdir()
+    ledger = {"version": 1, "project": "audit-probe", "approval": None,
+              "sprints": [{"id": "AUDIT", "state": "open", "tasks": [{"id": "AUDIT-T1", "state": "todo"}]}]}
+    (ledger_dir / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8", newline="\n")
+    return probe
+
+
 def run_gate(handlers, command: str, cwd: Path, tmp: Path, client: str):
     """Returns (denied_by hook name or None, notes list)."""
     payload = json.dumps({
@@ -343,35 +383,71 @@ def chk_gates_live(cwd: Path, cfg_path: Path, client: str, is_project_dir: bool)
     handlers = registered_handlers(cfg, "PreToolUse", "Bash")
     if not handlers:
         return FAIL, "no PreToolUse Bash hooks registered"
-    AUDIT_TMP.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="g_", dir=str(AUDIT_TMP)))
-    deny = list(DENY_CMDS)
-    skipped = ""
-    if is_project_dir and approval_on_head(cwd):
-        deny.remove("git push")
-        skipped = "git push skipped (ledger approval is on HEAD)"
-    todo = [(c, True) for c in deny] + [(c, False) for c in ALLOW_CMDS]
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        results = list(ex.map(lambda t: run_gate(handlers, t[0], cwd, tmp, client), todo))
-    not_denied, wrongly_denied, notes = [], [], []
-    for (c, want_deny), (by, nts) in zip(todo, results):
-        notes += nts
-        if want_deny and by is None:
-            not_denied.append(c)
-        if not want_deny and by is not None:
-            wrongly_denied.append(f"{c} (by {by})")
-    reg = [hook_name(c) for c, _ in handlers]
-    msgs = []
-    if not_denied:
-        msgs.append("not denied: " + ", ".join(not_denied))
-    if wrongly_denied:
-        msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
-    if "rules_gate.py" not in reg:
-        msgs.append("rules_gate.py not registered")
-    if msgs:
-        extra = ("; " + skipped) if skipped else ""
-        return FAIL, "; ".join(msgs) + extra
-    return OK, (skipped or f"{len(deny)} denied, git status allowed") + (f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]" if notes else "")
+    try:
+        AUDIT_TMP.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="g_", dir=str(AUDIT_TMP)))
+    except OSError as exc:
+        return FAIL, f"could not create temporary audit directory: {exc}"
+    probe_cwd = cwd
+    result = None
+    probe_error = None
+    try:
+        if not is_project_dir:
+            try:
+                probe_cwd = make_unapproved_probe_repo(tmp)
+            except (OSError, RuntimeError) as exc:
+                result = (FAIL, f"could not create disposable no-approval probe repo: {exc}")
+        if result is None:
+            deny = list(DENY_CMDS)
+            skipped = ""
+            if is_project_dir and approval_on_head(probe_cwd):
+                deny.remove("git push")
+                skipped = "git push skipped (ledger approval is on HEAD)"
+            todo = [(c, True) for c in deny] + [(c, False) for c in ALLOW_CMDS]
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                results = list(ex.map(lambda t: run_gate(handlers, t[0], probe_cwd, tmp, client), todo))
+            not_denied, wrongly_denied, notes = [], [], []
+            for (c, want_deny), (by, nts) in zip(todo, results):
+                notes += nts
+                if want_deny and by is None:
+                    not_denied.append(c)
+                if not want_deny and by is not None:
+                    wrongly_denied.append(f"{c} (by {by})")
+            reg = [hook_name(c) for c, _ in handlers]
+            msgs = []
+            if not_denied:
+                msgs.append("not denied: " + ", ".join(not_denied))
+            if wrongly_denied:
+                msgs.append("should be allowed but denied: " + ", ".join(wrongly_denied))
+            if "rules_gate.py" not in reg:
+                msgs.append("rules_gate.py not registered")
+            if msgs:
+                extra = ("; " + skipped) if skipped else ""
+                result = (FAIL, "; ".join(msgs) + extra)
+            else:
+                detail = skipped or f"{len(deny)} denied, git status allowed"
+                if notes:
+                    detail += f" [hook notes: {'; '.join(sorted(set(notes))[:3])}]"
+                result = (OK, detail)
+    except Exception as exc:
+        probe_error = exc
+    finally:
+        try:
+            if tmp.parent.resolve() != AUDIT_TMP.resolve():
+                raise RuntimeError("temporary audit directory escaped its configured parent")
+            shutil.rmtree(tmp)
+        except (OSError, RuntimeError) as exc:
+            cleanup_error = exc
+        else:
+            cleanup_error = None
+    if probe_error is not None:
+        if cleanup_error is not None:
+            raise RuntimeError(f"gate probe failed ({type(probe_error).__name__}) and temporary audit cleanup failed: {cleanup_error}") from probe_error
+        raise probe_error
+    if cleanup_error is not None:
+        detail = result[1] if result is not None else "gate probe did not complete"
+        return FAIL, f"{detail}; temporary audit cleanup failed: {cleanup_error}"
+    return result
 
 
 # ---- client rows --------------------------------------------------------------------------------------------------------------
@@ -409,7 +485,109 @@ def chk_claude_cfg():
     return (FAIL, "; ".join(probs)) if probs else (OK, "rules_gate, agent_visibility (3 events), rules block present")
 
 
-def chk_codex_cfg():
+def _codex_key(p) -> str:
+    """One comparable form for a path sent to or returned by app-server: no \\\\?\\ prefix, resolved, normalised."""
+    s = str(p or "")
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    if not s:
+        return ""
+    try:
+        s = str(Path(s).resolve())
+    except OSError:
+        pass
+    return norm_path(s)
+
+
+def _codex_executable() -> str | None:
+    """Find the installed Codex executable without depending on its package-manager layout."""
+    return shutil.which("codex.exe") or shutil.which("codex")
+
+
+def _codex_rpc_response(proc, output_queue, request_id: int, timeout: int) -> dict:
+    """Read JSONL app-server output until the response with the requested id arrives."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"timed out waiting for app-server response {request_id}")
+        try:
+            line = output_queue.get(timeout=remaining)
+        except queue.Empty as exc:
+            raise TimeoutError(f"timed out waiting for app-server response {request_id}") from exc
+        if line is None:
+            raise RuntimeError(f"Codex app-server exited before response {request_id} (exit {proc.poll()})")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Codex app-server returned invalid JSON: {exc.msg}") from exc
+        if not isinstance(message, dict):
+            raise RuntimeError("Codex app-server returned a JSON-RPC message that is not an object")
+        if message.get("id") == request_id:
+            if "error" in message:
+                raise RuntimeError(f"Codex app-server RPC error: {message['error']}")
+            return message
+
+
+def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
+    """Ask the running Codex executable for authoritative hook trust per project cwd."""
+    exe = _codex_executable()
+    if not exe:
+        return {}, "Codex executable not found on PATH"
+    try:
+        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+    except OSError as exc:
+        return {}, f"could not start Codex app-server: {type(exc).__name__}: {exc}"
+
+    output_queue: queue.Queue = queue.Queue()
+
+    def read_output():
+        try:
+            for line in proc.stdout:
+                output_queue.put(line)
+        finally:
+            output_queue.put(None)
+
+    reader = threading.Thread(target=read_output, name="codex-app-server-output", daemon=True)
+    reader.start()
+
+    def send(message: dict):
+        proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        proc.stdin.flush()
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"clientInfo": {"name": "harness-audit", "title": "Harness audit", "version": "1.0"}}})
+        _codex_rpc_response(proc, output_queue, 1, 20)
+        send({"jsonrpc": "2.0", "method": "initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "hooks/list",
+              "params": {"cwds": [str(p.resolve()) for p in cwds]}})
+        response = _codex_rpc_response(proc, output_queue, 2, 30)
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return {}, "Codex app-server hooks/list response has no result object"
+        data = result.get("data")
+        if not isinstance(data, list):
+            return {}, "Codex app-server hooks/list response has no result.data list"
+        by_cwd = {}
+        for item in data:
+            if not isinstance(item, dict) or not item.get("cwd"):
+                return {}, "Codex app-server hooks/list returned an invalid cwd entry"
+            by_cwd[_codex_key(item["cwd"])] = item
+        return by_cwd, None
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        return {}, f"Codex app-server hooks/list failed: {exc}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def chk_codex_cfg(cwd: Path | None = None):
     hp = HOME / ".codex" / "hooks.json"
     cfg = load_json(hp)
     if cfg is None:
@@ -424,24 +602,71 @@ def chk_codex_cfg():
             probs.append(f"AGENTS.md lacks '{RULES_BLOCK}'")
     except OSError:
         probs.append("AGENTS.md unreadable")
-    expected = []
-    for ev, groups in (cfg.get("hooks") or {}).items():
-        for gi, g in enumerate(groups):
-            for hi, _ in enumerate(g.get("hooks", [])):
-                expected.append(f"{norm_path(hp)}:{snake(ev)}:{gi}:{hi}")
-    trusted = set()
-    try:
-        import tomllib
-        toml = tomllib.loads((HOME / ".codex" / "config.toml").read_text(encoding="utf-8"))
-        for k, v in ((toml.get("hooks") or {}).get("state") or {}).items():
-            if isinstance(v, dict) and v.get("trusted_hash"):
-                trusted.add(norm_path(k.rsplit(":", 3)[0]) + ":" + ":".join(k.rsplit(":", 3)[1:]))
-    except Exception as e:
-        probs.append(f"config.toml unreadable: {e}")
-    untrusted = [e for e in expected if e not in trusted]
-    if untrusted:
-        probs.append(f"untrusted {len(untrusted)} of {len(expected)} hook handlers")
-    return (FAIL, "; ".join(probs)) if probs else (OK, f"{len(expected)} handlers, all trusted")
+    target = cwd or HARNESS
+    if CODEX_HOOKS_ERROR:
+        probs.append(CODEX_HOOKS_ERROR)
+        return FAIL, "; ".join(probs)
+    item = CODEX_HOOKS_BY_CWD.get(_codex_key(target))
+    if item is None:
+        probs.append(f"Codex app-server hooks/list returned no entry for {target}")
+        return FAIL, "; ".join(probs)
+
+    hooks = item.get("hooks")
+    warnings = item.get("warnings", [])
+    errors = item.get("errors", [])
+    if not isinstance(hooks, list) or not isinstance(warnings, list) or not isinstance(errors, list):
+        probs.append("Codex app-server hooks/list returned invalid hooks, warnings, or errors")
+        return FAIL, "; ".join(probs)
+    if any(not isinstance(hook, dict) for hook in hooks):
+        probs.append("Codex app-server hooks/list returned an invalid hook entry")
+        return FAIL, "; ".join(probs)
+    untrusted = [h for h in hooks if h.get("source") in ("user", "project") and h.get("trustStatus") != "trusted"]
+    for hook in untrusted:
+        probs.append("untrusted hook: " + ", ".join(str(hook.get(k) or "-") for k in ("source", "eventName", "statusMessage", "sourcePath")))
+    if warnings:
+        probs.append("Codex app-server warnings: " + json.dumps(warnings, ensure_ascii=False))
+    if errors:
+        probs.append("Codex app-server errors: " + json.dumps(errors, ensure_ascii=False))
+
+    project_hooks_path = target / ".codex" / "hooks.json"
+    if project_hooks_path.is_file():
+        project_cfg = load_json(project_hooks_path)
+        if project_cfg is None:
+            probs.append(f"project hooks.json unreadable: {project_hooks_path}")
+        else:
+            project_groups = (project_cfg.get("hooks") or {}) if isinstance(project_cfg, dict) else None
+            if not isinstance(project_groups, dict) or any(
+                    not isinstance(groups, list) or any(not isinstance(group, dict) or not isinstance(group.get("hooks", []), list)
+                                                       for group in groups)
+                    for groups in project_groups.values()):
+                probs.append(f"project hooks.json has invalid hooks structure: {project_hooks_path}")
+                project_groups = {}
+            expected = Counter(
+                codex_hook_identity(event, group.get("matcher"), handler)
+                for event, groups in project_groups.items()
+                for group in groups
+                for handler in group.get("hooks", [])
+                if isinstance(handler, dict)
+            )
+            loaded = Counter(
+                listed_hook_identity(hook)
+                for hook in hooks
+                if hook.get("source") == "project"
+                and _codex_key(hook.get("sourcePath", "")) == _codex_key(project_hooks_path)
+            )
+            missing = expected - loaded
+            if missing:
+                labels = []
+                for identity, count in missing.items():
+                    event, matcher, _kind, command = identity
+                    command_names = re.findall(r"[\w.-]+\.[A-Za-z0-9]{1,10}", command)
+                    command_name = command_names[-1] if command_names else "command"
+                    labels.extend(f"{event}/{matcher or '*'}: {command_name}" for _ in range(count))
+                probs.append(f"project hooks.json handlers missing from hooks/list: {', '.join(labels)} ({project_hooks_path})")
+
+    if probs:
+        return FAIL, "; ".join(probs)
+    return OK, f"{len(hooks)} hooks listed; warnings=[]; errors=[]"
 
 
 # ---- orchestration ---------------------------------------------------------------------------------------------------------------
@@ -462,18 +687,25 @@ def audit_project(d: Path, github: bool) -> dict:
     put("ci_github", chk_ci_github, d, github)
     put("ledger_whole", chk_ledger_whole, d)
     put("gates_live", chk_gates_live, d, HOME / ".claude" / "settings.json", "claude", True)
-    cells["client_cfg"] = (NA, "")
+    put("client_cfg", chk_codex_cfg, d)
     return {"project": d.name, "cells": cells}
 
 
 def audit_client(name: str) -> dict:
     cells = {c: (NA, "") for c in COLS}
+
+    def put(col, fn, *a):
+        try:
+            cells[col] = fn(*a)
+        except Exception as e:  # a broken check must not abort the whole audit
+            cells[col] = (FAIL, f"check crashed: {type(e).__name__}: {e}")
+
     if name == "claude-home":
-        cells["gates_live"] = chk_gates_live(HARNESS, HOME / ".claude" / "settings.json", "claude", False)
-        cells["client_cfg"] = chk_claude_cfg()
+        put("gates_live", chk_gates_live, HARNESS, HOME / ".claude" / "settings.json", "claude", False)
+        put("client_cfg", chk_claude_cfg)
     else:
-        cells["gates_live"] = chk_gates_live(HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
-        cells["client_cfg"] = chk_codex_cfg()
+        put("gates_live", chk_gates_live, HARNESS, HOME / ".codex" / "hooks.json", "codex", False)
+        put("client_cfg", chk_codex_cfg, HARNESS)
     return {"project": name, "cells": cells}
 
 
@@ -501,9 +733,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     names = {a.project.lower()} if a.project else None
     rows = []
-    for d in discover(Path(a.root)):
-        if names is None or d.name.lower() in names:
-            rows.append(audit_project(d, not a.no_github))
+    projects = [d for d in discover(Path(a.root)) if names is None or d.name.lower() in names]
+    codex_cwds = [d for d in projects]
+    if names is None or "codex-home" in names:
+        codex_cwds.append(HARNESS)
+    global CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR
+    if codex_cwds:
+        CODEX_HOOKS_BY_CWD, CODEX_HOOKS_ERROR = codex_hooks_list(codex_cwds)
+    for d in projects:
+        rows.append(audit_project(d, not a.no_github))
     for c in ("claude-home", "codex-home"):
         if names is None or c in names:
             rows.append(audit_client(c))

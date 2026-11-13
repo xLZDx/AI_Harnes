@@ -1056,6 +1056,38 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
+_PAYLOAD: dict = {}  # the parsed PreToolUse payload, for the crash handler in __main__
+
+
+def context_unavailable(data: dict, reason: str) -> None:
+    """Codex mutations cannot proceed when the operator authorization context is unreadable."""
+    try:
+        is_codex = agentio.client(data if isinstance(data, dict) else {}) == "codex"
+    except Exception:
+        is_codex = getattr(agentio, "CLIENT", "") == "codex"
+    if is_codex:
+        deny("GO gate: cannot verify Codex authorization context (" + reason + "); failing closed.")
+    allow()
+
+
+def _has_json_object_row(transcript_path) -> bool:
+    """True when the transcript is a regular file with at least one line that parses as a JSON object."""
+    try:
+        path = Path(transcript_path)
+        if not path.is_file():
+            return False
+        with path.open("rb") as fh:
+            for raw in fh:
+                try:
+                    if isinstance(json.loads(raw.decode("utf-8", "replace")), dict):
+                        return True
+                except ValueError:
+                    continue
+    except (OSError, TypeError, ValueError):
+        return False
+    return False
+
+
 def _clean_token(token: str) -> str:
     return token.strip(_PUNCT_STRIP)
 
@@ -1600,8 +1632,18 @@ def main():
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except ValueError:
-        allow()
+        context_unavailable({}, "malformed PreToolUse input")
         return
+    if not isinstance(data, dict):
+        context_unavailable({}, "PreToolUse payload is not an object")
+        return
+    global _PAYLOAD
+    _PAYLOAD = data
+
+    if agentio.client(data) == "codex":
+        if not data.get("tool_name") or not isinstance(data.get("tool_input"), dict):
+            context_unavailable(data, "PreToolUse tool_name or tool_input is missing or invalid")
+            return
 
     tool_name = data.get("tool_name") or ""
     tool_input = data.get("tool_input") or {}
@@ -1638,8 +1680,8 @@ def main():
                 is_mutation, reason = False, "decision_log_append"
             elif is_mutation and tool_name in _PM_MODE_EXEMPT_TOOLS and pm_mode_active():
                 is_mutation, reason = False, "pm_mode_active"
-    except Exception:
-        allow()
+    except Exception as exc:
+        context_unavailable(data, f"could not classify tool input: {type(exc).__name__}")
         return
 
     if not is_mutation:
@@ -1648,7 +1690,7 @@ def main():
 
     transcript_path = data.get("transcript_path")
     if not transcript_path:
-        allow()
+        context_unavailable(data, "transcript_path is missing")
         return
 
     try:
@@ -1658,18 +1700,27 @@ def main():
             # heavy tool output pushing the last real message past the tail window); fall back to
             # a full scan rather than silently treat "not found in the tail" as "never said".
             last_text = latest_genuine_operator_text(transcript_path, full=True)
-    except Exception:
-        allow()
+    except Exception as exc:
+        context_unavailable(data, f"transcript could not be read: {type(exc).__name__}")
         return
 
     if last_text is None:
         # `_tail_rows` "fails silent (yields nothing) on any missing file, unreadable path, or
-        # parse error" (_report_common.py) and every other caller in this hook set treats that as
-        # allow, never as evidence of a problem. A live Claude Code session always maintains a
-        # real transcript file, so this path is an infra fault (or a not-yet-written transcript),
-        # not "the operator never said GO" -- follow the same fail-open convention here.
-        allow()
-        return
+        # parse error" (_report_common.py). Claude keeps its established fail-open behavior. In Codex
+        # a readable transcript without operator text is normal for a spawned subagent (its only user
+        # row is the injected AGENTS.md context), so there is no GO here, but the other authorizations
+        # (GPT-PM receipt, plan GO) must still be checked; the final deny below applies if none covers.
+        if agentio.client(data) != "codex":
+            allow()
+            return
+        # _tail_rows yields nothing for a missing file, a directory or unparsable content, and also for a
+        # transcript whose only user rows are injected context. Only the first three are an unreadable
+        # context; a subagent transcript has at least one JSON object row.
+        readable = _has_json_object_row(transcript_path)
+        if not readable:
+            context_unavailable(data, "transcript is missing, not a file, or has no readable rows")
+            return
+        last_text = ""
 
     if message_opens_with_go(last_text):
         allow()
@@ -1729,6 +1780,7 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except Exception:
-        # A safety hook must never be the thing that breaks a session.
-        allow()
+    except Exception as exc:
+        # A safety hook must never be the thing that breaks a Claude session (allow there); in Codex an
+        # unexpected crash means the authorization context could not be checked, so it fails closed.
+        context_unavailable(_PAYLOAD, f"gate crashed: {type(exc).__name__}")
