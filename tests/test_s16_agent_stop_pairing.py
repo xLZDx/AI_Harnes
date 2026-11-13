@@ -282,6 +282,7 @@ def test_c6b_retried_pre_finds_its_own_entry_and_never_claims_another_run():
     _start(st, "aid2")  # B: new entry
     a = _agents(st)
     assert len(a) == 2 and a[0]["agent_id"] == "aid1" and a[1]["agent_id"] == "aid2", a
+    assert a[0]["tool_use_id"] == "T" and a[0]["sources"] == ["start", "pre"], a  # the claim stored the id
     r = _pre(st, tuid="T")  # retry of A's PreToolUse
     a = _agents(st)
     assert len(a) == 2 and "[agent START]" not in r.all, a
