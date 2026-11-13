@@ -174,7 +174,7 @@ def _claude_records(obj: dict):
 
 
 CODEX_INJECTED_RE = re.compile(r"^\s*<(environment_context|user_instructions|turn_aborted|subagent_notification"
-                               r"|codex_internal_context)\b"
+                               r"|codex_internal_context|hook_prompt)\b"
                                r"|^\s*# AGENTS\.md instructions", re.I)
 
 

@@ -1683,11 +1683,14 @@ def main():
 
     if last_text is None:
         # `_tail_rows` "fails silent (yields nothing) on any missing file, unreadable path, or
-        # parse error" (_report_common.py). Codex now fails closed because authorization cannot be
-        # established from missing transcript evidence; Claude keeps its established fail-open
-        # behavior for this infrastructure fault.
-        context_unavailable(data, "no genuine operator message could be read from the transcript")
-        return
+        # parse error" (_report_common.py). Claude keeps its established fail-open behavior. In Codex
+        # a readable transcript without operator text is normal for a spawned subagent (its only user
+        # row is the injected AGENTS.md context), so there is no GO here, but the other authorizations
+        # (GPT-PM receipt, plan GO) must still be checked; the final deny below applies if none covers.
+        if agentio.client(data) != "codex":
+            allow()
+            return
+        last_text = ""
 
     if message_opens_with_go(last_text):
         allow()

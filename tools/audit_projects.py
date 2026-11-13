@@ -608,7 +608,7 @@ def chk_codex_cfg(cwd: Path | None = None):
         return FAIL, "; ".join(probs)
     untrusted = [h for h in hooks if h.get("source") in ("user", "project") and h.get("trustStatus") != "trusted"]
     for hook in untrusted:
-        probs.append("untrusted hook: " + ", ".join(str(hook.get(k) or "-") for k in ("source", "event", "statusMessage", "sourcePath")))
+        probs.append("untrusted hook: " + ", ".join(str(hook.get(k) or "-") for k in ("source", "eventName", "statusMessage", "sourcePath")))
     if warnings:
         probs.append("Codex app-server warnings: " + json.dumps(warnings, ensure_ascii=False))
     if errors:
