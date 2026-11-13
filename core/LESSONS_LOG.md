@@ -363,3 +363,4 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SUCCESS 2026-11-13 S15: after the equal-count handler and event-normalization fixes, all five named audit and hook test files passed again at the final code HEAD (81 checks total).
 - SHORTCOMING 2026-11-13 S15-T3: deleting only the disposable Git repo left its parent metrics/state directory behind. Remove the entire direct child created by `mkdtemp` after worker completion and surface cleanup failures.
 - SHORTCOMING 2026-11-13 S15-T1: a missing-handler diagnostic limited filename extraction to `.py`; retain actionable names for PowerShell and other script extensions while redacting the full command.
+- SUCCESS 2026-11-13 S15: final code HEAD `fb01ce2` passed all five named functional files (82 checks), including cleanup of the complete temporary probe directory and PowerShell handler diagnostics.
