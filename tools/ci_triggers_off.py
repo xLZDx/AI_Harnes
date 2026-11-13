@@ -59,6 +59,7 @@ TODAY = datetime.date.today().isoformat()
 
 
 GIT_TIMEOUT = 120  # seconds for every git and `git merge-file` call; one constant
+TASKKILL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")  # not via PATH or cwd
 
 
 class GitTimeout(OSError):
@@ -82,8 +83,8 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
                 import signal
                 os.killpg(p.pid, signal.SIGKILL)
             else:
-                t = subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=20)
-                dead = t.returncode == 0
+                t = subprocess.run([TASKKILL, "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=20)
+                dead = t.returncode == 0 or p.poll() is not None  # already gone counts as dead
         except (OSError, subprocess.SubprocessError):
             dead = False
         try:
@@ -95,8 +96,17 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         except (subprocess.TimeoutExpired, OSError, ValueError):
             dead = False
         note = "" if dead else "; the process tree could not be confirmed dead, a git process (and index.lock) may remain"
+        note += "; on Windows a process started by a git hook can outlive the kill (backlog B39)" if not posix else ""
         raise GitTimeout(f"timeout after {GIT_TIMEOUT}s: {' '.join(str(c) for c in cmd[:6])}{note}") from e
     except BaseException:
+        try:
+            if posix:
+                import signal
+                os.killpg(p.pid, signal.SIGKILL)
+            else:
+                subprocess.run([TASKKILL, "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            pass
         p.kill()
         p.wait()
         raise
@@ -690,10 +700,17 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
     """Run _dirty_run, then always remove the temp worktree and the private ref, each step on its own so a git timeout
     in one never skips the others and never replaces the computed result (it is appended as 'cleanup incomplete')."""
     st: dict = {}
+    res = "ERROR interrupted"
     try:
         res = _dirty_run(repo, include_deploy, scratch, st)
     except Exception as e:  # noqa: BLE001 - includes GitTimeout from the setup git calls
         res = f"ERROR {e}"
+    finally:  # also on KeyboardInterrupt: the private ref and the temp worktree are always removed
+        res = _dirty_cleanup(repo, st, res)
+    return res
+
+
+def _dirty_cleanup(repo: Path, st: dict, res: str) -> str:
     notes: list[str] = []
 
     def step(what: str, fn) -> None:
@@ -713,6 +730,12 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
         step("private ref " + ref, drop_ref)
     if notes:
         res += "; cleanup incomplete: " + "; ".join(notes)
+    jp = st.get("jp")
+    try:
+        if res.startswith("ERROR") and jp and Path(jp).exists():
+            res += "; journal kept, run --recover"
+    except OSError:
+        pass
     return res
 
 
@@ -741,7 +764,7 @@ def _dirty_run(repo: Path, include_deploy: bool, scratch: Path, st: dict) -> str
     run = f"{repo.name}-{tag}"
     ref, wt = f"refs/harness/ci-off/{run}", scratch / f"cioff-{run}"
     jp = journal_path(repo)
-    st["ref"], st["wt"] = ref, wt  # recorded BEFORE the git calls: the caller cleans up even after a timeout
+    st["ref"], st["wt"], st["jp"] = ref, wt, jp  # recorded BEFORE the git calls: the caller cleans up even after a timeout
     if git(repo, "update-ref", ref, old).returncode != 0:
         return "ERROR cannot create private ref " + ref
     a = git(repo, "worktree", "add", "-q", "--detach", str(wt), old)
@@ -996,24 +1019,42 @@ def _process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False
         row["status"] = f"CHANGED {sha}"
     except GitTimeout as e:  # add or commit hung: unstage, restore files, and say what state git may be in
         note = ""
+        safe_to_restore = True  # restore only when git provably holds no commit of these files and the index is clean
         try:
             rr = git(repo, "reset", "-q", "--", *touched)
             if rr.returncode != 0:
+                safe_to_restore = False
                 note += "; index reset failed (" + rr.stderr.strip()[-80:].replace("\n", " ") + "), touched paths may stay staged"
         except OSError as e2:
+            safe_to_restore = False
             note += f"; index reset failed ({e2}), touched paths may stay staged"
         try:
-            head1 = git(repo, "rev-parse", "HEAD").stdout.strip()
-            note += ("; HEAD moved, a commit may have landed" if head0 and head1 != head0
-                     else "; HEAD unchanged, no commit landed" if head0 else "; HEAD before the run unknown")
+            hr = git(repo, "rev-parse", "HEAD")
+            head1 = hr.stdout.strip() if hr.returncode == 0 else ""
+            if not head1:
+                safe_to_restore = False
+                note += "; HEAD unreadable after the timeout, a commit may have landed"
+            elif not head0:
+                safe_to_restore = False
+                note += "; HEAD before the run unknown"
+            elif head1 != head0:
+                safe_to_restore = False
+                note += f"; HEAD moved to {head1[:12]}, the commit landed"
+            else:
+                note += "; HEAD unchanged, no commit landed"
         except OSError as e2:
+            safe_to_restore = False
             note += f"; HEAD could not be read ({e2}), a commit may have landed"
         try:
             if git_dir_has(repo, "index.lock"):
                 note += "; a stale .git/index.lock exists, remove it once no git process runs"
         except OSError:
             pass
-        restore()
+        if safe_to_restore:
+            restore()
+            note += "; files restored"
+        else:
+            note += "; files kept as written (not restored, so the tree matches what may be committed); check git status"
         row["status"] = f"ERROR {e}{note}"
     except Exception as e:  # noqa: BLE001 - report and restore
         restore()
