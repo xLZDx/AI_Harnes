@@ -16,6 +16,7 @@ Used two ways: imported by agent_model_gate.py (announce_start after an allowed 
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 import time
@@ -84,6 +85,35 @@ def project_root(cwd: str) -> str:
         return ""
 
 
+ABS_PATH_RE = re.compile(r"(?<![\w/\\])(?:[A-Za-z]:[\\/]|/)[^\s\"'`<>|*?,;()\[\]]+")
+
+
+def project_from_text(tool_input: dict, max_dirs: int = 5) -> str:
+    """B26: when the session cwd is not a repository (a Codex thread in Documents\\Codex, a Claude session reset to
+    D:\\Repo), take the project from the first absolute path in the agent's own task text that lies inside a git repo
+    (the worktree it is told to work in maps to its main checkout). '' when none does."""
+    try:
+        text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))
+        tried = set()
+        for m in ABS_PATH_RE.finditer(text):
+            p = Path(m.group(0).rstrip(".:"))
+            while not p.exists() and p != p.parent:
+                p = p.parent
+            d = p if p.is_dir() else p.parent
+            key = str(d).lower()
+            if key in tried or d == d.parent:
+                continue
+            tried.add(key)
+            root = project_root(str(d))
+            if root:
+                return root
+            if len(tried) >= max_dirs:
+                break
+    except Exception:
+        pass
+    return ""
+
+
 def task_id(cwd: str) -> str:
     """Id of the ledger task that is in progress for the project at cwd, else 'active'."""
     try:
@@ -127,7 +157,7 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         session = str(data.get("session_id") or "")[:64]
         tuid = str(data.get("tool_use_id") or "")[:64]
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                 "project": project_root(str(data.get("cwd") or "")),
+                 "project": project_root(str(data.get("cwd") or "")) or project_from_text(ti),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
         res = {"dup": False}
 
@@ -142,6 +172,8 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                 if (source not in e.get("sources", ["pre"]) and now - e.get("start", 0) < CLAIM_WINDOW_S
                         and e.get("session") in ("", session)):
                     e.setdefault("sources", ["pre"]).append(source)
+                    if not e.get("project") and entry["project"]:
+                        e["project"] = entry["project"]
                     res["dup"] = True
                     return True
             d["agents"].append(entry)
