@@ -240,6 +240,8 @@ def _subdirs(repo, n):
 
 
 def test_directory_cap_with_more_paths_remaining_gives_empty_project():
+    # S18-T1: paths past the 5-directory cap are still scanned. A NEW repository root after the cap gives '';
+    # a 6th directory of the same repository keeps the binding.
     repo = h.mk_repo("s16a_cap6")
     other = h.mk_repo("s16a_cap6_other")
     cwd, st = _plain_dir("s16a_cap6_cwd"), _state("s16a_cap6_st")
@@ -247,7 +249,8 @@ def test_directory_cap_with_more_paths_remaining_gives_empty_project():
     _pre(st, cwd, "dirs " + " ".join(str(d) for d in dirs) + f" and {other / 'x.py'}", tuid="t1")
     _pre(st, cwd, "dirs " + " ".join(str(d) for d in dirs), tuid="t2", agent="architect")
     a = {x["type"]: x["project"] for x in _agents(st)}
-    assert a == {"python-reviewer": "", "architect": ""}, a
+    assert a["python-reviewer"] == "", a
+    assert _norm(a["architect"]) == _norm(repo), a
 
 
 def test_exactly_five_directories_in_one_repo_still_bind():
