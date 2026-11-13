@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -57,9 +58,23 @@ COMMIT_TRAILER = "Task: CI-OFF"
 TODAY = datetime.date.today().isoformat()
 
 
+GIT_TIMEOUT = 120  # seconds for every git and `git merge-file` call; one constant
+
+
+class GitTimeout(OSError):
+    """A git subprocess did not finish within GIT_TIMEOUT. Never a TimeoutError: process() maps that to 'lock busy'.
+    An OSError, so main() reports the repo as ERROR; it is never treated as success."""
+
+
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=GIT_TIMEOUT, **kw)
+    except subprocess.TimeoutExpired as e:
+        raise GitTimeout(f"timeout after {GIT_TIMEOUT}s: {' '.join(str(c) for c in cmd[:6])}") from e
+
+
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+    return _run(["git", "-C", str(repo), *args], text=True, encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------- text rewrite
@@ -164,7 +179,7 @@ def log_path(repo: Path, name: str) -> str:
 
 def raw_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     """Bytes-safe git call (blob contents)."""
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    return _run(["git", "-C", str(repo), *args])
 
 
 def status_map(repo: Path) -> dict[str, str]:
@@ -208,8 +223,7 @@ def merged_bytes(repo: Path, old: str, new: str, rel: str, cur: bytes | None, tm
     wt.write_bytes(cur.replace(b"\r\n", b"\n") if crlf else cur)
     bt.write_bytes(base_b)
     nt.write_bytes(theirs)
-    m = subprocess.run(["git", "merge-file", *(["--union"] if is_log else []), str(wt), str(bt), str(nt)],
-                       capture_output=True, text=True)
+    m = _run(["git", "merge-file", *(["--union"] if is_log else []), str(wt), str(bt), str(nt)], text=True)
     if m.returncode != 0:
         raise RuntimeError(f"merge conflict in {rel} (rc={m.returncode}); the working file was not touched")
     out = wt.read_bytes()
@@ -527,6 +541,7 @@ def rollback(repo: Path, j: dict) -> list[str]:
     if j["phase"] != "prepared":  # before the branch move nothing in the working tree was touched
         changed = unexpected_edits(repo, j)
         if changed:
+            git(repo, "update-index", "-q", "--refresh")  # rc 1 just means modified files; makes `git status` accurate
             return [f"{f} changed after the interrupted run (neither its pre-run nor its merged bytes); nothing "
                     f"restored, journal and backups kept in {j['backup_dir']} for a manual merge" for f in changed]
     cur = git(repo, "rev-parse", "-q", "--verify", ref).stdout.strip()
@@ -542,12 +557,12 @@ def rollback(repo: Path, j: dict) -> list[str]:
         for f, name in j["files"].items():
             p = repo / f
             a = aside_path(p)
-            for t in p.parent.glob(f".{p.name}.cioff-*.tmp"):  # temp files of a crashed swap (our new bytes only)
+            for t in p.parent.glob(f".{glob.escape(p.name)}.cioff-*.tmp"):  # temp files of a crashed swap (our new bytes only)
                 try:
                     t.unlink()
-                except OSError:
-                    pass
-            for t in p.parent.glob(f".{p.name}.cioff-park-*"):  # POSIX _park crashed after moving p to t
+                except OSError as e:
+                    errs.append(f"{f}: could not delete temp file {t.name} ({e}); delete it by hand")
+            for t in p.parent.glob(f".{glob.escape(p.name)}.cioff-park-*"):  # POSIX _park crashed after moving p to t
                 try:
                     if a.exists() and os.path.samestat(os.stat(t), os.stat(a)):
                         t.unlink()  # only a second name of the parked copy
@@ -586,8 +601,9 @@ def rollback(repo: Path, j: dict) -> list[str]:
     return errs
 
 
-def cleanup_run(repo: Path, j: dict, jp: Path | None) -> None:
-    """Remove the temp worktree, the private ref, the backups and (last) the journal."""
+def cleanup_run(repo: Path, j: dict, jp: Path | None) -> str:
+    """Remove the temp worktree, the private ref, the backups and (last) the journal. Returns "" or a warning text when
+    the journal could not be deleted (the next run then refuses until --recover removes it)."""
     wt = j.get("worktree")
     if wt:
         git(repo, "worktree", "remove", "--force", wt)
@@ -599,7 +615,11 @@ def cleanup_run(repo: Path, j: dict, jp: Path | None) -> None:
         if d:
             shutil.rmtree(d, ignore_errors=True)
     if jp is not None:
-        jp.unlink(missing_ok=True)
+        try:
+            jp.unlink(missing_ok=True)
+        except OSError as e:
+            return f"; WARNING journal {jp} could not be deleted ({e}); the next run refuses until --recover removes it"
+    return ""
 
 
 def drift(repo: Path, j: dict) -> str:
@@ -621,8 +641,9 @@ def recover(repo: Path) -> str:
     except (OSError, ValueError, KeyError) as e:
         return f"ERROR journal {jp} unreadable: {e}"
     if j["phase"] == "done":
-        cleanup_run(repo, j, jp)
-        return f"RECOVERED run had completed at {j['new'][:7]}; journal removed"
+        w = cleanup_run(repo, j, jp)
+        return (f"RECOVERED run had completed at {j['new'][:7]}; journal removed" if not w
+                else f"ERROR run had completed at {j['new'][:7]}{w}")
     LEFTOVER_ASIDES.clear()
     errs = rollback(repo, j)
     kept = (KEPT_NOTE + ", ".join(LEFTOVER_ASIDES)) if LEFTOVER_ASIDES else ""
@@ -630,9 +651,9 @@ def recover(repo: Path) -> str:
     if errs:
         return "ERROR recovery incomplete, journal kept: " + "; ".join(errs) + kept
     extra = drift(repo, j)
-    cleanup_run(repo, j, jp)
-    return (f"RECOVERED from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, {len(j['files'])} file(s) "
-            f"restored{extra}{kept}")
+    w = cleanup_run(repo, j, jp)
+    return (f"{'ERROR' if w else 'RECOVERED'} from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, "
+            f"{len(j['files'])} file(s) restored{extra}{kept}{w}")
 
 
 def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
@@ -729,7 +750,7 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             after, stage_after = status_map(repo), stage_map(repo)
             for p in set(snap_status) | set(after):
                 if snap_status.get(p) != after.get(p) and not (p in files and snap_status.get(p) == "??")                         and not (p in files and p in eol_only and after.get(p) is None):
-                    if (snap_status.get(p) is None and ".cioff-aside" in p
+                    if (snap_status.get(p) is None and after.get(p) == "??" and ".cioff-aside" in p
                             and any(os.path.normcase(str(Path(x).resolve())) == os.path.normcase(str((repo / p).resolve()))
                                     for x in LEFTOVER_ASIDES)):
                         continue  # our own parked copy that could not be deleted: reported in the row, not a user change
@@ -742,8 +763,8 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
             journaled = False
             try:
                 jp.unlink(missing_ok=True)  # only after the final status/stage check passed
-            except (OSError, PermissionError):
-                pass  # unlink failure does not invalidate the successful commit
+            except OSError as e:  # the commit stays valid, but the next run would refuse: say so
+                result += f"; WARNING journal {jp} could not be deleted ({e}); run --recover to remove it"
             shutil.rmtree(j["backup_dir"], ignore_errors=True)
         except Exception as e:  # noqa: BLE001 - restore everything
             if not journaled:
@@ -755,8 +776,8 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
                 if errs:
                     result = f"ERROR {e}; rollback incomplete, journal kept (use --recover): " + "; ".join(errs)
                 else:
-                    cleanup_run(repo, j, jp)
-                    result = f"ERROR {e}; working files restored, branch back at {old[:7]}"
+                    w = cleanup_run(repo, j, jp)
+                    result = f"ERROR {e}; working files restored, branch back at {old[:7]}{w}"
         if LEFTOVER_ASIDES:  # this repo's parked copies only (the list is cleared when the run starts)
             result += KEPT_NOTE + ", ".join(LEFTOVER_ASIDES)
             LEFTOVER_ASIDES.clear()
