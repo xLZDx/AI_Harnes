@@ -281,13 +281,32 @@ def test_non_existent_extension_keeps_the_plain_path():
     assert len(rec.calls) == 1 and _norm(rec.calls[0]) == _norm(sub), rec.calls  # asked about the plain path, not an invented one
 
 
-def test_non_existent_spaced_file_does_not_bind_to_the_spaced_repository():
-    # the extension '...\My Project\ghost.py' does not exist, so the plain path '...\My' is used: it resolves to the parent
+def test_missing_file_under_a_spaced_directory_binds_to_the_spaced_repository():
+    # b348825: '...\My Project\ghost.py' does not exist, but the directory '...\My Project' does: bind to it, never the parent
     parent, proj, f = _spaced_pair("s19t1_ghost")
     ghost = proj / "ghost.py"
     assert not ghost.exists()
     got = av.project_from_text({"prompt": "please edit " + str(ghost) + " now"})
-    assert _norm(got) == _norm(parent), got
+    assert _norm(got) == _norm(proj), got
+    assert _norm(got) != _norm(parent), got
+
+
+def test_plain_path_without_spaces_to_a_missing_file_still_binds():
+    a = h.mk_repo("s19t1_plainmiss")
+    sub = a / "sub"
+    sub.mkdir()
+    got = av.project_from_text({"prompt": "please edit " + str(sub / "ghost.py") + " now"})
+    assert _norm(got) == _norm(a), got
+    got2 = av.project_from_text({"prompt": "please edit " + str(a / "nodir" / "ghost.py") + " now"})
+    assert _norm(got2) == _norm(a), got2
+
+
+def test_missing_file_under_a_spaced_directory_outside_any_repository_gives_empty():
+    base = h.fresh("s19t1_norepo") / "My Project"
+    base.mkdir()
+    assert av.project_root(str(base)) == "", "fixture: the folder must lie outside any repository"
+    got = av.project_from_text({"prompt": "please edit " + str(base / "ghost.py") + " now"})
+    assert got == "", got
 
 
 if __name__ == "__main__":

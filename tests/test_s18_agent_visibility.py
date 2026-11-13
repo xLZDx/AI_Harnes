@@ -291,7 +291,9 @@ def test_c4_single_quoted_forward_slash_path_with_spaces_binds():
 
 def test_c4_unquoted_path_with_spaces_does_not_bind_twin():
     r = _spaced_repo("s18t1_c4c")
-    assert av.project_from_text({"prompt": "please edit " + str(r) + "\\x.py now"}) == ""
+    # S19-T1 (b348825): an unquoted path to a missing file under an existing spaced directory now binds that directory's repo
+    got = av.project_from_text({"prompt": "please edit " + str(r) + "\\x.py now"})
+    assert _norm(got) == _norm(r), got
 
 
 def test_c4_quoted_unc_and_url_paths_are_never_probed():
@@ -357,7 +359,8 @@ def test_fix_quoted_path_longer_than_260_chars_is_not_a_quoted_candidate():
     short = av.project_from_text({"prompt": 'edit "' + str(r) + "\\" + "a" * 100 + '"'})
     assert _norm(short) == _norm(r), short  # twin: short quoted path with spaces binds
     long_ = av.project_from_text({"prompt": 'edit "' + str(r) + "\\" + "a" * 300 + '"'})
-    assert long_ == "", long_  # no quoted match; the unquoted scan stops at the space inside 'John Doe'
+    # S19-T1 (b348825): no quoted match, but the unquoted scan now extends through 'John Doe' to the existing directory
+    assert _norm(long_) == _norm(r), long_
 
 
 def test_fix_search_deadline_exceeded_gives_empty_fail_closed():
