@@ -106,6 +106,132 @@ class GuardPush(Base):
                 self.assertEqual(code, 0, err)
 
 
+class GuardMultipleOn(Base):
+    """Criterion: more than one top-level `on:` key in a workflow is UNPARSABLE (push blocked)."""
+
+    def test_dispatch_then_push_blocked(self):
+        code, err = self.push("a.yml", "name: x\non: workflow_dispatch\non: push\njobs: {}\n")
+        self.assertEqual(code, 1, err)
+
+    def test_push_then_dispatch_blocked(self):
+        code, err = self.push("a.yml", "name: x\non: push\non: workflow_dispatch\njobs: {}\n")
+        self.assertEqual(code, 1, err)
+
+    def test_two_documents_dispatch_then_push_blocked(self):
+        body = "name: x\non: workflow_dispatch\njobs: {}\n---\nname: y\non: push\njobs: {}\n"
+        code, err = self.push("a.yml", body)
+        self.assertEqual(code, 1, err)
+
+    def test_twin_nested_on_key_in_step_with_passes(self):
+        body = ("name: x\non: workflow_dispatch\njobs:\n  b:\n    runs-on: x\n    steps:\n"
+                "      - uses: some/action@v1\n        with:\n          on: push\n")
+        code, err = self.push("a.yml", body)
+        self.assertEqual(code, 0, err)
+
+    def test_duplicate_dispatch_keys_blocked_fail_closed(self):
+        # Follows the criterion "more than one top-level on: is UNPARSABLE" even when both are workflow_dispatch.
+        code, err = self.push("a.yml", "name: x\non: workflow_dispatch\non: workflow_dispatch\njobs: {}\n")
+        self.assertEqual(code, 1, err)
+
+
+class GuardKeyForms(Base):
+    """Criteria f-i: only plain or simply quoted top-level keys are accepted; keys case-insensitive; documents."""
+    DECOY = "name: x\non: workflow_dispatch\n"
+
+    def blocked(self, body, name="a.yml"):
+        code, err = self.push(name, body)
+        self.assertEqual(code, 1, err)
+
+    def passes(self, body, name="a.yml"):
+        code, err = self.push(name, body)
+        self.assertEqual(code, 0, err)
+
+    def test_exotic_top_level_keys_with_decoy_blocked(self):
+        forms = {
+            "escaped": '"on": [push]\n',
+            "tagged": "!!str on: push\n",
+            "anchored": "&k on: push\n",
+            "explicit": "? on\n: push\n",
+        }
+        for k, extra in forms.items():
+            with self.subTest(form=k):
+                self.setUp()
+                self.blocked(self.DECOY + extra + "jobs: {}\n", f"{k}.yml")
+
+    def test_second_document_other_indent_blocked(self):
+        self.blocked("on: workflow_dispatch\n---\n  on: push\n")
+
+    def test_document_marker_inline_on_blocked(self):
+        self.blocked("on: workflow_dispatch\n--- on: push\n")
+
+    def test_leading_bare_document_marker_passes(self):
+        self.passes("---\nname: x\non: workflow_dispatch\njobs: {}\n")
+
+    def test_key_case_insensitive_capital_on_dispatch_passes(self):
+        self.passes("name: x\nOn: workflow_dispatch\njobs: {}\n")
+
+    def test_key_case_insensitive_upper_on_push_blocked(self):
+        self.blocked("name: x\nON: push\njobs: {}\n")
+
+    def test_event_name_case_insensitive_blocked(self):
+        self.blocked("name: x\non: PUSH\njobs: {}\n")
+
+    def test_twin_normal_workflow_with_nested_on_passes(self):
+        body = ("name: x\non: workflow_dispatch\npermissions:\n  contents: read\njobs:\n  b:\n    runs-on: x\n"
+                "    steps:\n      - uses: a/b@v1\n        with:\n          on: push\n")
+        self.passes(body)
+
+    def test_twin_quoted_on_key_dispatch_passes(self):
+        self.passes('name: x\n"on": workflow_dispatch\njobs: {}\n')
+
+
+class GuardFlowForms(Base):
+    """Criteria j-m: flow collections with odd quoting/comments, unclosed flows, nested block lists, twins."""
+    JOBS = "jobs:\n  b:\n    runs-on: x\n    steps:\n      - run: echo ]\n"
+
+    def blocked(self, body, name="a.yml"):
+        code, err = self.push(name, body)
+        self.assertEqual(code, 1, err)
+
+    def passes(self, body, name="a.yml"):
+        code, err = self.push(name, body)
+        self.assertEqual(code, 0, err)
+
+    def test_flow_list_with_hash_item_blocked(self):
+        for i, item in enumerate(["' #'", "'a #b'"]):
+            with self.subTest(item=item):
+                self.setUp()
+                self.blocked(f"name: x\non: [workflow_dispatch, {item}, push]\n" + self.JOBS, f"l{i}.yml")
+
+    def test_flow_list_a_hash_b_double_quoted_blocked(self):
+        self.blocked('name: x\non: [workflow_dispatch, "a #b", push]\n' + self.JOBS)
+
+    def test_flow_mapping_with_hash_key_blocked(self):
+        self.blocked("name: x\non: {workflow_dispatch: , ' #': , push: }\n" + self.JOBS)
+
+    def test_unclosed_flow_list_closed_at_column_zero_blocked(self):
+        self.blocked("name: x\non: [workflow_dispatch,\njobs: ]\n")
+
+    def test_nested_block_list_blocked(self):
+        self.blocked("name: x\non:\n  - - push\njobs: {}\n")
+
+    def test_flow_mapping_with_quote_in_continuation_blocked(self):
+        self.blocked('name: x\non: {workflow_dispatch: {inputs: {a: {description: "}}}}"\n  }}}, push: {}}\njobs: {}\n')
+
+    def test_quoted_flow_list_item_blocked(self):
+        self.blocked('name: x\non: ["push"]\njobs: {}\n')
+
+    def test_twin_unquoted_nested_flow_mapping_passes(self):
+        self.passes("name: x\non: {workflow_dispatch: {inputs: {a: {description: x}}}}\njobs: {}\n")
+
+    def test_twin_flow_list_with_trailing_comment_passes(self):
+        self.passes("name: x\non: [workflow_dispatch]  # manual only\njobs: {}\n")
+
+    def test_twin_multiline_flow_list_passes(self):
+        # repository_dispatch is not push/pull_request/schedule, so it is accepted like workflow_dispatch.
+        self.passes("name: x\non: [workflow_dispatch,\n  repository_dispatch]\njobs: {}\n")
+
+
 class GuardTimeout(unittest.TestCase):
     def run_main(self, fake_git):
         err = io.StringIO()
