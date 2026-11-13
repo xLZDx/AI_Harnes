@@ -170,6 +170,42 @@ def test_the_arm_triple_does_not_satisfy_an_amd64_machine_and_vice_versa():
         assert os.path.samefile(got, arm) and note is None, (got, note)
 
 
+def test_the_note_is_reset_to_none_by_a_later_call_that_matches():
+    with tmpdir() as d:
+        shim = d / "npm" / "codex.cmd"
+        shim.parent.mkdir(parents=True)
+        shim.write_text("@echo shim\n")
+        _vendor(shim, "codex-win32-x64", "x64")  # no exact triple: the first call sets the fallback note
+        with mock.patch.object(ap.shutil, "which", _which({"codex": str(shim)})), mock.patch.object(ap, "os", _NtOs()), \
+                machine("AMD64"), mock.patch.object(ap, "CODEX_EXE_NOTE", None):
+            ap._codex_executable()
+            assert ap.CODEX_EXE_NOTE and "used first entry" in ap.CODEX_EXE_NOTE, ap.CODEX_EXE_NOTE
+    with tmpdir() as d2:
+        shim2 = d2 / "npm" / "codex.cmd"
+        shim2.parent.mkdir(parents=True)
+        shim2.write_text("@echo shim\n")
+        good = _vendor(shim2, "codex-win32-x64", X64_TRIPLE)
+        with mock.patch.object(ap.shutil, "which", _which({"codex": str(shim2)})), mock.patch.object(ap, "os", _NtOs()), \
+                machine("AMD64"), mock.patch.object(ap, "CODEX_EXE_NOTE", "stale note from an earlier call"):
+            got = ap._codex_executable()
+            assert os.path.samefile(got, good), got
+            assert ap.CODEX_EXE_NOTE is None, ap.CODEX_EXE_NOTE
+
+
+def test_a_triple_match_under_the_second_vendor_pattern_beats_non_matching_entries_of_the_first():
+    with tmpdir() as d:
+        shim = d / "npm" / "codex.cmd"
+        shim.parent.mkdir(parents=True)
+        shim.write_text("@echo shim\n")
+        _vendor(shim, "codex-win32-arm64", ARM_TRIPLE)  # first pattern: only a non-matching entry for AMD64
+        second = shim.parent / "node_modules" / "@openai" / "codex" / "vendor" / X64_TRIPLE / "bin" / "codex.exe"
+        second.parent.mkdir(parents=True)
+        second.write_bytes(b"MZ")
+        got, note = _pick(shim, "AMD64")
+        assert os.path.samefile(got, second), got
+        assert note is None, note
+
+
 # ---------------------------------------------------------------- the fallback note stays in a FAIL row
 def _unmatched_note():
     """Drive the real fallback and return the note it sets (the machine is AMD64, only an x64-named directory exists)."""

@@ -215,8 +215,9 @@ def test_taskkill_is_the_absolute_system32_path_and_the_windows_timeout_kill_goe
         except ci.GitTimeout:
             pass
     if os.name == "nt":
-        # S19-T2: a usable Job Object replaces taskkill as the kill path; taskkill is only the fallback (see test_s19_ci_triggers_off)
-        assert not any(c[0] == ci.TASKKILL for c in cmds), cmds
+        # S19 fix: the job is terminated first, then System32 taskkill /T /F runs as well (cmd\git.exe launcher race; order is
+        # asserted in test_s19_ci_triggers_off)
+        assert any(c[0] == ci.TASKKILL and c[1:4] == ["/T", "/F", "/PID"] for c in cmds), cmds
 
 
 def test_keyboard_interrupt_in_a_dirty_run_still_removes_the_private_ref_and_worktree_then_reraises():
@@ -276,7 +277,8 @@ def test_a_real_failed_run_that_leaves_its_journal_ends_with_the_recover_hint():
     with mock.patch.object(ci, "refresh_index", boom_twice):
         out = ci.process_dirty(repo, False, scratch)
     assert out.startswith("ERROR injected boom; rollback incomplete, journal kept (use --recover)"), out
-    assert out.endswith("; journal kept, run --recover"), out
+    # S19 fix: the row says "journal kept ... --recover" exactly once (no repeated tail after the rollback-incomplete text)
+    assert out.count("journal kept") == 1 and "--recover" in out, out
     assert (repo / ".git" / JOURNAL).is_file()
     assert ci.recover(repo).startswith("RECOVERED")
 
@@ -340,8 +342,10 @@ def test_cleanup_timeout_is_appended_and_neither_hides_the_result_nor_skips_the_
     with mock.patch.object(ci.subprocess, "Popen", timeout_on(has("worktree", "remove"))):
         out = ci.process_dirty(repo, False, scratch)
     assert out.startswith("CHANGED"), out  # the computed result is kept
-    assert "cleanup incomplete: worktree remove: timeout after" in out, out
+    # S19 fix: the shutil.rmtree fallback removed the leftover directory, so the earlier 'worktree remove' timeout is dropped
+    assert "worktree remove" not in out and "cleanup incomplete" not in out, out
     assert_no_ci_off_refs(repo)  # the later steps (prune, private ref) still ran
+    no_leftovers(repo, scratch)
 
 
 def test_setup_timeout_after_the_private_ref_exists_still_removes_the_ref():
