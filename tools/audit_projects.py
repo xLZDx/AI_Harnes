@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import Counter
 import json
 import os
 import re
@@ -63,6 +64,24 @@ def git(d: Path, *args, timeout=20):
 
 def norm_path(p) -> str:
     return os.path.normcase(os.path.normpath(str(p))).replace("\\", "/")
+
+
+def codex_hook_event(event: str) -> str:
+    parts = re.split(r"[_\W]+", event)
+    if len(parts) > 1:
+        return parts[0].lower() + "".join(part.capitalize() for part in parts[1:])
+    return event[:1].lower() + event[1:]
+
+
+def codex_hook_identity(event: str, matcher, hook: dict) -> tuple:
+    command = hook.get("commandWindows") or hook.get("command") or ""
+    normalized_command = re.sub(r"[\\/]+", lambda _match: chr(92), str(command)).casefold()
+    return (codex_hook_event(event), matcher, hook.get("type", "command"), normalized_command)
+
+
+def listed_hook_identity(hook: dict) -> tuple:
+    command = re.sub(r"[\\/]+", lambda _match: chr(92), str(hook.get("command") or "")).casefold()
+    return (hook.get("eventName"), hook.get("matcher"), hook.get("handlerType"), command)
 
 
 # ---- discovery ---------------------------------------------------------------------------------------------------------
@@ -587,11 +606,28 @@ def chk_codex_cfg(cwd: Path | None = None):
                     for groups in project_groups.values()):
                 probs.append(f"project hooks.json has invalid hooks structure: {project_hooks_path}")
                 project_groups = {}
-            expected_count = sum(len(group.get("hooks", [])) for groups in project_groups.values() for group in groups)
-            loaded_count = sum(h.get("source") == "project" and norm_path(h.get("sourcePath", "")) == norm_path(project_hooks_path)
-                               for h in hooks)
-            if loaded_count < expected_count:
-                probs.append(f"project hooks.json handlers missing from hooks/list: {loaded_count} of {expected_count} listed ({project_hooks_path})")
+            expected = Counter(
+                codex_hook_identity(event, group.get("matcher"), handler)
+                for event, groups in project_groups.items()
+                for group in groups
+                for handler in group.get("hooks", [])
+                if isinstance(handler, dict)
+            )
+            loaded = Counter(
+                listed_hook_identity(hook)
+                for hook in hooks
+                if hook.get("source") == "project"
+                and norm_path(hook.get("sourcePath", "")) == norm_path(project_hooks_path)
+            )
+            missing = expected - loaded
+            if missing:
+                labels = []
+                for identity, count in missing.items():
+                    event, matcher, _kind, command = identity
+                    command_names = re.findall(r"[\w.-]+\.py", command, re.IGNORECASE)
+                    command_name = command_names[-1] if command_names else "command"
+                    labels.extend(f"{event}/{matcher or '*'}: {command_name}" for _ in range(count))
+                probs.append(f"project hooks.json handlers missing from hooks/list: {', '.join(labels)} ({project_hooks_path})")
 
     if probs:
         return FAIL, "; ".join(probs)

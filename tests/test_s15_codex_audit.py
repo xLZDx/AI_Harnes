@@ -46,9 +46,10 @@ def _record(cwd: Path, hooks=None, warnings=None, errors=None):
     return {"cwd": str(cwd.resolve()), "hooks": hooks or [], "warnings": warnings or [], "errors": errors or []}
 
 
-def _hook(source: str, trust: str, status: str, source_path: Path):
+def _hook(source: str, trust: str, status: str, source_path: Path, command="", matcher=None):
     return {"source": source, "trustStatus": trust, "event": "pre_tool_use",
-            "statusMessage": status, "sourcePath": str(source_path.resolve())}
+            "eventName": "preToolUse", "matcher": matcher, "handlerType": "command", "command": command,
+            "timeoutSec": None, "statusMessage": status, "sourcePath": str(source_path.resolve())}
 
 
 def test_codex_audit_lists_every_untrusted_handler_and_missing_project_file_entries():
@@ -58,14 +59,15 @@ def test_codex_audit_lists_every_untrusted_handler_and_missing_project_file_entr
         hooks_file = project / ".codex" / "hooks.json"
         _write(project / ".harness" / "ledger.json", "{}")
         _write(hooks_file, json.dumps({"hooks": {"PreToolUse": [
-            {"hooks": [{"command": "first"}, {"command": "second"}]}
+            {"hooks": [{"command": "first_guard.py", "statusMessage": "project first hook"},
+                        {"command": "second_guard.py", "statusMessage": "project second hook"}]}
         ]}}))
         home = _fake_home(root)
         user_hooks = [
             _hook("user", "modified", "modified user hook", home / ".codex" / "hooks.json"),
             _hook("user", "trusted", "trusted user hook", home / ".codex" / "hooks.json"),
         ]
-        project_hooks = [_hook("project", "untrusted", "project spawn gate", hooks_file)]
+        project_hooks = [_hook("project", "untrusted", "project first hook", hooks_file, "first_guard.py")]
         item = _record(project, user_hooks + project_hooks)
 
         with patch.object(au, "HOME", home), \
@@ -76,8 +78,40 @@ def test_codex_audit_lists_every_untrusted_handler_and_missing_project_file_entr
         assert status == au.FAIL
         assert "modified user hook" in detail
         assert "trusted user hook" not in detail
-        assert "project spawn gate" in detail
-        assert "project hooks.json handlers missing from hooks/list: 1 of 2 listed" in detail
+        assert "project first hook" in detail
+        assert "project hooks.json handlers missing from hooks/list" in detail
+        assert "second_guard.py" in detail
+        assert "first_guard.py" not in detail, detail
+
+
+def test_codex_project_hook_identity_compares_command_not_only_count_and_source_path():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = root / "project"
+        hooks_file = project / ".codex" / "hooks.json"
+        _write(project / ".harness" / "ledger.json", "{}")
+        _write(hooks_file, json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{
+                "command": "configured_guard.py",
+                "timeout": 17,
+                "statusMessage": "same project hook",
+            }]}
+        ]}}))
+        home = _fake_home(root)
+        listed = _hook("project", "trusted", "same project hook", hooks_file,
+                       "different_guard.py", matcher="Bash")
+        listed.update({"timeoutSec": 17})
+        item = _record(project, [listed])
+
+        with patch.object(au, "HOME", home), \
+                patch.object(au, "CODEX_HOOKS_BY_CWD", {au.norm_path(project): item}), \
+                patch.object(au, "CODEX_HOOKS_ERROR", None):
+            status, detail = au.chk_codex_cfg(project)
+
+        assert status == au.FAIL, detail
+        assert "project hooks.json handlers missing from hooks/list" in detail
+        assert "configured_guard.py" in detail
+        assert "different_guard.py" not in detail
 
 
 def test_codex_audit_reports_warnings_and_errors_from_app_server():
