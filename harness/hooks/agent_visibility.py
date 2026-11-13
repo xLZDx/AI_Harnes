@@ -89,9 +89,10 @@ def project_root(cwd: str) -> str:
 # whose exists() would make a network lookup with no timeout
 ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^\s\"'`<>|*?,;()\[\]]+")
 # an absolute path in double or single quotes may hold spaces; same start and exclusions as ABS_PATH_RE
-QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]+)\1""")
+QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]{1,260})\1""")
 BIND_DEADLINE_S = 3.0  # the whole search stays well inside the 10 s hook budget
 BIND_GIT_TIMEOUT_S = 2
+BIND_TEXT_MAX = 65536  # regex cost: only the first 64 KB of the task text is scanned
 
 
 def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50) -> str:
@@ -103,12 +104,13 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
     try:
         import _agentio
         deadline = time.monotonic() + BIND_DEADLINE_S
-        text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))
+        text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))[:BIND_TEXT_MAX]
         tried = set()
         roots = set()
-        # quoted paths first (they may hold spaces), then the unquoted ones from the text left over
+        # quoted paths first (they may hold spaces), then every unquoted hit of the FULL text as its own candidate (a
+        # second path inside the same quotes must still be examined); all candidates that resolve must agree
         found = [m.group(2).strip().rstrip(".:") for m in QUOTED_PATH_RE.finditer(text)]
-        found += [m.group(0).rstrip(".:") for m in ABS_PATH_RE.finditer(QUOTED_PATH_RE.sub(" ", text))]
+        found += [m.group(0).rstrip(".:") for m in ABS_PATH_RE.finditer(text)]
         extra = 0
         for i, raw in enumerate(found):
             if time.monotonic() > deadline or i >= max_matches:
@@ -193,9 +195,10 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         aid = str(agent_id or "")[:64]
         if aid:
             entry["agent_id"] = aid
-        res = {"dup": False}
+        res = {"dup": False, "ran": False}
 
         def apply(d: dict):
+            res["ran"] = True
             now = time.time()
             if aid and any(e.get("agent_id") == aid for e in d["agents"]):
                 res["dup"] = True  # the same agent reported twice, also after its stop: never a second entry
@@ -229,8 +232,14 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                     res["dup"] = True
                     return True
             d["agents"].append(entry)
-        mutate(apply)
-        if not res["dup"]:
+        try:
+            mutate(apply)
+        except Exception as ex:
+            _emit(f"[agent START] {name} | START not recorded: {type(ex).__name__}", client)
+            return
+        if not res["ran"]:
+            _emit(f"[agent START] {name} | START not recorded: the state is busy", client)
+        elif not res["dup"]:
             # role named explicitly: the Agent description may not say which role runs
             _emit(f"[agent START] {name} | role {name} | model {model} | effort {effort} | task {task}", client)
     except Exception:
@@ -266,7 +275,7 @@ def touch(data: dict) -> None:
 def announce_stop(data: dict, client: str) -> None:
     try:
         name = str(data.get("agent_type") or "agent").strip()[:60]
-        res = {"secs": 0, "hit": False, "ran": False}
+        res = {"secs": 0, "hit": False, "ran": False, "dup": False}
 
         aid = str(data.get("agent_id") or "")[:64]
 
@@ -283,7 +292,10 @@ def announce_stop(data: dict, client: str) -> None:
                 # otherwise take a later run's stop and the ledger would credit a run that never finished).
                 for e in d["agents"]:
                     if e.get("agent_id") == aid:
-                        return False if e.get("stop") else finish(e)
+                        if e.get("stop"):
+                            res["dup"] = True
+                            return False
+                        return finish(e)
                 # the id was never recorded (SubagentStart not delivered): only an entry that came from PreToolUse
                 # alone, carries no id and has the same type and session can be this run; newest first
                 # B37a: only when exactly one such entry exists; with two or more nothing is finished
@@ -291,11 +303,12 @@ def announce_stop(data: dict, client: str) -> None:
                        if (e.get("type") == name and not e.get("stop") and not e.get("agent_id")
                            and "start" not in e.get("sources", ["pre"])
                            and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64])))]
-                if len(pre) == 1:
+                if len(pre) == 1 and time.time() - pre[0].get("start", 0) < UNKNOWN_AFTER_S:  # old dead entry: nothing
                     pre[0]["agent_id"] = aid
                     return finish(pre[0])
                 if len(pre) > 1:
                     res["ambiguous"] = len(pre)
+                    res["unrecorded"] = True
                 return False
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
@@ -309,12 +322,19 @@ def announce_stop(data: dict, client: str) -> None:
                 return finish(cands[0])
             res["ambiguous"] = len(cands)
             return False
-        mutate(apply)
+        try:
+            mutate(apply)
+        except Exception as ex:
+            _emit(f"[agent STOP] {name} | stop was not recorded: {type(ex).__name__}", client)
+            return
         hit, secs = res["hit"], res["secs"]
         if res.get("ambiguous", 0) > 0:  # no duration: no run was finished (B34); 0 candidates = start not observed
-            _emit(f"[agent STOP] {name} | not paired: {res['ambiguous']} unfinished {name} runs and no agent id", client)
+            _emit(f"[agent STOP] {name} | not paired: {res['ambiguous']} unfinished {name} runs and "
+                  + ("the agent id was never recorded" if res.get("unrecorded") else "no agent id"), client)
         elif not res["ran"]:  # B37b: the state lock was not taken, nothing was recorded
             _emit(f"[agent STOP] {name} | stop was not recorded: the state is busy", client)
+        elif res["dup"]:
+            _emit(f"[agent STOP] {name} | duplicate stop ignored", client)
         else:
             _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:
