@@ -400,7 +400,14 @@ def _read_finished() -> tuple[dict[str, float], str]:
     """(cache, status). status: ok | missing | corrupt (invalid UTF-8, unparsable JSON, too deep, wrong shape; logged once per run,
     cache = empty) | unreadable (OS error other than a missing file, logged, cache = empty). Never raises."""
     try:
-        text = FINISHED.read_text(encoding="utf-8")
+        for attempt in range(4):  # a read overlapping another process's os.replace can raise PermissionError on Windows
+            try:
+                text = FINISHED.read_text(encoding="utf-8")
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.05)
         raw = json.loads(text)
         if not isinstance(raw, dict):
             raise TypeError("finished cache is " + type(raw).__name__ + ", not an object")
@@ -518,7 +525,8 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                     for a in removed:
                         finished_map.pop(a, None)
                     log({"event": "finished-cache", "verdict": "resume-not-persisted", "ids": sorted(removed)[:6]})
-            except Exception:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
+            except Exception as exc:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
+                _log_once(("save-error",), {"event": "finished-cache", "verdict": "save-error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
                 if removed_ids:
                     finished.difference_update(removed_ids)
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]
