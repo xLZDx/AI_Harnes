@@ -167,7 +167,8 @@ def _emit(line: str, client: str) -> None:
 CLAIM_WINDOW_S = 120  # a SubagentStart event claims a start line the PreToolUse hook printed at most this long ago
 
 
-def announce_start(data: dict, client: str, model: str = "", effort: str = "", source: str = "pre") -> None:
+def announce_start(data: dict, client: str, model: str = "", effort: str = "", source: str = "pre",
+                   agent_id: str = "") -> None:
     """Print one START line per agent. Two hooks can report the same start (PreToolUse of the Agent/Task tool and the
     SubagentStart event); the line is printed once: the same tool_use_id is skipped, and a start of the other `source`
     claims an unclaimed recent entry of the same type and session instead of adding a second one."""
@@ -182,6 +183,9 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
                  "project": project_root(str(data.get("cwd") or "")) or project_from_text(ti),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
+        aid = str(agent_id or "")[:64]
+        if aid:
+            entry["agent_id"] = aid
         res = {"dup": False}
 
         def apply(d: dict):
@@ -189,6 +193,11 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
             for e in d["agents"]:
                 if e.get("stop") or e.get("type") != name:
                     continue
+                if aid and e.get("agent_id") == aid:
+                    res["dup"] = True  # the same agent reported twice
+                    return False
+                if aid and e.get("agent_id"):
+                    continue  # that entry already belongs to another agent: never claim it
                 if tuid and e.get("tool_use_id") == tuid:
                     res["dup"] = True
                     if not e.get("project") and entry["project"]:
@@ -198,6 +207,8 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                 if (source not in e.get("sources", ["pre"]) and now - e.get("start", 0) < CLAIM_WINDOW_S
                         and e.get("session") in ("", session)):
                     e.setdefault("sources", ["pre"]).append(source)
+                    if aid:
+                        e["agent_id"] = aid
                     if not e.get("project") and entry["project"]:
                         e["project"] = entry["project"]
                     res["dup"] = True
@@ -242,12 +253,24 @@ def announce_stop(data: dict, client: str) -> None:
         name = str(data.get("agent_type") or "agent").strip()[:60]
         res = {"secs": 0, "hit": False}
 
+        aid = str(data.get("agent_id") or "")[:64]
+
+        def finish(e: dict) -> bool:
+            e["stop"] = time.time()
+            res["secs"], res["hit"] = int(e["stop"] - e["start"]), True
+            return True
+
         def apply(d: dict):
-            for e in d["agents"]:  # oldest unfinished entry of the same type (and session when known)
-                if e.get("type") == name and not e.get("stop") and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64])):
-                    e["stop"] = time.time()
-                    res["secs"], res["hit"] = int(e["stop"] - e["start"]), True
-                    return True
+            if aid:  # the start recorded this agent's id: finish exactly that entry
+                for e in d["agents"]:
+                    if e.get("agent_id") == aid and not e.get("stop"):
+                        return finish(e)
+            # oldest unfinished entry of the same type (and session when known); an entry that carries another agent's
+            # id is never finished here (a run killed by an app restart would otherwise take a later run's stop)
+            for e in d["agents"]:
+                if (e.get("type") == name and not e.get("stop") and not (aid and e.get("agent_id"))
+                        and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))):
+                    return finish(e)
             return False
         mutate(apply)
         hit, secs = res["hit"], res["secs"]
@@ -273,7 +296,8 @@ def main() -> int:
             announce_stop(data, client)
         elif event == "SubagentStart":
             announce_start({"tool_input": {"subagent_type": data.get("agent_type")}, "cwd": data.get("cwd"),
-                            "session_id": data.get("session_id")}, client, source="start")
+                            "session_id": data.get("session_id")}, client, source="start",
+                           agent_id=str(data.get("agent_id") or ""))
         elif event == "PreToolUse" and _agentio.is_agent_spawn(data):
             # fallback START line when SubagentStart is not delivered; deduped against it and against agent_model_gate
             announce_start(data, client)
