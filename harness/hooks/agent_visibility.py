@@ -288,16 +288,18 @@ def announce_stop(data: dict, client: str) -> None:
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
             # finished (fail closed: the ledger refuses the run instead of crediting a run that never finished)
-            # B34: an entry that carries an agent_id gets its own id-bearing stop, so it is never a candidate here
-            cands = [e for e in d["agents"] if e.get("type") == name and not e.get("stop") and not e.get("agent_id")
+            # B34: every unfinished entry of the type and session counts for ambiguity (a live id-bearing run next to a
+            # dead id-less one must not let the dead one take this stop), and an id-bearing entry is never finished by
+            # an id-less stop: only a single id-less candidate is finished
+            cands = [e for e in d["agents"] if e.get("type") == name and not e.get("stop")
                      and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))]
-            if len(cands) == 1:
+            if len(cands) == 1 and not cands[0].get("agent_id"):
                 return finish(cands[0])
             res["ambiguous"] = len(cands)
             return False
         mutate(apply)
         hit, secs = res["hit"], res["secs"]
-        if res.get("ambiguous"):  # no duration: no run was finished (B34)
+        if res.get("ambiguous", 0) > 0:  # no duration: no run was finished (B34); 0 candidates = start not observed
             _emit(f"[agent STOP] {name} | not paired: {res['ambiguous']} unfinished {name} runs and no agent id", client)
         else:
             _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
