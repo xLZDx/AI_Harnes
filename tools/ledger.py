@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import json
 import os
 import re
@@ -167,17 +168,51 @@ def counter(sprint: dict) -> tuple[int, int]:
     return sum(1 for t in sprint["tasks"] if t["state"] == "done"), len(sprint["tasks"])
 
 
+DOC_EXTS = {".md", ".rst", ".txt"}
+DEPENDENCY_NAMES = re.compile(r"^(requirements|constraints|dev-requirements|pipfile|cmakelists)[\w.-]*$", re.I)
+REPORT_RE = re.compile(r"^(reports/[^/]+\.html|\.harness/report\.html)$", re.I)
+TEST_CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".dart", ".go", ".rs", ".java", ".kt", ".cs",
+                  ".rb", ".ps1", ".sh"}
+_ROUTE_RULES: list = []
+
+
+def _route_rules():
+    """route.py and its doc rules, loaded once per process."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import route
+    if not _ROUTE_RULES:
+        _ROUTE_RULES.append(route.load_rules(main_root()))
+    return route, _ROUTE_RULES[0]
+
+
+def safe_non_code_path(f: str) -> bool:
+    """A file that can never change product behaviour: a prose document (.md/.rst, or .txt that is not a dependency
+    list) under the route.py doc rules, the generated status report, or test code in a test location. Anything else,
+    e.g. docs/build.py, requirements.txt, api.spec.json, counts as code (B16 review: path rules alone were too broad)."""
+    route, rules = _route_rules()
+    f = f.replace("\\", "/")
+    name = f.rsplit("/", 1)[-1]
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if REPORT_RE.match(f):
+        return True
+    if ext in DOC_EXTS and route.is_doc(rules, f) and not DEPENDENCY_NAMES.match(name):
+        return True
+    return ext in TEST_CODE_EXTS and is_test_path(f)
+
+
+@functools.lru_cache(maxsize=512)
 def _docs_or_tests_only(sha: str) -> bool:
-    """True when commit sha touches only documentation or test files (route.py doc rules + is_test_path). Any doubt
-    (git or rules unreadable, empty file list) counts as a code commit, so evidence is never kept fresh by mistake."""
+    """True when commit sha touches only safe non-code files (safe_non_code_path). Any doubt (git or rules unreadable,
+    empty file list) counts as a code commit, so evidence is never kept fresh by mistake. A commit's file list never
+    changes, so the answer is cached per sha."""
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import route
-        rules = route.load_rules(main_root())
-        files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", sha).splitlines() if f]
+        files = [f for f in git("-c", "core.quotepath=off", "diff-tree", "--no-commit-id", "--name-only", "-r", "-m",
+                                "--root", sha).splitlines() if f]
+        return bool(files) and all(safe_non_code_path(f) for f in files)
     except Exception:
         return False
-    return bool(files) and all(route.is_doc(rules, f) or is_test_path(f) for f in files)
 
 
 def _evidence_fresh(t: dict, evidence_commit) -> bool:
@@ -315,9 +350,11 @@ def c_commit_hook(a, d):
         # task state, its commit list and the sprint stay as they were closed.
         if sha not in t.setdefault("after_close_commits", []):
             t["after_close_commits"].append(sha)
-        event(d, "commit-after-close", task=tid, sha=sha, sprint=s.get("id"))
+        code = not _docs_or_tests_only(sha)
+        event(d, "commit-after-close", task=tid, sha=sha, sprint=s.get("id"), code=code)
         print(f"ledger: WARNING {tid} belongs to closed sprint {s.get('id')}; {sha[:7]} noted, task state unchanged "
-              f"({t['state']}). Name a task of the open sprint for new work.")
+              f"({t['state']}). Name a task of the open sprint for new work."
+              + (" This commit CHANGES PRODUCT CODE that no test or review of that sprint covered." if code else ""))
         return
     if sha not in t["commits"]:
         t["commits"].append(sha)
@@ -374,16 +411,11 @@ def require_agent_run(role: str, task_commit: str, what: str) -> None:
     recorded by the agent_visibility hook. 2026-11-12 incident: a runaway helper session wrote 'verify pass' and
     'review accepted' for every S14 task with no test or review agent ever run, then closed the sprint."""
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import route
-        rules = route.load_rules(main_root())
-        # a docs-only commit (logs, backlog) after the agent run does not make the run stale
+        # docs-only and tests-only commits do not make a run stale (logs, backlog, the test agent's own tests are
+        # committed after its run); a commit that touches product code does. Same strict rule as recompute (B16).
         cur = task_commit
         while True:
-            files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", cur).splitlines() if f]
-            # docs-only and tests-only commits do not make a run stale (the test agent's own tests are committed after
-            # its run); a commit that touches product code does
-            if not files or any(not (route.is_doc(rules, f) or is_test_path(f)) for f in files):
+            if not _docs_or_tests_only(cur):
                 break
             prev = [c for c in git("rev-list", "--parents", "-n", "1", cur).split()[1:2]]
             if not prev:

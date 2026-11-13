@@ -85,18 +85,32 @@ def project_root(cwd: str) -> str:
         return ""
 
 
-ABS_PATH_RE = re.compile(r"(?<![\w/\\])(?:[A-Za-z]:[\\/]|/)[^\s\"'`<>|*?,;()\[\]]+")
+# a drive-letter path, or a POSIX path with one leading slash; never a URL tail (://host) or a UNC path (\\host, //host),
+# whose exists() would make a network lookup with no timeout
+ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^\s\"'`<>|*?,;()\[\]]+")
+BIND_DEADLINE_S = 3.0  # the whole search stays well inside the 10 s hook budget
+BIND_GIT_TIMEOUT_S = 2
 
 
-def project_from_text(tool_input: dict, max_dirs: int = 5) -> str:
+def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50) -> str:
     """B26: when the session cwd is not a repository (a Codex thread in Documents\\Codex, a Claude session reset to
-    D:\\Repo), take the project from the first absolute path in the agent's own task text that lies inside a git repo
-    (the worktree it is told to work in maps to its main checkout). '' when none does."""
+    D:\\Repo), take the project from the absolute paths in the agent's own task text that lie inside a git repo (a
+    worktree maps to its main checkout). The run is bound only when all such paths name ONE repository; paths in two
+    different repositories, a git timeout or no repository at all give '' (the ledger then refuses the run, fail
+    closed), so a run is never credited to a project it only mentioned."""
     try:
+        import _agentio
+        deadline = time.monotonic() + BIND_DEADLINE_S
         text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))
         tried = set()
-        for m in ABS_PATH_RE.finditer(text):
-            p = Path(m.group(0).rstrip(".:"))
+        roots = set()
+        for i, m in enumerate(ABS_PATH_RE.finditer(text)):
+            if time.monotonic() > deadline or i >= max_matches:
+                return ""
+            raw = m.group(0).rstrip(".:")
+            if raw.startswith(("\\\\", "//")) or (os.name == "nt" and raw.startswith("/")):
+                continue
+            p = Path(raw)
             while not p.exists() and p != p.parent:
                 p = p.parent
             d = p if p.is_dir() else p.parent
@@ -104,11 +118,19 @@ def project_from_text(tool_input: dict, max_dirs: int = 5) -> str:
             if key in tried or d == d.parent:
                 continue
             tried.add(key)
-            root = project_root(str(d))
-            if root:
-                return root
+            r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(d),
+                                 timeout=BIND_GIT_TIMEOUT_S)
+            if r.returncode in (124, 127):
+                # git timed out or cannot start: stop rather than bind to a later, possibly unrelated path
+                return ""
+            if r.returncode == 0 and r.stdout.strip():
+                common = Path(r.stdout.strip())
+                roots.add(str((common.parent if common.name == ".git" else common).resolve()))
+                if len(roots) > 1:
+                    return ""
             if len(tried) >= max_dirs:
                 break
+        return roots.pop() if len(roots) == 1 else ""
     except Exception:
         pass
     return ""
@@ -168,6 +190,9 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                     continue
                 if tuid and e.get("tool_use_id") == tuid:
                     res["dup"] = True
+                    if not e.get("project") and entry["project"]:
+                        e["project"] = entry["project"]
+                        return True
                     return False
                 if (source not in e.get("sources", ["pre"]) and now - e.get("start", 0) < CLAIM_WINDOW_S
                         and e.get("session") in ("", session)):
