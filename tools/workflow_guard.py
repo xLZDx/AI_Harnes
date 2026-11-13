@@ -17,7 +17,7 @@ ON_RE = re.compile(r"""^(?:on|"on"|'on')\s*:(.*)$""", re.IGNORECASE)
 PLAIN_KEY_RE = re.compile(r"""^(?:[A-Za-z_][A-Za-z0-9_.\-]*|"[^"\\]*"|'[^']*')\s*:(?:\s|$)""")
 
 
-NAME_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
+NAME_RE = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9_.\-/]+$")  # an event name has at least one letter or digit
 
 
 def _unquote(tok: str) -> str:
@@ -59,14 +59,22 @@ def triggers(text: str) -> set[str]:
         # duplicate top-level `on:` keys (or a second YAML document): which one a parser keeps is not ours to guess
         return {UNPARSABLE}
     for i, m in keys:
-        rest = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+        raw = m.group(1)
+        if "#" in raw and ("'" in raw or '"' in raw):
+            return {UNPARSABLE}  # the comment strip is not quote-aware: a quoted ' #' could cut real events off
+        rest = re.sub(r"\s+#.*$", "", raw).strip()
         if rest[:1] in ("[", "{"):  # flow style may span lines: accumulate until the brackets balance
             acc, k = rest, i
             while acc.count("[") + acc.count("{") > acc.count("]") + acc.count("}"):
                 k += 1
                 if k >= len(lines):
                     return {UNPARSABLE}
-                acc += " " + re.sub(r"(^|\s)#.*$", "", lines[k]).strip()
+                nxt = lines[k]
+                if nxt.strip() and len(nxt) - len(nxt.lstrip(" ")) <= base:
+                    return {UNPARSABLE}  # the flow value would swallow the next top-level key
+                if "#" in nxt and ("'" in nxt or '"' in nxt):
+                    return {UNPARSABLE}
+                acc += " " + re.sub(r"(^|\s)#.*$", "", nxt).strip()
             rest = acc
         if rest:
             names = {_unquote(t).lower() for t in re.split(r"[\s,\[\]{}:]+", rest) if t}
