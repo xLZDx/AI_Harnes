@@ -386,23 +386,32 @@ def _row_texts(row: dict) -> list[tuple[str, str]]:
     return out
 
 
+_RUN_LOGGED: set = set()  # keys already logged in this run (reset at the start of pending_agents_aged)
+
+
+def _log_once(key: tuple, rec: dict) -> None:
+    if key in _RUN_LOGGED:
+        return
+    _RUN_LOGGED.add(key)
+    log(rec)
+
+
 def _read_finished() -> tuple[dict[str, float], str]:
-    """(cache, status). status: ok | missing | corrupt (unparsable JSON or wrong shape, logged, cache = empty) |
-    unreadable (OS error other than a missing file, logged, cache = empty)."""
+    """(cache, status). status: ok | missing | corrupt (invalid UTF-8, unparsable JSON, too deep, wrong shape; logged once per run,
+    cache = empty) | unreadable (OS error other than a missing file, logged, cache = empty). Never raises."""
     try:
         text = FINISHED.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}, "missing"
-    except OSError as exc:
-        log({"event": "finished-cache", "verdict": "unreadable", "error": str(exc)[:200]})
-        return {}, "unreadable"
-    try:
         raw = json.loads(text)
         if not isinstance(raw, dict):
             raise TypeError("finished cache is " + type(raw).__name__ + ", not an object")
         return {str(k): float(v) for k, v in raw.items()}, "ok"
-    except (ValueError, TypeError, AttributeError, OverflowError) as exc:  # fail closed: a corrupt cache counts as empty
-        log({"event": "finished-cache", "verdict": "corrupt", "error": str(exc)[:200]})
+    except FileNotFoundError:
+        return {}, "missing"
+    except OSError as exc:
+        _log_once(("unreadable",), {"event": "finished-cache", "verdict": "unreadable", "error": str(exc)[:200]})
+        return {}, "unreadable"
+    except Exception as exc:  # noqa: BLE001  UnicodeDecodeError/ValueError, RecursionError, TypeError, ...: fail closed, corrupt = empty
+        _log_once(("corrupt",), {"event": "finished-cache", "verdict": "corrupt", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
         return {}, "corrupt"
 
 
@@ -413,8 +422,10 @@ def _load_finished() -> dict[str, float]:
 
 def _save_finished(done: dict[str, float], removed=()) -> bool:
     """B40: merge into the file under its own lock: read the current file, union with `done` (ids in `removed`, i.e. explicitly
-    resumed agents, are dropped), keep the FINISHED_MAX newest by time, atomic write. Lock not taken in time or file unreadable =
-    nothing written, logged, False (a lost write only loses the cache; it can never mark an agent finished, the replay decides)."""
+    resumed agents, are dropped), keep the FINISHED_MAX newest by time, atomic write. A corrupt file is always rewritten.
+    Lock not taken in time or file unreadable = nothing written, logged, False. The file is only a cache: the replay of the
+    transcript's resume rows decides which ids are finished. A merge can re-add an id that another process still had on disk
+    and this run removed; the next replay discards it again."""
     try:
         with _agentio.file_lock(FINISHED, wait=1.0, stale=10.0) as got:
             if not got:
@@ -430,7 +441,7 @@ def _save_finished(done: dict[str, float], removed=()) -> bool:
             for k in removed:
                 merged.pop(k, None)
             if status == "ok" and merged == disk:
-                return True  # nothing new on disk
+                return True  # nothing new on disk (a corrupt or missing file is still written)
             keep = dict(sorted(merged.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
             _agentio.atomic_write_text(FINISHED, json.dumps(keep))  # temp file + os.replace, retried on winerror 5/32
             return True
@@ -443,6 +454,7 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
     """[(id, age in seconds)] of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
     later <task-notification> with the same <task-id>. Transcript only; [] when unreadable or on any error."""
     try:
+        _RUN_LOGGED.clear()
         from _turn import _rows
         rows = _rows(transcript_path) if transcript_path else []
         pending: dict[str, float] = {}
@@ -478,7 +490,8 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                         inner = block.split("</task-notification>")[0]
                         m = NOTIF_ID_RE.search(block)
                         if not NOTIF_HEAD_RE.search(inner):  # B41: no <summary>/<status> at all = malformed block, changes nothing, but is logged
-                            log({"event": "task-notification", "verdict": "ignored-no-summary-or-status", "id": m.group(1) if m else ""})
+                            _log_once(("notif", m.group(1) if m else ""),
+                                      {"event": "task-notification", "verdict": "ignored-no-summary-or-status", "id": m.group(1) if m else ""})
                             continue
                         if not m:
                             continue
@@ -496,14 +509,18 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                             finished.add(aid)  # an id that finished never counts as running again
                             finished_map.setdefault(aid, now)
         if finished_map != finished_before:
+            removed_ids = set(finished_before) - set(finished_map)
             try:
-                removed = set(finished_before) - set(finished_map)  # explicit SendMessage resumes
-                if removed:
-                    _save_finished(finished_map, removed)
-                else:
-                    _save_finished(finished_map)
+                removed = removed_ids  # explicit SendMessage resumes
+                saved = _save_finished(finished_map, removed) if removed else _save_finished(finished_map)
+                if not saved and removed:  # the file may still list resumed ids: this run's decision must not use them
+                    finished.difference_update(removed)
+                    for a in removed:
+                        finished_map.pop(a, None)
+                    log({"event": "finished-cache", "verdict": "resume-not-persisted", "ids": sorted(removed)[:6]})
             except Exception:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
-                pass
+                if removed_ids:
+                    finished.difference_update(removed_ids)
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]
     except Exception:  # noqa: BLE001  detection must never break a gate
         return []

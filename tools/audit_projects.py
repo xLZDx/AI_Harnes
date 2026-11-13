@@ -516,6 +516,8 @@ def _codex_key(p) -> str:
 
 def _codex_executable() -> str | None:
     """Find the installed Codex executable without depending on its package-manager layout."""
+    global CODEX_EXE_NOTE
+    CODEX_EXE_NOTE = None  # a note from an earlier call must not leak into this one
     found = shutil.which("codex.exe") or shutil.which("codex")
     if found and os.name == "nt" and Path(found).suffix.lower() not in (".exe", ".com"):
         # B28a: the npm shim (codex / codex.cmd) starts node, which starts the real codex.exe; killing the shim leaves the
@@ -526,15 +528,14 @@ def _codex_executable() -> str | None:
         # B43/B41: match the Rust target triple directory (<vendor>/<triple>/bin/codex.exe) exactly, never a substring
         want = ("aarch64-pc-windows-msvc" if machine in ("arm64", "aarch64")
                 else "x86_64-pc-windows-msvc" if machine in ("amd64", "x86_64", "x64") else None)
-        for pattern in ("node_modules/@openai/codex-*/vendor/*/bin/codex.exe", "vendor/*/bin/codex.exe"):
-            vendor = sorted(base.glob(pattern))
-            if vendor:
-                for cand in vendor:
-                    if want is not None and cand.parent.parent.name.lower() == want:
-                        return str(cand)
-                global CODEX_EXE_NOTE
-                CODEX_EXE_NOTE = f"no vendor codex.exe matches machine {platform.machine()}; used first entry {vendor[0]}"
-                return str(vendor[0])
+        patterns = ("node_modules/@openai/codex-*/vendor/*/bin/codex.exe", "vendor/*/bin/codex.exe")
+        found_all = [cand for pattern in patterns for cand in sorted(base.glob(pattern))]
+        for cand in found_all:  # every pattern is tried for a triple match before any fallback
+            if want is not None and cand.parent.parent.name.lower() == want:
+                return str(cand)
+        if found_all:
+            CODEX_EXE_NOTE = f"no vendor codex.exe matches machine {platform.machine()}; used first entry {found_all[0]}"
+            return str(found_all[0])
     return found
 
 

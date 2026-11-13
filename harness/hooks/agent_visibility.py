@@ -71,12 +71,13 @@ def state_of(entry: dict, now: float | None = None) -> str:
     return "ACTIVE_CONFIRMED" if entry.get("activity") else "START_OBSERVED"
 
 
-def project_root(cwd: str) -> str:
+def project_root(cwd: str, timeout=None) -> str:
     """Main checkout of the git repo at cwd (same as ledger.py main_root), '' when not a repo. ledger.py counts a test or
     review run only for the project it ran in."""
     try:
         import _agentio
-        r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd or ".")
+        r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd or ".",
+                         **({"timeout": timeout} if timeout else {}))
         if r.returncode != 0:
             return ""
         common = Path(r.stdout.strip())
@@ -91,20 +92,24 @@ ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^
 # an absolute path in double or single quotes may hold spaces; same start and exclusions as ABS_PATH_RE
 QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]{1,260})\1""")
 # B44: one git rev-parse costs about 0.5 s here, and a prompt naming 6 subdirectories of one repository took 3.1-3.6 s, so
-# 3.0 s made the hook record ''. 6.0 s + one last git call (BIND_GIT_TIMEOUT_S) stays under the 10 s hook budget.
-BIND_DEADLINE_S = 6.0
+# 3.0 s made the hook record ''. 5.0 s + one last git call (BIND_GIT_TIMEOUT_S) + the capped project_root call in
+# announce_start (3 s) stays under the 10 s hook budget.
+BIND_DEADLINE_S = 5.0
 BIND_GIT_TIMEOUT_S = 2
 BIND_TEXT_MAX = 65536  # regex cost: only the first 64 KB of the task text is scanned
 BIND_SPACE_WORDS = 4  # B40: an unquoted path with spaces is rebuilt from at most this many following words
 SPACE_WORD_RE = re.compile(r" ([^\s\"'`<>|*?,;()\[\]]+)")
 
 
-def _extend_unquoted(raw: str, tail: str) -> str:
+def _extend_unquoted(raw: str, text: str, pos: int, deadline: float) -> str:
     """B40: an unquoted absolute path stops at its first space. Extend it through the following space-separated words
-    and return the LONGEST candidate that exists (os.path.exists); the plain path when none of the extensions exists."""
-    best, best_len, cand, pos = raw, 0, raw, 0
+    and return the LONGEST candidate that exists (os.path.exists); the plain path when none of the extensions exists.
+    `pos` is the index in `text` where the plain match ended (no slicing); extension stops once `deadline` has passed."""
+    best, best_len, cand = raw, 0, raw
     for _ in range(BIND_SPACE_WORDS):
-        m = SPACE_WORD_RE.match(tail, pos)
+        if time.monotonic() > deadline:
+            break
+        m = SPACE_WORD_RE.match(text, pos)
         if not m:
             break
         cand += " " + m.group(1)
@@ -152,17 +157,17 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
         # quoted paths first (they may hold spaces), then every unquoted hit of the FULL text as its own candidate (a
         # second path inside the same quotes must still be examined); all candidates that resolve must agree
         found = [(m.group(2).strip().rstrip(".:"), None) for m in QUOTED_PATH_RE.finditer(text)]
-        found += [(m.group(0), text[m.end():]) for m in ABS_PATH_RE.finditer(text)]  # tail: for B40 space extension
+        found += [(m.group(0), m.end()) for m in ABS_PATH_RE.finditer(text)]  # end index: for B40 space extension
         extra = 0
-        for i, (raw, tail) in enumerate(found):
+        for i, (raw, end) in enumerate(found):
             if time.monotonic() > deadline or i >= max_matches:
                 return ""
             if raw.startswith(("\\\\", "//")) or (os.name == "nt" and raw.startswith("/")):
                 continue
-            if tail is not None:
+            if end is not None:  # the match limit above is checked before any extension work
                 raw = raw.rstrip(".:")
-                if tail[:1] == " ":
-                    raw = _extend_unquoted(raw, tail)
+                if text[end:end + 1] == " ":
+                    raw = _extend_unquoted(raw, text, end, deadline)
             p = Path(raw)
             while not p.exists() and p != p.parent:
                 p = p.parent
@@ -239,7 +244,7 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         session = str(data.get("session_id") or "")[:64]
         tuid = str(data.get("tool_use_id") or "")[:64]
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                 "project": project_root(str(data.get("cwd") or "")) or project_from_text(ti),
+                 "project": project_root(str(data.get("cwd") or ""), timeout=3) or project_from_text(ti),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
         aid = str(agent_id or "")[:64]
         if aid:
