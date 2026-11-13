@@ -167,12 +167,34 @@ def counter(sprint: dict) -> tuple[int, int]:
     return sum(1 for t in sprint["tasks"] if t["state"] == "done"), len(sprint["tasks"])
 
 
+def _docs_or_tests_only(sha: str) -> bool:
+    """True when commit sha touches only documentation or test files (route.py doc rules + is_test_path). Any doubt
+    (git or rules unreadable, empty file list) counts as a code commit, so evidence is never kept fresh by mistake."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import route
+        rules = route.load_rules(main_root())
+        files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "--root", sha).splitlines() if f]
+    except Exception:
+        return False
+    return bool(files) and all(route.is_doc(rules, f) or is_test_path(f) for f in files)
+
+
+def _evidence_fresh(t: dict, evidence_commit) -> bool:
+    """Evidence recorded at evidence_commit stays fresh when every later task commit is docs-only or tests-only (logs,
+    backlog, the test agent's own tests); one later product-code commit makes it stale (B16)."""
+    commits = t.get("commits") or []
+    if not commits or evidence_commit not in commits:
+        return False
+    return all(_docs_or_tests_only(c) for c in commits[commits.index(evidence_commit) + 1:])
+
+
 def recompute(t: dict) -> None:
     """The task state follows from its evidence; it can go down as well as up."""
     if t["state"] in ("todo", "in_progress") and not t["commits"]:
         return
     v, r = t.get("verify") or {}, t.get("review") or {}
-    fresh = bool(t["commits"]) and v.get("task_commit") == t["commits"][-1]
+    fresh = bool(t["commits"]) and _evidence_fresh(t, v.get("task_commit"))
     if not t["commits"]:
         t["state"] = "in_progress" if t["state"] != "todo" else "todo"
     elif not v or not fresh:
@@ -181,7 +203,7 @@ def recompute(t: dict) -> None:
         t["state"] = "failed"
     elif v["result"] == "NOT_RUN":
         t["state"] = "not_run"
-    elif (r.get("result") == "accepted" and r.get("task_commit") == t["commits"][-1]) or t.get("risk") == "trivial":
+    elif (r.get("result") == "accepted" and _evidence_fresh(t, r.get("task_commit"))) or t.get("risk") == "trivial":
         t["state"] = "done"
     else:
         t["state"] = "verified"
@@ -287,10 +309,19 @@ def c_commit_hook(a, d):
     if not any(t["id"] == tid for s in d["sprints"] for t in s["tasks"]):
         hook_error(d, f"commit {sha[:12]} names unknown task {tid}")
         return
-    _, t = find_task(d, tid)
+    s, t = find_task(d, tid)
+    if s.get("state") == "closed":
+        # B16: a closed sprint is history. A late commit naming one of its tasks (a log or record) is noted, but the
+        # task state, its commit list and the sprint stay as they were closed.
+        if sha not in t.setdefault("after_close_commits", []):
+            t["after_close_commits"].append(sha)
+        event(d, "commit-after-close", task=tid, sha=sha, sprint=s.get("id"))
+        print(f"ledger: WARNING {tid} belongs to closed sprint {s.get('id')}; {sha[:7]} noted, task state unchanged "
+              f"({t['state']}). Name a task of the open sprint for new work.")
+        return
     if sha not in t["commits"]:
         t["commits"].append(sha)
-    recompute(t)  # a new commit makes earlier verify/review stale
+    recompute(t)  # a new product-code commit makes earlier verify/review stale; docs/tests-only ones do not
     event(d, "commit", task=tid, sha=sha)
     print(f"ledger: {tid} <- {sha[:7]} ({t['state']})")
 
