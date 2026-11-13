@@ -85,8 +85,8 @@ def _merge_hooks(new_hooks: dict, old_hooks: dict, home: Path) -> tuple[dict, li
             hooks = g.get("hooks", [])
             foreign = [h for h in hooks if not _is_harness_hook(h, home)]
             dropped += [_hook_text(h) for h in hooks if _is_harness_hook(h, home)]
-            if not foreign:
-                continue
+            if hooks and not foreign:
+                continue  # an empty group has no harness hook: kept as it is (S17 re-review)
             g2 = g if len(foreign) == len(hooks) else {**g, "hooks": foreign}
             if key(g2) not in seen:
                 out.append(g2)
@@ -221,6 +221,9 @@ def install(home: Path, snap: Path, source: Path) -> int:
     print(f"snapshot and restore script: {snap}")
     for c in kept_foreign:
         print("kept (not a harness hook): " + c[:160])
+    new_texts = {_hook_text(h) for v in new_cfg["hooks"].values() for g in v for h in g.get("hooks", [])}
+    for c in sorted({c for c in dropped_cmds if c not in new_texts}):  # every removed command, also .ps1/.sh scripts
+        print("removed (harness location, not in the new set): " + c[:160])
     if retired:
         print("no longer called (files left in place): " + ", ".join(retired))
     print("NEXT: start a new Claude session; hooks changed in settings.json apply to new sessions.")
