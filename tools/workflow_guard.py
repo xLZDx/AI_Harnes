@@ -64,6 +64,8 @@ def triggers(text: str) -> set[str]:
             return {UNPARSABLE}  # the comment strip is not quote-aware: a quoted ' #' could cut real events off
         rest = re.sub(r"\s+#.*$", "", raw).strip()
         if rest[:1] in ("[", "{"):  # flow style may span lines: accumulate until the brackets balance
+            if "'" in raw or '"' in raw:
+                return {UNPARSABLE}  # a quoted ']' or '}' would end the bracket count early and hide later events
             acc, k = rest, i
             while acc.count("[") + acc.count("{") > acc.count("]") + acc.count("}"):
                 k += 1
@@ -72,8 +74,8 @@ def triggers(text: str) -> set[str]:
                 nxt = lines[k]
                 if nxt.strip() and len(nxt) - len(nxt.lstrip(" ")) <= base:
                     return {UNPARSABLE}  # the flow value would swallow the next top-level key
-                if "#" in nxt and ("'" in nxt or '"' in nxt):
-                    return {UNPARSABLE}
+                if "'" in nxt or '"' in nxt:
+                    return {UNPARSABLE}  # no quotes anywhere in a flow `on:` value (see above)
                 acc += " " + re.sub(r"(^|\s)#.*$", "", nxt).strip()
             rest = acc
         if rest:
