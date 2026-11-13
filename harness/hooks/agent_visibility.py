@@ -193,17 +193,21 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
             if aid and any(e.get("agent_id") == aid for e in d["agents"]):
                 res["dup"] = True  # the same agent reported twice, also after its stop: never a second entry
                 return False
+            if tuid:  # a retried PreToolUse first finds its own entry, before any claim of another run's entry
+                for e in d["agents"]:
+                    if e.get("type") == name and not e.get("stop") and e.get("tool_use_id") == tuid:
+                        res["dup"] = True
+                        if not e.get("project") and entry["project"]:
+                            e["project"] = entry["project"]
+                            return True
+                        return False
             for e in reversed(d["agents"]):  # newest first: a fresh start never claims a dead run's older entry
                 if e.get("stop") or e.get("type") != name:
                     continue
                 if aid and e.get("agent_id"):
                     continue  # that entry already belongs to another agent: never claim it
-                if tuid and e.get("tool_use_id") == tuid:
-                    res["dup"] = True
-                    if not e.get("project") and entry["project"]:
-                        e["project"] = entry["project"]
-                        return True
-                    return False
+                if tuid and e.get("tool_use_id"):
+                    continue  # a PreToolUse never claims another PreToolUse's entry
                 if (source not in e.get("sources", ["pre"]) and now - e.get("start", 0) < CLAIM_WINDOW_S
                         and e.get("session") in ("", session)):
                     e.setdefault("sources", ["pre"]).append(source)
@@ -262,11 +266,19 @@ def announce_stop(data: dict, client: str) -> None:
 
         def apply(d: dict):
             if aid:
-                # a stop that names its agent finishes exactly that agent's entry, or nothing: no fallback to another
-                # run (a duplicate stop, or a start that was lost, would otherwise finish a dead run's entry and let the
-                # ledger credit a run that never finished). Fail closed: the live run stays unfinished.
+                # a stop that names its agent finishes that agent's entry; a duplicate stop finishes nothing. It never
+                # falls back to an entry a SubagentStart already reported (a run killed by an app restart would
+                # otherwise take a later run's stop and the ledger would credit a run that never finished).
                 for e in d["agents"]:
-                    if e.get("agent_id") == aid and not e.get("stop"):
+                    if e.get("agent_id") == aid:
+                        return False if e.get("stop") else finish(e)
+                # the id was never recorded (SubagentStart not delivered): only an entry that came from PreToolUse
+                # alone, carries no id and has the same type and session can be this run; newest first
+                for e in reversed(d["agents"]):
+                    if (e.get("type") == name and not e.get("stop") and not e.get("agent_id")
+                            and "start" not in e.get("sources", ["pre"])
+                            and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))):
+                        e["agent_id"] = aid
                         return finish(e)
                 return False
             # no agent id in the payload: oldest unfinished entry of the same type (and session when known)
