@@ -264,5 +264,26 @@ def test_claude_configuration_check_remains_unchanged():
         assert "agent_visibility" in detail
 
 
+def test_s15t4_untrusted_hook_detail_names_the_event_from_eventName_not_a_dash():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        project = root / "project"
+        hooks_file = project / ".codex" / "hooks.json"
+        _write(project / ".harness" / "ledger.json", "{}")
+        _write(hooks_file, json.dumps({"hooks": {"PreToolUse": [
+            {"hooks": [{"command": "first_guard.py", "statusMessage": "evt probe hook"}]}]}}))
+        home = _fake_home(root)
+        hook = _hook("project", "untrusted", "evt probe hook", hooks_file, "first_guard.py")
+        hook["eventName"] = "preToolUse"
+        hook["event"] = "ignored_legacy_field"
+        item = _record(project, [hook])
+        with patch.object(au, "HOME", home),                 patch.object(au, "CODEX_HOOKS_BY_CWD", {au.norm_path(project): item}),                 patch.object(au, "CODEX_HOOKS_ERROR", None):
+            status, detail = au.chk_codex_cfg(project)
+        assert status == au.FAIL, detail
+        assert "untrusted hook: project, preToolUse, evt probe hook" in detail, detail
+        assert "project, -, evt probe hook" not in detail
+        assert "ignored_legacy_field" not in detail
+
+
 if __name__ == "__main__":
     sys.exit(hv2.run_all(globals()))
