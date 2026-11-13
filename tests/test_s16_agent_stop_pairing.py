@@ -148,18 +148,55 @@ def test_c3_duplicate_stop_finishes_nothing_with_older_id_less_entry_present():
 
 
 # ---------------------------------------------------------------- criterion 4
-def test_c4_stop_without_id_finishes_oldest_unfinished_of_type_and_session():
+def test_c4_stop_without_id_two_candidates_finishes_nothing_and_says_not_paired():
     st = h.fresh("s16t3_c4a")
-    _seed(st, [_e(300, sid="other"), _e(200), _e(100), _e(50, typ="python-reviewer")])
-    _stop(st)
-    assert _stopped(_agents(st)) == [False, True, False, False]
+    _seed(st, [_e(300, sid="other"), _e(200), _e(100), _e(50, typ="python-reviewer")])  # two tester candidates in s1
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, False, False, False], _agents(st)
+    assert "not paired: 2 unfinished tester runs and no agent id" in r.all, r.all
 
 
-def test_c4_stop_without_id_may_finish_entry_that_has_id():
+def test_c4_stop_without_id_two_candidates_with_ids_finishes_nothing():
     st = h.fresh("s16t3_c4b")
     _seed(st, [_e(200, "A"), _e(100, "B")])
-    _stop(st)
-    assert _stopped(_agents(st)) == [True, False]
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, False], _agents(st)
+    assert "not paired: 2" in r.all, r.all
+
+
+def test_c4_incident_dead_older_run_then_newer_run_idless_stop_finishes_neither():
+    st = h.fresh("s16t3_c4i")
+    _start(st, "A")  # dead run, never stopped
+    _start(st, "B")  # newer run, same type and session
+    r = _stop(st)  # stop without agent_id
+    a = _agents(st)
+    assert [e["agent_id"] for e in a] == ["A", "B"] and _stopped(a) == [False, False], a
+    assert "not paired: 2" in r.all, r.all
+
+
+def test_c4_stop_without_id_single_candidate_is_finished():
+    st = h.fresh("s16t3_c4s")
+    _seed(st, [_e(100, "A"), _e(50, typ="python-reviewer")])
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [True, False], _agents(st)
+    assert "[agent STOP] tester" in r.all and "not paired" not in r.all and "start was not observed" not in r.all, r.all
+
+
+def test_c4_stop_without_id_counts_only_own_session_for_ambiguity():
+    st = h.fresh("s16t3_c4c")
+    _seed(st, [_e(300, sid="other"), _e(100)])  # one candidate in s1, one in another session
+    r = _stop(st)
+    assert _stopped(_agents(st)) == [False, True], _agents(st)
+    assert "not paired" not in r.all, r.all
+
+
+def test_c4_stop_without_id_zero_candidates_says_start_not_observed():
+    st = h.fresh("s16t3_c4z")
+    _seed(st, [_e(300, sid="other"), _e(100, typ="python-reviewer"), dict(_e(50), stop=time.time())])
+    before = _stopped(_agents(st))
+    r = _stop(st)
+    assert _stopped(_agents(st)) == before == [False, False, True], _agents(st)
+    assert "start was not observed" in r.all and "not paired" not in r.all, r.all
 
 
 def test_c4_start_without_id_claims_recent_pre_entry_by_source():
