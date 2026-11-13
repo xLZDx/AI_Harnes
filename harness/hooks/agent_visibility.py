@@ -195,8 +195,10 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                 return False
             if tuid:  # a retried PreToolUse first finds its own entry, before any claim of another run's entry
                 for e in d["agents"]:
-                    if e.get("type") == name and not e.get("stop") and e.get("tool_use_id") == tuid:
+                    if e.get("type") == name and e.get("tool_use_id") == tuid:
                         res["dup"] = True
+                        if e.get("stop"):
+                            return False  # B33: a retry after the run stopped is the same run, never a new entry
                         if not e.get("project") and entry["project"]:
                             e["project"] = entry["project"]
                             return True
@@ -286,7 +288,8 @@ def announce_stop(data: dict, client: str) -> None:
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
             # finished (fail closed: the ledger refuses the run instead of crediting a run that never finished)
-            cands = [e for e in d["agents"] if e.get("type") == name and not e.get("stop")
+            # B34: an entry that carries an agent_id gets its own id-bearing stop, so it is never a candidate here
+            cands = [e for e in d["agents"] if e.get("type") == name and not e.get("stop") and not e.get("agent_id")
                      and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))]
             if len(cands) == 1:
                 return finish(cands[0])
@@ -294,11 +297,10 @@ def announce_stop(data: dict, client: str) -> None:
             return False
         mutate(apply)
         hit, secs = res["hit"], res["secs"]
-        if res.get("ambiguous"):
-            tail = f" | not paired: {res['ambiguous']} unfinished {name} runs and no agent id"
+        if res.get("ambiguous"):  # no duration: no run was finished (B34)
+            _emit(f"[agent STOP] {name} | not paired: {res['ambiguous']} unfinished {name} runs and no agent id", client)
         else:
-            tail = "" if hit else " | start was not observed"
-        _emit(f"[agent STOP] {name} | {secs} s" + tail, client)
+            _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:
             try:
                 import hook_metrics
