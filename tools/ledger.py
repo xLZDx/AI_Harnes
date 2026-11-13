@@ -171,6 +171,7 @@ def counter(sprint: dict) -> tuple[int, int]:
 DOC_EXTS = {".md", ".rst", ".txt"}
 DEPENDENCY_NAMES = re.compile(r"^(requirements|constraints|dev-requirements|pipfile|cmakelists)[\w.-]*$", re.I)
 REPORT_RE = re.compile(r"^(reports/[^/]+\.html|\.harness/report\.html)$", re.I)
+AGENT_CONFIG_RE = re.compile(r"(^|/)\.(claude|codex|agents)/|(^|/)harness/(agents|skills|commands|rules)/", re.I)
 TEST_CODE_EXTS = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".dart", ".go", ".rs", ".java", ".kt", ".cs",
                   ".rb", ".ps1", ".sh"}
 _ROUTE_RULES: list = []
@@ -197,9 +198,12 @@ def safe_non_code_path(f: str) -> bool:
     ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
     if REPORT_RE.match(f):
         return True
+    if AGENT_CONFIG_RE.search(f):  # agent, command and skill definitions change agent behaviour
+        return False
     if ext in DOC_EXTS and route.is_doc(rules, f) and not DEPENDENCY_NAMES.match(name):
         return True
-    return ext in TEST_CODE_EXTS and is_test_path(f)
+    in_test_dir = f.lower().startswith(("tests/", "test/")) or "/tests/" in f.lower() or "/test/" in f.lower()
+    return ext in TEST_CODE_EXTS and in_test_dir
 
 
 @functools.lru_cache(maxsize=512)

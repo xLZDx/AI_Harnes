@@ -129,7 +129,8 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
                 if len(roots) > 1:
                     return ""
             if len(tried) >= max_dirs:
-                break
+                # cap reached: a later path could name a second repository, so unexamined text means no binding
+                return roots.pop() if len(roots) == 1 and not any(True for _ in ABS_PATH_RE.finditer(text, m.end())) else ""
         return roots.pop() if len(roots) == 1 else ""
     except Exception:
         pass
