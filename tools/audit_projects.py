@@ -46,9 +46,13 @@ CODEX_HOOKS_BY_CWD: dict[str, dict] = {}
 CODEX_HOOKS_ERROR: str | None = None
 CODEX_CLIENT_FLAG = "--harness-client=codex"
 KILL_VALUES = {"off", "0", "false"}
-# A kill switch is an environment variable a hook compares (lower-cased) with "off" / {"off","0","false"}. Variables whose
-# "off" is one value of a mode (they are read into a local first, or have live/audit/on values) are not kill switches.
-KILL_MODE_VARS = {"SESSION_SUPERVISOR_MODE", "SESSION_CLOSE_GATE_MODE", "CLAUDE_ROSETTA_GATE", "CLAUDE_SHELL_POLICY_AUDIT"}
+# A kill switch is an environment variable a hook compares (lower-cased) with "off" / {"off","0","false"}; each name keeps
+# the values its hook really honours ("== 'off'" honours only off). Mode variables whose "off" disables the gate are listed
+# in KILL_MODE_OFF (they are read into a local first, so the line scan cannot see them). Opt-in variables (default off,
+# enabled by on/1/true) are not kill switches: CLAUDE_ROSETTA_GATE, CLAUDE_SHELL_POLICY_AUDIT.
+KILL_MODE_VARS = {"CLAUDE_ROSETTA_GATE", "CLAUDE_SHELL_POLICY_AUDIT"}
+KILL_MODE_OFF = {"SESSION_SUPERVISOR_MODE": {"off"}, "SESSION_CLOSE_GATE_MODE": {"off"}}
+REG_NO_MORE_ITEMS = 259
 KILL_LINE_RE = re.compile(r"\.lower\(\)\s*(?:==|!=|in)\s*(?:\{[^}]*[\"']off[\"'][^}]*\}|[\"']off[\"'])")
 KILL_NAME_RE = re.compile(r"[\"']([A-Z][A-Z0-9_]{3,})[\"']")
 KILL_OFF_CALL_RE = re.compile(r"\boff\(\s*[\"']([A-Z][A-Z0-9_]{3,})[\"']\s*\)")  # evidence_gate.off(var): indirect name
@@ -596,32 +600,45 @@ def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
             pass
 
 
-def kill_switch_names() -> set[str]:
-    """Kill-switch variable names found in harness/hooks/*.py: names on a line that tests .lower() against off, plus the
-    literal arguments of evidence_gate.off('NAME') (the indirect case, where os.environ.get(var) takes a parameter)."""
-    names: set[str] = set()
+def kill_switch_values() -> dict[str, set[str]]:
+    """Kill-switch variable name -> the values that switch its hook off, from harness/hooks/*.py: names on a line that
+    tests .lower() against off (a set literal with "0" means off/0/false, else only off), the literal arguments of
+    evidence_gate.off('NAME') (off/0/false), and the mode variables of KILL_MODE_OFF."""
+    vals: dict[str, set[str]] = {}
     for f in sorted((HARNESS / "harness" / "hooks").glob("*.py")):
         text = f.read_text(encoding="utf-8", errors="replace")
         for ln in text.splitlines():
-            if KILL_LINE_RE.search(ln):
-                names.update(KILL_NAME_RE.findall(ln))
-        names.update(KILL_OFF_CALL_RE.findall(text))
-    return names - KILL_MODE_VARS
+            m = KILL_LINE_RE.search(ln)
+            if m:
+                honoured = set(KILL_VALUES) if re.search(r"[\"']0[\"']", m.group(0)) else {"off"}
+                for n in KILL_NAME_RE.findall(ln):
+                    vals.setdefault(n, set()).update(honoured)
+        for n in KILL_OFF_CALL_RE.findall(text):
+            vals.setdefault(n, set()).update(KILL_VALUES)
+    for n, v in KILL_MODE_OFF.items():
+        vals.setdefault(n, set()).update(v)
+    return {n: v for n, v in vals.items() if n not in KILL_MODE_VARS}
+
+
+def kill_switch_names() -> set[str]:
+    return set(kill_switch_values())
 
 
 def chk_kill_switch():
     """Report only kill-switch variables set to off/0/false, in the process, user and machine environments."""
-    names = kill_switch_names()
+    honoured = kill_switch_values()
+    names = set(honoured)
+    upper = {n.upper(): n for n in names}  # Windows variable names are case-insensitive
     if not names:
         return NA, "no kill-switch names found in harness/hooks/*.py"
     found, errors = [], []
     for n in sorted(names):
         v = os.environ.get(n)
-        if v is not None and v.strip().lower() in KILL_VALUES:
+        if v is not None and v.strip().lower() in honoured[n]:
             found.append(f"{n}={v} (process)")
     skipped = ""
     if os.name != "nt":
-        skipped = "registry scopes skipped (not Windows)"
+        skipped = "registry scopes not read (not Windows): only the process environment was checked"
     else:
         import winreg
         for scope, sub in REG_SCOPES:
@@ -632,10 +649,13 @@ def chk_kill_switch():
                     while True:
                         try:
                             n, v, _t = winreg.EnumValue(key, i)
-                        except OSError:
-                            break
+                        except OSError as exc:
+                            if REG_NO_MORE_ITEMS in (getattr(exc, "winerror", None), getattr(exc, "errno", None)):
+                                break  # the end of the list
+                            raise  # a real read error: reported below, never taken as "nothing set"
                         i += 1
-                        if n in names and isinstance(v, str) and v.strip().lower() in KILL_VALUES:
+                        canon = upper.get(str(n).upper())
+                        if canon and isinstance(v, str) and v.strip().lower() in honoured[canon]:
                             found.append(f"{n}={v} ({scope})")
             except FileNotFoundError:
                 continue  # key absent: nothing set in this scope
@@ -643,9 +663,11 @@ def chk_kill_switch():
                 errors.append(f"{scope} registry unreadable: {exc}")
     if found:
         return FAIL, ", ".join(found) + (("; " + "; ".join(errors)) if errors else "")
-    if errors:
-        return NA, "; ".join(errors)
-    return OK, skipped or f"{len(names)} kill switches checked, none off"
+    if errors:  # a scope that could not be read is a failed check, not "nothing set" (the audit exit code must show it)
+        return FAIL, "; ".join(errors)
+    if skipped:
+        return NA, skipped
+    return OK, f"{len(names)} kill switches checked, none off"
 
 
 def codex_commands_lacking_flag(cfg, where: str) -> list[str]:
