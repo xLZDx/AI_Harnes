@@ -360,6 +360,7 @@ AGENT_ID_RE = re.compile(r"agentId:\s*([A-Za-z0-9_-]+)")
 NOTIF_ID_RE = re.compile(r"<task-id>\s*([A-Za-z0-9_-]+)\s*</task-id>")
 STILL_RUNNING_RE = re.compile(r"waiting on its own background work|background work of its own still running", re.I)
 RESUMED_RE = re.compile(r'"resumedAgentId"\s*:\s*"([A-Za-z0-9_-]+)"')
+NOTIF_HEAD_RE = re.compile(r"<(?:summary|status)>(.*?)</(?:summary|status)>", re.I | re.S)
 PENDING_MAX_AGE = 30 * 60  # a launch older than this without a notification is treated as dead, not as "still running"
 
 
@@ -390,6 +391,8 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
         from _turn import _rows
         rows = _rows(transcript_path) if transcript_path else []
         pending: dict[str, float] = {}
+        finished_before = set(str(x) for x in (load_state().get("finished_agents") or []))
+        finished = set(finished_before)
         now = time.time()
         for r in rows:
             if r.get("isSidechain"):
@@ -410,6 +413,7 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                     for m in RESUMED_RE.finditer(text):  # SendMessage resumed a finished agent: running again from now
                         try:
                             pending[m.group(1)] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
+                            finished.discard(m.group(1))  # an explicit SendMessage resume is the only way back
                         except (ValueError, TypeError, OverflowError):
                             pass
                 if "<task-notification>" in text:
@@ -417,15 +421,26 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                         m = NOTIF_ID_RE.search(block)
                         if not m:
                             continue
-                        if STILL_RUNNING_RE.search(block):
+                        aid = m.group(1)
+                        # B14/B15: the interim phrase counts only inside <summary> (or <status>), never in the result text
+                        head = " ".join(x.group(1) for x in NOTIF_HEAD_RE.finditer(block.split("</task-notification>")[0]))
+                        if STILL_RUNNING_RE.search(head) and aid not in finished:
                             # an interim notice: the agent stopped a turn but its own background work still runs
                             try:
-                                pending[m.group(1)] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
+                                pending[aid] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
                             except (ValueError, TypeError, OverflowError):
                                 pass
                         else:
-                            pending.pop(m.group(1), None)
-        return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE]
+                            pending.pop(aid, None)
+                            finished.add(aid)  # an id that finished never counts as running again
+        if finished != finished_before:
+            try:
+                state = load_state()
+                state["finished_agents"] = sorted(finished)[-500:]
+                save_state(state)
+            except Exception:  # noqa: BLE001
+                pass
+        return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]
     except Exception:  # noqa: BLE001  detection must never break a gate
         return []
 

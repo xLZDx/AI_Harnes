@@ -101,6 +101,21 @@ def _in_quote(line: str, pos: int) -> bool:
     return bool(q)
 
 
+PY_SHELLS_OUT_RE = re.compile(
+    r"os\s*\.\s*(?:system|popen|exec\w*|spawn\w*)"
+    r"|from\s+os\s+import\b[^\n]*\b(?:system|popen|exec\w*|spawn\w*|\*)"
+    r"|subprocess|shell\s*=\s*True"
+    r"|__import__\s*\("
+    r"|pty\s*\.\s*spawn|\bpty\b"
+    r"|ctypes"
+    r"|importlib"
+    r"|\bexec\s*\(|\beval\s*\("
+    r"|commands\s*\.\s*getoutput|\bcommands\b"
+    r"|from\s+os\s+import\s*\("
+    r"|\b(?:system|popen)\s*\(|\bgetattr\s*\("
+)
+
+
 def strip_heredocs(cmd: str) -> str:
     """Heredoc bodies are data: drop them through the terminator line. Keep the body (as ordinary lines, to be analysed)
     only when the heredoc feeds a shell or python interpreter."""
@@ -134,7 +149,8 @@ def strip_heredocs(cmd: str) -> str:
                 # backticks there are Python text, not shell substitution, so they are neutralised
                 # ...unless the python code starts a shell (os.system, os.popen, subprocess, shell=True): then a `$(`
                 # in its strings really runs, so the body stays as it is
-                shells_out = re.search(r"os\.(system|popen)|subprocess|shell\s*=\s*True", "\n".join(body))
+                # B14: fail-closed on every spelling that starts a shell or process (a few harmless extra matches are fine)
+                shells_out = PY_SHELLS_OUT_RE.search("\n".join(body))
                 out.extend([b.replace("$(", "$ (").replace("`", "'") for b in body] if py_body and not shells_out else body)
     return "\n".join(out)
 
