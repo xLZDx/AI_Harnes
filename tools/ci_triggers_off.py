@@ -286,7 +286,8 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
                 note = "; the process tree could not be confirmed dead, a git process (and index.lock) may remain" + note
             what = (f"timeout after {limit:g}s (the run budget is nearly spent; per-call limit {GIT_TIMEOUT}s)" if cut
                     else f"timeout after {GIT_TIMEOUT}s")
-            _RUN_IN_FLIGHT = False  # the caller reads e.kill_confirmed
+            if dead:  # an unconfirmed kill keeps the flag, so a later untagged interrupt still fails closed
+                _RUN_IN_FLIGHT = False
             raise GitTimeout(f"{what}: {' '.join(str(c) for c in cmd[:6])}{note}", kill_confirmed=dead) from e
     except GitTimeout:
         raise
@@ -309,7 +310,7 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         except BaseException:  # noqa: BLE001
             pass
         tag(dead)
-        if dead:
+        if dead or (p is None and not isinstance(ex, KeyboardInterrupt)):  # no process was ever started: nothing alive
             _RUN_IN_FLIGHT = False
         raise
     _RUN_IN_FLIGHT = False
