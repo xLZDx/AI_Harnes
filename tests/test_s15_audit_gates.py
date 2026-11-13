@@ -113,7 +113,8 @@ def test_client_rows_probe_push_from_no_approval_no_remote_repo_and_remove_it():
 
 
 def test_project_row_skips_push_only_for_approval_matching_project_head():
-    with tempfile.TemporaryDirectory() as tmp:
+    # ignore_cleanup_errors: Windows briefly holds git files (WinError 32) after the audit; assertions are unchanged.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
         home = _combined_home()
         harness = _approved_repo(root)
