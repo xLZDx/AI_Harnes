@@ -175,6 +175,45 @@ def test_kept_foreign_hook_never_listed_as_no_longer_called():
     assert "mine_only.py" in "".join(kept_lines(out)), out
 
 
+# ---------------------------------------------------------------- S17 re-review fix: removed list and empty group
+def removed_lines(out):
+    return [ln for ln in out.splitlines() if ln.startswith("removed (harness location, not in the new set):")]
+
+
+def test_ps1_hook_under_userprofile_claude_hooks_is_dropped_and_printed_removed():
+    src, home, root = mk(b"{}")
+    cmd = r"powershell -File %USERPROFILE%\.claude\hooks\guard.ps1"
+    (home / "settings.json").write_bytes(old_text({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]}))
+    rc, out, _ = install(home, src, root)
+    assert rc == 0, out
+    assert "Stop" not in hooks_of(home), hooks_of(home)
+    assert removed_lines(out) == ["removed (harness location, not in the new set): " + cmd], out
+    assert not kept_lines(out), out
+
+
+def test_old_hook_equal_to_a_new_set_command_is_not_printed_as_removed():
+    src, home, root = mk(b"{}")
+    same = "python " + str(home / "hooks" / "keep.py")
+    (src / "settings.hooks.json").write_text(json.dumps(
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": same}]}]}}), encoding="utf-8")
+    gone = "python " + str(home / "hooks" / "retired.py")
+    old = {"PreToolUse": [{"hooks": [{"type": "command", "command": same}]}, {"hooks": [{"type": "command", "command": gone}]}]}
+    (home / "settings.json").write_bytes(old_text(old))
+    rc, out, _ = install(home, src, root)
+    assert rc == 0, out
+    assert removed_lines(out) == ["removed (harness location, not in the new set): " + gone], out
+    assert same not in "".join(removed_lines(out)), out
+
+
+def test_group_with_empty_hooks_list_survives_install():
+    src, home, root = mk(b"{}")
+    empty = {"matcher": "Bash", "hooks": []}
+    (home / "settings.json").write_bytes(old_text({"PreToolUse": [empty]}))
+    rc, out, _ = install(home, src, root)
+    assert rc == 0, out
+    assert hooks_of(home)["PreToolUse"] == NEW_GROUPS + [empty], hooks_of(home)["PreToolUse"]
+
+
 # ---------------------------------------------------------------- criterion 4
 def test_snapshot_settings_is_byte_identical_and_restore_brings_it_back():
     raw = (b'{\r\n  "model":   "x",\r\n\t"hooks": {"PreToolUse": [{"matcher":"mcp__claude-in-chrome__.*",'
