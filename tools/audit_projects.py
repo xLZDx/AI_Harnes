@@ -514,7 +514,28 @@ def _codex_key(p) -> str:
 
 def _codex_executable() -> str | None:
     """Find the installed Codex executable without depending on its package-manager layout."""
-    return shutil.which("codex.exe") or shutil.which("codex")
+    found = shutil.which("codex.exe") or shutil.which("codex")
+    if found and os.name == "nt" and Path(found).suffix.lower() not in (".exe", ".com"):
+        # B28a: the npm shim (codex / codex.cmd) starts node, which starts the real codex.exe; killing the shim leaves the
+        # real app-server alive. The npm package keeps the vendor binary at
+        # <shim dir>/node_modules/@openai/codex/node_modules/@openai/codex-<platform>/vendor/<triple>/bin/codex.exe.
+        base = Path(found).resolve().parent / "node_modules" / "@openai" / "codex"
+        for pattern in ("node_modules/@openai/codex-*/vendor/*/bin/codex.exe", "vendor/*/bin/codex.exe"):
+            vendor = sorted(base.glob(pattern))
+            if vendor:
+                return str(vendor[0])
+    return found
+
+
+def _kill_process_tree(proc) -> None:
+    """Stop the app-server and everything it started. On Windows `taskkill /T /F` also covers a shim fallback."""
+    if proc.poll() is None and os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if proc.poll() is None:
+        proc.kill()
 
 
 def _codex_rpc_response(proc, output_queue, request_id: int, timeout: int) -> dict:
@@ -592,8 +613,7 @@ def codex_hooks_list(cwds: list[Path]) -> tuple[dict[str, dict], str | None]:
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         return {}, f"Codex app-server hooks/list failed: {exc}"
     finally:
-        if proc.poll() is None:
-            proc.kill()
+        _kill_process_tree(proc)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -632,10 +652,7 @@ def chk_kill_switch():
     if not names:
         return NA, "no kill-switch names found in harness/hooks/*.py"
     found, errors = [], []
-    for n in sorted(names):
-        v = os.environ.get(n)
-        if v is not None and v.strip().lower() in honoured[n]:
-            found.append(f"{n}={v} (process)")
+    reg: dict[str, dict[str, str]] = {n: {} for n in names}  # name -> scope -> raw registry value
     skipped = ""
     if os.name != "nt":
         skipped = "registry scopes not read (not Windows): only the process environment was checked"
@@ -655,12 +672,23 @@ def chk_kill_switch():
                             raise  # a real read error: reported below, never taken as "nothing set"
                         i += 1
                         canon = upper.get(str(n).upper())
-                        if canon and isinstance(v, str) and v.strip().lower() in honoured[canon]:
-                            found.append(f"{n}={v} ({scope})")
+                        if canon and isinstance(v, str):
+                            reg[canon][scope] = v
             except FileNotFoundError:
                 continue  # key absent: nothing set in this scope
             except OSError as exc:
                 errors.append(f"{scope} registry unreadable: {exc}")
+    for n in sorted(names):
+        # a newly started client sees the user scope over the machine scope; a running session keeps its inherited value
+        scopes = reg[n]
+        eff_scope = "user" if "user" in scopes else ("machine" if "machine" in scopes else None)
+        eff = scopes.get(eff_scope) if eff_scope else None
+        if eff is not None and eff.strip().lower() in honoured[n]:
+            shadow = [f"{s}={scopes[s]}" for s in scopes if s != eff_scope and scopes[s] != eff]
+            found.append(f"{n}={eff} ({eff_scope}{'; overrides ' + ', '.join(shadow) if shadow else ''})")
+        proc_v = os.environ.get(n)
+        if proc_v is not None and proc_v != eff and proc_v.strip().lower() in honoured[n]:
+            found.append(f"{n}={proc_v} (this process)")
     if found:
         return FAIL, ", ".join(found) + (("; " + "; ".join(errors)) if errors else "")
     if errors:  # a scope that could not be read is a failed check, not "nothing set" (the audit exit code must show it)
@@ -729,6 +757,30 @@ def chk_codex_cfg(cwd: Path | None = None, home: bool = False):
         probs.append("Codex app-server warnings: " + json.dumps(warnings, ensure_ascii=False))
     if errors:
         probs.append("Codex app-server errors: " + json.dumps(errors, ensure_ascii=False))
+
+    if home:
+        # B28b: every harness hook (a command that runs run_hook.py) configured in ~/.codex/hooks.json must be reported
+        # by hooks/list for that home as loaded, and hooks/list must not report it as disabled (field "enabled").
+        user_groups = (cfg.get("hooks") or {}) if isinstance(cfg, dict) else {}
+        listed_user = [h for h in hooks if h.get("source") == "user"
+                       and _codex_key(h.get("sourcePath", "")) == _codex_key(hp)]
+        loaded_ids = Counter(listed_hook_identity(h) for h in listed_user)
+        for event, groups in (user_groups.items() if isinstance(user_groups, dict) else []):
+            for group in (groups if isinstance(groups, list) else []):
+                for handler in (group.get("hooks", []) if isinstance(group, dict) else []):
+                    if not isinstance(handler, dict):
+                        continue
+                    command = handler.get("commandWindows") or handler.get("command") or ""
+                    if "run_hook.py" not in str(command):
+                        continue
+                    ident = codex_hook_identity(event, group.get("matcher"), handler)
+                    if loaded_ids[ident] <= 0:
+                        probs.append(f"~/.codex/hooks.json harness hook not loaded by hooks/list: {event}/{group.get('matcher') or '*'}: {hook_name(str(command))}")
+                    else:
+                        loaded_ids[ident] -= 1
+        for h in listed_user:
+            if "run_hook.py" in str(h.get("command") or "") and h.get("enabled") is False:
+                probs.append(f"~/.codex/hooks.json harness hook disabled in hooks/list: {h.get('eventName')}/{h.get('matcher') or '*'}: {hook_name(str(h.get('command')))}")
 
     project_hooks_path = target / ".codex" / "hooks.json"
     if project_hooks_path.is_file():
