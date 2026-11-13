@@ -190,12 +190,12 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
 
         def apply(d: dict):
             now = time.time()
-            for e in d["agents"]:
+            if aid and any(e.get("agent_id") == aid for e in d["agents"]):
+                res["dup"] = True  # the same agent reported twice, also after its stop: never a second entry
+                return False
+            for e in reversed(d["agents"]):  # newest first: a fresh start never claims a dead run's older entry
                 if e.get("stop") or e.get("type") != name:
                     continue
-                if aid and e.get("agent_id") == aid:
-                    res["dup"] = True  # the same agent reported twice
-                    return False
                 if aid and e.get("agent_id"):
                     continue  # that entry already belongs to another agent: never claim it
                 if tuid and e.get("tool_use_id") == tuid:
@@ -261,14 +261,17 @@ def announce_stop(data: dict, client: str) -> None:
             return True
 
         def apply(d: dict):
-            if aid:  # the start recorded this agent's id: finish exactly that entry
+            if aid:
+                # a stop that names its agent finishes exactly that agent's entry, or nothing: no fallback to another
+                # run (a duplicate stop, or a start that was lost, would otherwise finish a dead run's entry and let the
+                # ledger credit a run that never finished). Fail closed: the live run stays unfinished.
                 for e in d["agents"]:
                     if e.get("agent_id") == aid and not e.get("stop"):
                         return finish(e)
-            # oldest unfinished entry of the same type (and session when known); an entry that carries another agent's
-            # id is never finished here (a run killed by an app restart would otherwise take a later run's stop)
+                return False
+            # no agent id in the payload: oldest unfinished entry of the same type (and session when known)
             for e in d["agents"]:
-                if (e.get("type") == name and not e.get("stop") and not (aid and e.get("agent_id"))
+                if (e.get("type") == name and not e.get("stop")
                         and (not data.get("session_id") or e.get("session") in ("", str(data.get("session_id"))[:64]))):
                     return finish(e)
             return False
