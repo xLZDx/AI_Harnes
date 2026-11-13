@@ -96,6 +96,12 @@ QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"
 # announce_start (3 s) stays under the 10 s hook budget.
 BIND_DEADLINE_S = 5.0
 BIND_GIT_TIMEOUT_S = 2
+# The hook has 10 s in total, and the interpreter start is not ours. announce_start works to one deadline at t0 + 8.0 s;
+# the state lock (mutate waits up to 1 s) keeps LOCK_RESERVE_S of it, and no git call is started with less than
+# MIN_GIT_S left (fail closed instead).
+HOOK_BUDGET_S = 8.0
+LOCK_RESERVE_S = 1.2
+MIN_GIT_S = 0.2
 BIND_TEXT_MAX = 65536  # regex cost: only the first 64 KB of the task text is scanned
 BIND_SPACE_WORDS = 4  # B40: an unquoted path with spaces is rebuilt from at most this many following words
 SPACE_WORD_RE = re.compile(r" ([^\s\"'`<>|*?,;()\[\]]+)")
@@ -142,15 +148,21 @@ def _under_known_root(d: Path, roots: set) -> bool:
     return False
 
 
-def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50) -> str:
+def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50, hook_deadline=None) -> str:
     """B26: when the session cwd is not a repository (a Codex thread in Documents\\Codex, a Claude session reset to
     D:\\Repo), take the project from the absolute paths in the agent's own task text that lie inside a git repo (a
     worktree maps to its main checkout). The run is bound only when all such paths name ONE repository; paths in two
     different repositories, a git timeout or no repository at all give '' (the ledger then refuses the run, fail
-    closed), so a run is never credited to a project it only mentioned."""
+    closed), so a run is never credited to a project it only mentioned.
+    hook_deadline (time.monotonic value, optional): the caller's whole-hook deadline; the search ends LOCK_RESERVE_S before
+    it and every git call is cut to the time left."""
     try:
         import _agentio
         deadline = time.monotonic() + BIND_DEADLINE_S
+        hard = deadline + BIND_GIT_TIMEOUT_S  # no git call may run past this moment
+        if hook_deadline is not None:
+            deadline = min(deadline, hook_deadline - LOCK_RESERVE_S)
+            hard = hook_deadline - LOCK_RESERVE_S
         text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))[:BIND_TEXT_MAX]
         tried = set()
         roots = set()
@@ -184,8 +196,11 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
                 if extra > max_dirs * 2:
                     return ""
             tried.add(key)
+            git_s = min(BIND_GIT_TIMEOUT_S, hard - time.monotonic())
+            if git_s < MIN_GIT_S:
+                return ""  # no time left for another git call: fail closed
             r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(d),
-                                 timeout=BIND_GIT_TIMEOUT_S)
+                                 timeout=git_s)
             if r.returncode in (124, 127):
                 # git timed out or cannot start: stop rather than bind to a later, possibly unrelated path
                 return ""
@@ -240,11 +255,14 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         name = str(ti.get("subagent_type") or ti.get("agent_type") or "agent").strip()[:60]
         model = (model or str(ti.get("model") or "") or "policy").strip()[:40]
         effort = (effort or str(ti.get("reasoning_effort") or ti.get("effort") or "") or "policy").strip()[:20]
+        hook_deadline = time.monotonic() + HOOK_BUDGET_S
         task = task_id(str(data.get("cwd") or ""))
         session = str(data.get("session_id") or "")[:64]
         tuid = str(data.get("tool_use_id") or "")[:64]
+        root_s = min(3.0, hook_deadline - LOCK_RESERVE_S - time.monotonic())
+        project = project_root(str(data.get("cwd") or ""), timeout=root_s) if root_s >= MIN_GIT_S else ""
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                 "project": project_root(str(data.get("cwd") or ""), timeout=3) or project_from_text(ti),
+                 "project": project or project_from_text(ti, hook_deadline=hook_deadline),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
         aid = str(agent_id or "")[:64]
         if aid:

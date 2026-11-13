@@ -83,6 +83,9 @@ class GitTimeout(OSError):
         self.kill_confirmed = kill_confirmed
 
 
+BUDGET_FLOOR_SECONDS = 10.0  # a git call is never given less than this by the run budget (still capped by GIT_TIMEOUT)
+RUN_DEADLINE: float | None = None  # time.monotonic() value at which the run budget is spent; set by main()
+JOB_FAILURES: list[str] = []  # why a Job Object could not be set up (first one is printed once by main())
 _WIN_API = None
 
 
@@ -178,8 +181,8 @@ def _job_close(job, keep_survivors: bool) -> None:
         return
     try:
         w = _win_job_api()
-        if keep_survivors:
-            _job_set_flags(w, job, 0)
+        if keep_survivors and not _job_set_flags(w, job, 0):
+            return  # the flag could not be cleared: leak the handle until this process exits, so daemons survive
         w.k.CloseHandle(job)
     except Exception:  # noqa: BLE001
         pass
@@ -203,10 +206,15 @@ def _kill_tree(p, job, why: str) -> tuple[bool, str]:
             if job is not None:
                 why = "TerminateJobObject failed"
             note = f"; no Job Object ({why}): fell back to taskkill /T /F, which can miss a process started by a git hook"
-            try:
-                t = subprocess.run([TASKKILL, "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=20)
+        # Also taskkill the tree of the root pid, always: cmd\git.exe is a launcher that can start mingw64\bin\git.exe
+        # before AssignProcessToJobObject ran, so that child is outside the job. Runs before p is reaped, so the pid
+        # cannot have been reused yet. After a successful TerminateJobObject its result only adds to the kill.
+        try:
+            t = subprocess.run([TASKKILL, "/T", "/F", "/PID", str(p.pid)], capture_output=True, timeout=20)
+            if not done:
                 dead = t.returncode in (0, 128) or p.poll() is not None  # 128 = pid not found = already gone
-            except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError):
+            if not done:
                 dead = False
     try:
         p.kill()
@@ -226,10 +234,17 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     posix = os.name != "nt"
     if posix:
         kw["start_new_session"] = True
+    limit, cut = GIT_TIMEOUT, False
+    if RUN_DEADLINE is not None:  # the run budget caps every call, with a floor so a call is never cut to nothing
+        eff = min(GIT_TIMEOUT, max(RUN_DEADLINE - time.monotonic(), BUDGET_FLOOR_SECONDS))
+        if eff < GIT_TIMEOUT:
+            limit, cut = eff, True
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
     job, why = (None, "") if posix else _job_attach(p.pid)
+    if job is None and why and not JOB_FAILURES:
+        JOB_FAILURES.append(why)  # only the first reason of the run; main() prints it once
     try:
-        out, err = p.communicate(timeout=GIT_TIMEOUT)
+        out, err = p.communicate(timeout=limit)
     except subprocess.TimeoutExpired as e:
         try:
             dead, note = _kill_tree(p, job, why)
@@ -238,14 +253,20 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         _job_close(job, keep_survivors=False)
         if not dead:
             note = "; the process tree could not be confirmed dead, a git process (and index.lock) may remain" + note
-        raise GitTimeout(f"timeout after {GIT_TIMEOUT}s: {' '.join(str(c) for c in cmd[:6])}{note}",
-                         kill_confirmed=dead) from e
-    except BaseException:
+        what = (f"timeout after {limit:g}s (the run budget is nearly spent; per-call limit {GIT_TIMEOUT}s)" if cut
+                else f"timeout after {GIT_TIMEOUT}s")
+        raise GitTimeout(f"{what}: {' '.join(str(c) for c in cmd[:6])}{note}", kill_confirmed=dead) from e
+    except BaseException as ex:
+        dead = False
         try:  # never raise over the original exception (for example a second Ctrl-C while killing)
-            _kill_tree(p, job, why)
+            dead, _ = _kill_tree(p, job, why)
         except BaseException:  # noqa: BLE001
             pass
         _job_close(job, keep_survivors=False)
+        try:
+            ex.ci_kill_confirmed = dead  # lets the caller's interrupt handler decide whether files may be restored
+        except Exception:  # noqa: BLE001
+            pass
         raise
     _job_close(job, keep_survivors=True)
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
@@ -809,27 +830,47 @@ def _rmtree_err(path: Path) -> str | None:
     return f"{path} still exists; delete it by hand" if path.exists() else None
 
 
-def _remove_worktree(repo: Path, wt, notes: list[str]) -> None:
+def _remove_worktree(repo: Path, wt, notes: list[str]) -> bool:
     """worktree remove, then a shutil.rmtree fallback for a leftover directory (reported if that fails too), then prune.
-    Every return code is checked; 'remove' failing because the directory is already gone is not a failure."""
+    Every return code is checked; 'remove' failing because the directory is already gone is not a failure, and a remove
+    failure is dropped from the notes when the fallback then removed the directory. Returns True when something is
+    left behind (the directory, or a registration that prune could not drop)."""
     wtp = Path(wt)
+    left = False
 
     def remove() -> str | None:
         r = git(repo, "worktree", "remove", "--force", str(wtp))
         return _git_err(r) if r.returncode != 0 and wtp.exists() else None
 
+    n0 = len(notes)
+    _step(notes, "worktree remove", remove)
+    remove_note = len(notes) > n0
+
     def leftover() -> str | None:
+        nonlocal left, remove_note
         if not wtp.exists():
             return None
         err = _rmtree_err(wtp)
-        return f"leftover directory {wtp} could not be removed ({err})" if err else None
+        if err:
+            left = True
+            return f"leftover directory {wtp} could not be removed ({err})"
+        if remove_note:
+            del notes[n0]  # the fallback succeeded: the earlier 'worktree remove' failure no longer matters
+            remove_note = False
+        return None
 
-    _step(notes, "worktree remove", remove)
     _step(notes, "worktree dir", leftover)
+    if wtp.exists():
+        left = True  # leftover() itself failed with an OSError that _step turned into a note
+    n1 = len(notes)
     _step(notes, "worktree prune", lambda: _git_err(git(repo, "worktree", "prune")))
+    return left or len(notes) > n1
 
 
-def _drop_private_ref(repo: Path, ref: str, notes: list[str]) -> None:
+def _drop_private_ref(repo: Path, ref: str, notes: list[str]) -> bool:
+    """Delete the private ref, checking every return code. Returns True when the ref may still exist."""
+    n0 = len(notes)
+
     def drop() -> str | None:
         v = git(repo, "rev-parse", "-q", "--verify", ref)
         if v.returncode == 1:
@@ -839,6 +880,7 @@ def _drop_private_ref(repo: Path, ref: str, notes: list[str]) -> None:
         return _git_err(git(repo, "update-ref", "-d", ref))  # private ref: no leftover branch is ever created
 
     _step(notes, "private ref " + ref, drop)
+    return len(notes) > n0
 
 
 def cleanup_run(repo: Path, j: dict, jp: Path | None) -> str:
@@ -846,15 +888,19 @@ def cleanup_run(repo: Path, j: dict, jp: Path | None) -> str:
     Returns "" or text to append to the row: '; cleanup incomplete: ...' for leftovers and '; WARNING journal ...' when
     the journal could not be deleted (the next run then refuses until --recover removes it)."""
     notes: list[str] = []
+    left = False
     if j.get("worktree"):
-        _remove_worktree(repo, j["worktree"], notes)
+        left = _remove_worktree(repo, j["worktree"], notes) or left
     if j.get("ref"):
-        _drop_private_ref(repo, j["ref"], notes)
-    for d in (j.get("backup_dir"), j.get("tmpdir")):
-        if d and Path(d).exists():
-            _step(notes, f"remove {d}", lambda d=d: _rmtree_err(Path(d)))
+        left = _drop_private_ref(repo, j["ref"], notes) or left
+    if not left:  # with a worktree or ref left behind the backups stay too, so a second --recover is as safe as the first
+        for d in (j.get("backup_dir"), j.get("tmpdir")):
+            if d and Path(d).exists():
+                _step(notes, f"remove {d}", lambda d=d: _rmtree_err(Path(d)))
     out = ("; cleanup incomplete: " + "; ".join(notes)) if notes else ""
-    if jp is not None:  # last, and even after a failed step: the leftovers are private, the journal must not block runs
+    if left and jp is not None:  # keep the journal: --recover retries this cleanup
+        return out + "; journal kept, run --recover"
+    if jp is not None:  # last
         try:
             jp.unlink(missing_ok=True)
         except OSError as e:
@@ -882,7 +928,7 @@ def recover(repo: Path) -> str:
         return f"ERROR journal {jp} unreadable: {e}"
     if j["phase"] == "done":
         w = cleanup_run(repo, j, jp)
-        if "WARNING journal" in w:
+        if "WARNING journal" in w or "journal kept" in w:
             return f"ERROR run had completed at {j['new'][:7]}{w}"
         return f"RECOVERED run had completed at {j['new'][:7]}; journal removed{w}"
     LEFTOVER_ASIDES.clear()
@@ -893,7 +939,7 @@ def recover(repo: Path) -> str:
         return "ERROR recovery incomplete, journal kept: " + "; ".join(errs) + kept
     extra = drift(repo, j)
     w = cleanup_run(repo, j, jp)
-    return (f"{'ERROR' if 'WARNING journal' in w else 'RECOVERED'} from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, "
+    return (f"{'ERROR' if 'WARNING journal' in w or 'journal kept' in w else 'RECOVERED'} from phase {j['phase']}: branch {j['branch']} at {j['old'][:7]}, "
             f"{len(j['files'])} file(s) restored{extra}{kept}{w}")
 
 
@@ -913,14 +959,26 @@ def process_dirty(repo: Path, include_deploy: bool, scratch: Path) -> str:
 
 def _dirty_cleanup(repo: Path, st: dict, res: str) -> str:
     notes: list[str] = []
+    left = False
     ref, wt = st.get("ref"), st.get("wt")
     if wt:
-        _remove_worktree(repo, wt, notes)
+        left = _remove_worktree(repo, wt, notes) or left
     if ref:
-        _drop_private_ref(repo, ref, notes)
+        left = _drop_private_ref(repo, ref, notes) or left
     if notes:
         res += "; cleanup incomplete: " + "; ".join(notes)
     jp = st.get("jp")
+    if left:
+        # a worktree or ref is left behind: the row is an ERROR and a journal stays so that --recover can retry the
+        # cleanup (a finished run has deleted its journal already: write a phase-done one; a rollback journal is kept as is)
+        res = res if res.startswith("ERROR") else "ERROR " + res
+        try:
+            j = st.get("j")
+            if j is not None and jp and not Path(jp).exists():
+                j["phase"] = "done"
+                write_journal(Path(jp), j)
+        except (OSError, TypeError, ValueError) as e:
+            res += f"; journal for the cleanup retry could not be written ({e})"
     try:
         if res.startswith("ERROR") and jp and Path(jp).exists():
             res += "; journal kept, run --recover"
@@ -963,6 +1021,7 @@ def _dirty_run(repo: Path, include_deploy: bool, scratch: Path, st: dict) -> str
     j: dict = {"version": 1, "repo": str(repo), "branch": branch, "old": old, "new": old, "ref": ref,
                "worktree": str(wt), "backup_dir": str(scratch / f"cioff-backup-{run}"), "files": {},
                "ita": ita, "snap_stage": snap_stage, "snap_status": snap_status, "phase": "prepared"}
+    st["j"] = j  # lets the caller write a cleanup-retry journal when a worktree or ref cannot be removed
     if a.returncode != 0:
         cleanup_run(repo, j, None)
         return "ERROR worktree add failed: " + a.stderr.strip()[-300:]
@@ -1082,6 +1141,85 @@ def process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
     except TimeoutError:
         row["status"] = f"SKIP {LOCK_BUSY}"
     return row
+
+
+INDEX_LOCK_WAIT = 2.0  # seconds to wait for .git/index.lock to disappear after a kill
+
+
+def _lock_gone_after_kill(repo: Path) -> bool:
+    """True when <git dir>/index.lock is absent, waiting up to INDEX_LOCK_WAIT s. A git killed in the middle of its work
+    leaves its lock behind, so a lock that stays means the kill cannot be treated as clean."""
+    r = git(repo, "rev-parse", "--git-path", "index.lock")
+    if r.returncode != 0:
+        return False
+    lp = Path(r.stdout.strip())
+    if not lp.is_absolute():
+        lp = repo / lp
+    deadline = time.monotonic() + INDEX_LOCK_WAIT
+    while lp.exists():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def _interrupted_cleanup(repo: Path, touched: list[str], head0: str, kill_confirmed: bool, restore) -> str:
+    """After a git timeout or Ctrl-C in the clean path: unstage, say what state git may be in, and call restore() only
+    when it is provably safe: the killed git is confirmed dead (and its index.lock is gone), HEAD is readable and equal
+    to head0 (read before any file was written), and the index reset worked. Returns the text to append to the row."""
+    if not touched:  # `git reset --` without paths would reset the whole index; nothing of ours was written anyway
+        return "; interrupted before any file was written, nothing to undo; files restored"
+    note = ""
+    safe = bool(kill_confirmed)
+    if safe:
+        try:
+            if not _lock_gone_after_kill(repo):
+                safe = False
+                note += f"; index.lock still present {INDEX_LOCK_WAIT:g}s after the kill, a git process may still be running"
+        except OSError as e2:
+            safe = False
+            note += f"; index.lock could not be checked ({e2})"
+    else:
+        note += "; the interrupted git was not confirmed killed, it may still write"
+    try:
+        rr = git(repo, "reset", "-q", "--", *touched)
+        if rr.returncode != 0:
+            safe = False
+            note += "; index reset failed (" + rr.stderr.strip()[-80:].replace("\n", " ") + "), touched paths may stay staged"
+    except OSError as e2:
+        safe = False
+        note += f"; index reset failed ({e2}), touched paths may stay staged"
+    try:
+        hr = git(repo, "rev-parse", "HEAD")
+        head1 = hr.stdout.strip() if hr.returncode == 0 else ""
+        if not head1:
+            safe = False
+            note += "; HEAD unreadable after the interruption, a commit may have landed"
+        elif not head0:
+            safe = False
+            note += "; HEAD before the run unknown"
+        elif head1 != head0:
+            safe = False
+            note += f"; HEAD moved to {head1[:12]}, the commit landed"
+        else:
+            note += "; HEAD unchanged, no commit landed"
+    except OSError as e2:
+        safe = False
+        note += f"; HEAD could not be read ({e2}), a commit may have landed"
+    try:
+        if git_dir_has(repo, "index.lock"):
+            note += "; a stale .git/index.lock exists, remove it once no git process runs"
+    except OSError:
+        pass
+    if safe:
+        try:
+            restore()
+            note += "; files restored"
+        except OSError as e3:  # keep everything said so far and add the error
+            note += f"; files NOT fully restored ({e3}); check git status"
+    else:
+        note += "; files kept as written (not restored, so the tree matches what may be committed); check git status"
+    return note
 
 
 def _process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False,
@@ -1217,50 +1355,13 @@ def _process(repo: Path, include_deploy: bool, dry: bool, dirty_ok: bool = False
         sha = git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
         row["status"] = f"CHANGED {sha}"
     except GitTimeout as e:  # add or commit hung: unstage, restore files, and say what state git may be in
-        note = ""
-        # restore only when the killed git is confirmed dead, HEAD is readable and unchanged, and the index reset worked
-        safe_to_restore = bool(e.kill_confirmed)
-        if not safe_to_restore:
-            note += "; the timed-out git was not confirmed killed, it may still write"
+        row["status"] = f"ERROR {e}{_interrupted_cleanup(repo, touched, head0, e.kill_confirmed, restore)}"
+    except KeyboardInterrupt as ki:  # Ctrl-C: the same decision as for a timeout, then the interrupt goes on
         try:
-            rr = git(repo, "reset", "-q", "--", *touched)
-            if rr.returncode != 0:
-                safe_to_restore = False
-                note += "; index reset failed (" + rr.stderr.strip()[-80:].replace("\n", " ") + "), touched paths may stay staged"
-        except OSError as e2:
-            safe_to_restore = False
-            note += f"; index reset failed ({e2}), touched paths may stay staged"
-        try:
-            hr = git(repo, "rev-parse", "HEAD")
-            head1 = hr.stdout.strip() if hr.returncode == 0 else ""
-            if not head1:
-                safe_to_restore = False
-                note += "; HEAD unreadable after the timeout, a commit may have landed"
-            elif not head0:
-                safe_to_restore = False
-                note += "; HEAD before the run unknown"
-            elif head1 != head0:
-                safe_to_restore = False
-                note += f"; HEAD moved to {head1[:12]}, the commit landed"
-            else:
-                note += "; HEAD unchanged, no commit landed"
-        except OSError as e2:
-            safe_to_restore = False
-            note += f"; HEAD could not be read ({e2}), a commit may have landed"
-        try:
-            if git_dir_has(repo, "index.lock"):
-                note += "; a stale .git/index.lock exists, remove it once no git process runs"
-        except OSError:
-            pass
-        if safe_to_restore:
-            try:
-                restore()
-                note += "; files restored"
-            except OSError as e3:  # keep everything said so far and add the error
-                note += f"; files NOT fully restored ({e3}); check git status"
-        else:
-            note += "; files kept as written (not restored, so the tree matches what may be committed); check git status"
-        row["status"] = f"ERROR {e}{note}"
+            ki.ci_note = _interrupted_cleanup(repo, touched, head0, getattr(ki, "ci_kill_confirmed", True), restore)
+        except BaseException as e2:  # noqa: BLE001 - never raise over the original interrupt
+            ki.ci_note = f"; interrupt cleanup failed ({type(e2).__name__}: {e2})"
+        raise
     except Exception as e:  # noqa: BLE001 - report and restore
         extra = ""
         try:
@@ -1282,7 +1383,15 @@ def print_table(rows: list[dict]) -> None:
         print(fmt.format(*d))
 
 
+def print_job_note() -> None:
+    """Say once per run why a Job Object could not be set up (timeouts then used the taskkill fallback)."""
+    if JOB_FAILURES:
+        print(f"NOTE: Job Object unavailable ({JOB_FAILURES[0]}); git timeouts in this run fall back to taskkill /T /F, "
+              "which can miss a process started by a git hook.")
+
+
 def main() -> int:
+    global RUN_DEADLINE
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--project")
@@ -1309,6 +1418,8 @@ def main() -> int:
         projects.append(d)
     rows: list[dict] = []
     started = time.monotonic()
+    RUN_DEADLINE = started + a.budget if a.budget > 0 else None  # caps every git call (see _run)
+    JOB_FAILURES.clear()
     current: Path | None = None
     try:
         for d in projects:
@@ -1322,20 +1433,29 @@ def main() -> int:
             except (OSError, PermissionError) as e:
                 rows.append({"repo": d.name, "branch": "", "files": "", "trig": "", "status": f"ERROR {type(e).__name__}: {e}"})
             current = None
-    except KeyboardInterrupt:
-        hint = ""
+    except KeyboardInterrupt as ki:
+        note = getattr(ki, "ci_note", "")
         if current is not None:
             try:  # the interrupted project may have left a journal; say how to roll it back
                 left = journal_path(current).exists()
             except Exception:  # noqa: BLE001 - never raise from the interrupt handler
                 left = False
-            hint = f"; journal kept, run --recover --project {current.name}" if left else ""
+            if left:
+                tail = f"; journal kept, run --recover --project {current.name}"
+            elif "files restored" in note:
+                tail = ""
+            else:
+                tail = f"; files may be modified or staged; check git status in {current}"
             rows.append({"repo": current.name, "branch": "", "files": "", "trig": "",
-                         "status": f"ERROR interrupted (Ctrl-C){hint}"})
+                         "status": f"ERROR interrupted (Ctrl-C){note}{tail}"})
         print_table(rows)
         print(f"Interrupted: {len(rows)} of {len(projects)} project(s) have a row above; the rest were not processed.")
+        print_job_note()
         return 130
+    finally:
+        RUN_DEADLINE = None
     print_table(rows)
+    print_job_note()
     return 1 if any(r["status"].startswith("ERROR") for r in rows) else 0
 
 
