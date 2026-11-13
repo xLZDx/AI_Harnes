@@ -213,6 +213,8 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
                     e.setdefault("sources", ["pre"]).append(source)
                     if aid:
                         e["agent_id"] = aid
+                    if tuid and not e.get("tool_use_id"):
+                        e["tool_use_id"] = tuid  # a retry of this PreToolUse must find this entry, not claim another
                     if not e.get("project") and entry["project"]:
                         e["project"] = entry["project"]
                     res["dup"] = True
