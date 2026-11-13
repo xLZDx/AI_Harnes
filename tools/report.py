@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
+import json
 import os
 import re
 import subprocess
@@ -406,6 +407,52 @@ def sec_active(d: dict, g: Git) -> str:
             + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>")
 
 
+def running_agents(root: Path) -> list[dict]:
+    """Unfinished entries of agents/active.json (written by agent_visibility.py) that belong to this project. Read-only copy
+    of the small reader: same state folder rule (HARNESS_HOOK_STATE or ~/.harness-hooks), never creates it, [] on any error."""
+    try:
+        state = os.environ.get("HARNESS_HOOK_STATE")
+        if not state:  # the hooks read it from the machine config (_agentio.load_machine_config), so do the same
+            cfg = Path(os.environ.get("HARNESS_HOOK_CONFIG") or Path.home() / ".harness-hooks" / "config.json")
+            try:
+                state = json.loads(cfg.read_text(encoding="utf-8")).get("HARNESS_HOOK_STATE")
+            except (OSError, ValueError, AttributeError):
+                state = None
+        base = Path(os.path.expanduser(state)) if state else Path.home() / ".harness-hooks"
+        agents = json.loads((base / "agents" / "active.json").read_text(encoding="utf-8")).get("agents", [])
+        # entries store the MAIN checkout (agent_visibility), so a report built in a linked worktree compares with that
+        top = Path(root)
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            common = Path(r.stdout.strip())
+            top = common.parent if common.name == ".git" else common
+        key = os.path.normcase(os.path.normpath(str(top)))
+        return [e for e in agents if isinstance(e, dict) and not e.get("stop")
+                and os.path.normcase(os.path.normpath(str(e.get("project") or "-"))) == key]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def sec_agents(root: Path) -> str:
+    head = '<section class="panel" id="running-agents"><h2>Запущенные агенты</h2>'
+    rows = []
+    now = time.time()
+    for e in running_agents(root):
+        last = max(e.get("start", 0), e.get("activity", 0))
+        stale = now - last >= 600  # same limit as agent_visibility.UNKNOWN_AFTER_S
+        state = "статус неизвестен (нет событий 10+ минут)" if stale else ("подтверждён активным" if e.get("activity") else "старт замечен")
+        rows.append(f'<tr><td><code>{E(e.get("type", NR))}</code></td><td>{E(e.get("task", NR))}</td>'
+                    f'<td>{E(e.get("model", NR))} / {E(e.get("effort", NR))}</td><td>{E(state)}</td>'
+                    f'<td>{E(fmt_ts(int(e["start"])) if e.get("start") else NR)} ({E(fmt_dur(now - e["start"])) if e.get("start") else NR})</td></tr>')
+    if not rows:
+        return head + '<p class="muted">Сейчас агенты этого проекта не запущены.</p></section>'
+    cols = ["Роль (тип агента)", "Задача", "Модель / усилие", "Состояние", "Старт (длительность)"]
+    return (head + '<div class="wrap"><table><thead><tr>' + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>"
+            + "".join(rows) + '</tbody></table></div><p class="muted">Источник: agents/active.json в папке состояния хуков; '
+            'только записи без STOP, привязанные к этому проекту.</p></section>')
+
+
 def sec_stories(d: dict) -> str:
     pairs = all_tasks(d)
     present: dict[str, int] = {}
@@ -525,7 +572,7 @@ def render(d: dict, root) -> str:
     g = Git(root)
     f = gather(d, g)
     title = f'{d.get("project", NR)} — программа и все спринты'
-    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g)
+    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g) + sec_agents(root)
             + sec_stories(d) + sec_freshness(d, f, root) + sec_updates(d, g, f))
     return ("<!doctype html>\n" + MARKER + '\n<html lang="ru"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
