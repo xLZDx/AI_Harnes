@@ -58,34 +58,43 @@ def _commands(hooks: dict) -> list[str]:
     return out
 
 
-def _is_harness_group(group: dict, home: Path, files: list[str]) -> bool:
-    """True when a hook of the group calls run_hook.py, the <home>/hooks folder, or a built / already installed hook file."""
+def _hook_text(h: dict) -> str:
+    return " ".join([str(h.get("command", "")), *map(str, h.get("args", []))])
+
+
+def _is_harness_hook(h: dict, home: Path) -> bool:
+    """True when the hook runs a harness script: run_hook.py, or any script under <home>/hooks or a .claude/hooks folder
+    (current and retired harness hooks live there, also when written with ~ or %USERPROFILE%). A script elsewhere is
+    foreign even when its file name equals a harness hook (S17 review: a name-only match dropped operator hooks)."""
     folder = str(home / "hooks").replace("\\", "/").lower().rstrip("/") + "/"
-    for cmd in _commands({"g": [group]}):
-        low = cmd.replace("\\", "/").lower()
-        if "run_hook.py" in low or folder in low:
-            return True
-        if any(n in files or (home / "hooks" / n).is_file() for n in HOOK_FILE_RE.findall(cmd)):
-            return True
-    return False
+    low = _hook_text(h).replace("\\", "/").lower()
+    return "run_hook.py" in low or folder in low or "/.claude/hooks/" in low
 
 
-def _merge_hooks(new_hooks: dict, old_hooks: dict, home: Path, files: list[str]) -> tuple[dict, int]:
-    """New harness groups first, then the foreign groups of the old settings (old order, no identical duplicates)."""
+def _merge_hooks(new_hooks: dict, old_hooks: dict, home: Path) -> tuple[dict, list[str], list[str]]:
+    """New harness groups first, then the foreign hooks of the old settings, classified hook by hook: a group with only
+    foreign hooks is kept as it is; a mixed group keeps its other keys (matcher ...) with only its foreign hooks. Old
+    order, no identical duplicates. Returns the merged hooks, the kept foreign commands and the dropped harness commands."""
     key = lambda g: json.dumps(g, sort_keys=True, ensure_ascii=False)
     merged = {ev: list(groups) for ev, groups in new_hooks.items()}
-    kept = 0
+    kept, dropped = [], []
     for ev, groups in old_hooks.items():
         out = merged.setdefault(ev, [])
         seen = {key(g) for g in out}
         for g in groups:
-            if not _is_harness_group(g, home, files) and key(g) not in seen:
-                out.append(g)
-                seen.add(key(g))
-                kept += 1
+            hooks = g.get("hooks", [])
+            foreign = [h for h in hooks if not _is_harness_hook(h, home)]
+            dropped += [_hook_text(h) for h in hooks if _is_harness_hook(h, home)]
+            if not foreign:
+                continue
+            g2 = g if len(foreign) == len(hooks) else {**g, "hooks": foreign}
+            if key(g2) not in seen:
+                out.append(g2)
+                seen.add(key(g2))
+                kept += [f"{ev}: {_hook_text(h)}" for h in foreign]
         if not out:
             del merged[ev]
-    return merged, kept
+    return merged, kept, dropped
 
 
 def _check_hooks(obj: object, what: str) -> dict:
@@ -144,7 +153,7 @@ def install(home: Path, snap: Path, source: Path) -> int:
                     missing.append(name)
         if missing:
             raise ValueError("the new set calls hook files that are not in the build: " + ", ".join(sorted(set(missing))))
-        merged_hooks, n_foreign = _merge_hooks(new_cfg["hooks"], settings.get("hooks") or {}, home, files)
+        merged_hooks, kept_foreign, dropped_cmds = _merge_hooks(new_cfg["hooks"], settings.get("hooks") or {}, home)
     except (ValueError, OSError) as e:
         print(f"install stopped before any change: {e}")
         return 1
@@ -203,13 +212,15 @@ def install(home: Path, snap: Path, source: Path) -> int:
             pass
         print(f"install FAILED half-way ({type(e).__name__}: {e})\n  run {snap / 'restore.ps1'} to go back")
         return 1
-    retired = sorted({n for c in old_cmds for n in HOOK_FILE_RE.findall(c)} -
+    retired = sorted({n for c in dropped_cmds for n in HOOK_FILE_RE.findall(c)} -  # kept foreign hooks are still called
                      {n for c in _commands(new_cfg['hooks']) for n in HOOK_FILE_RE.findall(c)})
     n_new = sum(len(g["hooks"]) for v in new_cfg["hooks"].values() for g in v)
     print(f"installed into {home}: settings.json hooks replaced ({len(old_cmds)} old entries -> {n_new} new), "
-          f"{n_foreign} foreign hook groups kept, "
+          f"{len(kept_foreign)} foreign hooks kept, "
           f"{len(files)} hook files copied" + (", CLAUDE.md replaced." if (source / "CLAUDE.md").is_file() else "."))
     print(f"snapshot and restore script: {snap}")
+    for c in kept_foreign:
+        print("kept (not a harness hook): " + c[:160])
     if retired:
         print("no longer called (files left in place): " + ", ".join(retired))
     print("NEXT: start a new Claude session; hooks changed in settings.json apply to new sessions.")
