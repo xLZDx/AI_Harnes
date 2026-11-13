@@ -185,5 +185,12 @@ def test_s15t4_codex_missing_path_and_directory_transcript_still_cannot_verify()
     assert "cannot verify Codex authorization context" in reason, reason[:200]
 
 
+def test_s15t4_codex_transcript_with_only_invalid_json_line_cannot_verify():
+    sb = dual.SB("s15t4_invalid_json_only")
+    sb.tp_codex.write_text("{not valid JSON\n", encoding="utf-8", newline="\n")
+    reason = _codex_deny_reason(dual.run_hook(sb, "newx", "go_gate.py", _bash_payload(sb)))
+    assert "cannot verify Codex authorization context" in reason, reason[:200]
+
+
 if __name__ == "__main__":
     sys.exit(dual.h.run_all(globals()))
