@@ -236,3 +236,15 @@
 - Kind: SHORTCOMING. Facts: my round-2 exception for the default folder repeated the round-1 mistake (an assumed-safe location without proof). Root cause: I patched the named input, not the class "git unavailable". Layer that missed it: author and tester; GPT-PM round 3. Rule: when a check cannot run, refuse for the whole class, never add an exception.
 
 - Kind: SUCCESS. Facts: the exact failing input from the reviewer is now a test. Rule: every review finding becomes a test with the reviewer's own input.
+
+- Kind: FAILURE. Facts: S6 report source choice was either-or (ledger or plan), so a project with both showed 2 of 2 tasks as the whole program; the operator found it on the ERP report. Root cause: the S6 tests used projects with only one source. Layer that missed it: tests, then reviewers. Rule: when two sources can both exist, test the case where both exist.
+- Kind: SHORTCOMING. Facts: the installer kept telling the operator to use /hooks after S9 had recorded that the command does not exist. Root cause: I changed the decision log but not the text printed by the tool. Rule: when a fact is corrected, grep the whole tree for the old claim in the same change.
+
+## 2026-11-12 S10-T1: Fix /hooks reference in install_codex
+- Kind: SUCCESS. Facts: removed /hooks command reference from install_codex.py NEXT line and docstring; two failing tests (test_t1_next_line_says_trust_all_and_not_hooks_command and test_t1_no_slash_hooks_command_in_tools_or_harness) now pass; all 10 tests in test_s10_report.py pass.
+- Why it worked: the criterion was clear (no /hooks references), the test confirmed the defect, and the fix was straightforward text replacement.
+- Rule: when tests clearly identify a defect, fix it directly without adding extra scaffolding.
+- Kind: SHORTCOMING. Facts: my first S10 commit put the second Task: line in a separate paragraph and the ledger saw only one task. Rule: all Task: trailers go in one block.
+- Kind: SHORTCOMING. Facts: two Task: trailers in one commit registered only the first. Rule: one task per commit while commit-hook reads a single trailer.
+- Kind: SUCCESS. Facts: the failure hunter found a false provenance label that the first tests did not check. Rule: assert the stated data source, not only the numbers.
+- Kind: SHORTCOMING. Facts: my merge put plan sprints first, which made a plan sprint the active one. Root cause: I checked counts, not which sprint the report calls active. Rule: after merging two sources, test every consumer of the order.

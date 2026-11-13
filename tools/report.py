@@ -590,6 +590,27 @@ def main(argv=None) -> int:
         return 1
 
 
+def merge_plan_and_ledger(plan: dict, led: dict) -> dict:
+    """Whole program = every plan task plus every ledger sprint. A task id in both is counted once and the ledger state wins
+    (it is the newer, evidence-bound record). Without ledger sprints the plan is returned as it is."""
+    led_sprints = [sp for sp in led.get("sprints", []) if sp.get("tasks")]
+    if not led_sprints:  # no ledger tasks to add, but the ledger's approval and events still belong to the report
+        return {**plan, "approval": led.get("approval") or plan.get("approval"), "events": led.get("events") or plan.get("events", [])}
+    led_ids = {t.get("id") for sp in led_sprints for t in sp["tasks"]}
+    merged = []
+    for sp in plan.get("sprints", []):
+        kept = [t for t in sp.get("tasks", []) if t.get("id") not in led_ids]
+        if kept:
+            merged.append({**sp, "tasks": kept})
+    taken = {sp.get("id") for sp in merged}
+    ledger_part = []
+    for sp in led_sprints:
+        ledger_part.append({**sp, "id": sp["id"] if sp.get("id") not in taken else f"{sp['id']}-ledger"})
+        taken.add(ledger_part[-1]["id"])
+    merged = ledger_part + merged  # ledger sprints first: the first sprint that is not closed is the active one, and that is the one being worked
+    return {**led, "sprints": merged, "source": f"{plan.get('source') or 'PROJECT_PLAN.md'} + .harness/ledger.json"}
+
+
 def run(a) -> int:
     top = Git(Path.cwd()).out("rev-parse", "--show-toplevel")
     root = Path(top) if top else Path.cwd()
@@ -602,11 +623,12 @@ def run(a) -> int:
     try:
         plan_file = root / "PROJECT_PLAN.md"
         d = ledger.load()
-        if plan_file.is_file() and not d.get("sprints"):  # plan-based project (no real ledger): same format, source is the plan
+        if plan_file.is_file():  # plan-based project: the plan is the whole program; a ledger (if any) adds its sprints on top
             import plan_ledger
-            d = plan_ledger.load(plan_file)
-            if not any(sp.get("tasks") for sp in d.get("sprints", [])):
+            pd = plan_ledger.load(plan_file)
+            if not any(sp.get("tasks") for sp in pd.get("sprints", [])):
                 raise ValueError("PROJECT_PLAN.md parses to 0 tasks")  # a plan that yields nothing is a read error, never an empty report
+            d = merge_plan_and_ledger(pd, d)
     except (OSError, ValueError, ImportError) as e:
         ledger_error = str(e)
         d = {"version": 1, "project": Path.cwd().name, "sprints": [], "approval": None, "events": []}
