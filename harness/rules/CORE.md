@@ -78,8 +78,8 @@ instruction wins; platform permission and safety controls always apply.
 - PM Bridge outage (operator 2026-11-14): when a review does not run ("No compatible PM Bridge orchestrator", `pm_bridge_health` says
   DAEMON_DOWN), the session turns PM Bridge on itself (`pm_bridge_mode_on`, any session may) and retries once. If it still does not
   answer: commit locally, do not update the remote, start the next task, and return to the review when `pm_bridge_health` says OK. A review that
-  did not run is not a review: the remote is updated only after a real APPROVE for the exact HEAD (the pre-push hook and `gpt_review_gate`
-  both refuse otherwise).
+  did not run is not a review: the remote is updated only after a real APPROVE for the exact HEAD. The authority is the pre-push hook
+  (ledger approval checked against the real PM reply); `gpt_review_gate` also refuses an `ok=false` or non-APPROVE receipt and `--no-verify`.
 - One branch and one PR per sprint. Commit message: at most two sentences + `Task: <ID>`.
 - Each commit adds an entry to `core/LESSONS_LOG.md` (FAILURE / SHORTCOMING / SUCCESS).
 - Global lessons: a hook injects "Global lessons for <action>" before git commit/push, gh pr, agent spawn, edits of hooks/guards/workflows and a GPT-PM send; follow them. A new FAILURE/SHORTCOMING entry in `core/LESSONS_LOG.md` reaches the global store at commit.

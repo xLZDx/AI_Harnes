@@ -167,7 +167,7 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 EXCLUDED_REPO_ROOTS = []
 
 COMMIT_RE = re.compile(r"\bgit\s+commit\b", re.IGNORECASE)
-PUSH_RE = re.compile(r"\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b", re.IGNORECASE)
+PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]*?\bpush\b", re.IGNORECASE)
 SKIP_RE = re.compile(r"--help\b|(?<!\S)-h\b|--dry-run\b", re.IGNORECASE)
 CD_RE = re.compile(r'^\s*cd\s+(?P<path>"[^"]+"|\'[^\']+\'|\S+)\s*$')
 
@@ -334,10 +334,26 @@ def final_receipt_fresh(repo_root):
         ts = datetime.fromisoformat(ts_raw)
     except ValueError:
         return False, "latest final receipt has an unparseable timestamp", entry
+    if ts.tzinfo is None:
+        return False, "latest final receipt has a timestamp without a time zone", entry
     age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
     if age_hours > PUSH_RECEIPT_MAX_AGE_HOURS:
         return False, f"latest final receipt is {age_hours:.1f}h old (> {PUSH_RECEIPT_MAX_AGE_HOURS}h) -- treat as stale, re-run the review", entry
     return True, None, entry
+
+
+def git_dash_c_dir(command, base_cwd):
+    """The directory named by the first `git -C <dir>` (quoted or not), resolved against base_cwd; else None."""
+    m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n;|&]*?\s)?-C\s+(\"[^\"]*\"|'[^']*'|\S+)", command)
+    if not m:
+        return None
+    raw = m.group(1).strip("\"'")
+    if not raw:
+        return None
+    path = Path(normalise_shell_path(raw))
+    if not path.is_absolute():
+        path = Path(base_cwd) / path
+    return str(path) if path.is_dir() else None
 
 
 OUTAGE_STEPS = (
@@ -345,7 +361,9 @@ OUTAGE_STEPS = (
     "orchestrator, call pm_bridge_mode_on yourself (any session may) and run the review again once. "
     "2) If PM Bridge still does not answer, keep the commit local, do not update the remote, "
     "start the next task, and come back to this review as soon as pm_bridge_health reports OK. "
-    "3) The remote is updated only after a review that really returned APPROVE for the exact HEAD."
+    "Running review.js once even while the transport is down writes a failed receipt, and that receipt is what lets "
+    "the local commit through. 3) The remote is updated only after a review that really returned APPROVE for the "
+    "exact HEAD; the pre-push hook checks it against the real reply, and --no-verify is refused."
 )
 
 
@@ -377,8 +395,16 @@ def main():
     if not is_push and not is_commit:
         allow()
 
+    if is_push and re.search(r"--no-verify\b|\bHARNESS_SKIP_APPROVAL\s*=", command):
+        deny("GPT REVIEW gate (push): `--no-verify` and an inline HARNESS_SKIP_APPROVAL turn off the pre-push "
+             "approval check, so this push would update the remote without a real review. " + OUTAGE_STEPS,
+             {"command": command[:200]})
+
     raw_cwd = payload.get("cwd") or os.getcwd()
     cwd = resolve_effective_cwd(command, raw_cwd)
+    git_c = git_dash_c_dir(command, cwd)
+    if git_c:
+        cwd = git_c
 
     try:
         toplevel = git(["rev-parse", "--show-toplevel"], cwd=cwd)
@@ -423,8 +449,12 @@ def main():
                 age_h = (datetime.now(timezone.utc)
                          - datetime.fromisoformat(entry["timestamp"])).total_seconds() / 3600.0
                 fresh = age_h <= PUSH_RECEIPT_MAX_AGE_HOURS
-            except ValueError:
+            except (ValueError, TypeError):
                 fresh = False
+        if fresh and entry.get("ok") is not True:
+            fresh = False  # S21: a failed attempt never opens a push, also here
+        if fresh and str(entry.get("verdict") or "APPROVE").upper().find("APPROVE") < 0:
+            fresh = False
         if fresh:
             log_decision({"decision": "allow-push-on-receipt",
                           "reason": "pm-bridge is the review transport; it pushes on a fresh "
@@ -463,12 +493,14 @@ def main():
         if passes:
             receipt_ok = entry.get("ok") if entry else None
             receipt_error = entry.get("error") if entry else None
-            if receipt_ok is False:
+            verdict = str(entry.get("verdict") or "APPROVE") if entry else "APPROVE"
+            if receipt_ok is not True or "APPROVE" not in verdict.upper() or entry.get("correlated") is False:
                 # S21-T2 (operator 2026-11-14): a failed review attempt is enough to COMMIT locally, never to
                 # update the remote. The push waits for a real review.
                 deny(
-                    f"GPT REVIEW gate (push): the latest final receipt for {repo_root} has ok=false "
-                    f"(error={receipt_error!r}) -- the review did not run, so nothing here was reviewed. "
+                    f"GPT REVIEW gate (push): the latest final receipt for {repo_root} is not a successful "
+                    f"review (ok={receipt_ok!r}, verdict={verdict!r}, error={receipt_error!r}) -- ok=false means the "
+                    f"review did not run, so nothing here was reviewed. "
                     + OUTAGE_STEPS,
                     {"repo": repo_root, "command": command[:200], "receipt_error": receipt_error})
 
