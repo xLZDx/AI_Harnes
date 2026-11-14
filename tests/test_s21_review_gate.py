@@ -722,6 +722,202 @@ def test_unreadable_receipts_path_denies_the_push():
     expect(b2.run("git push", repo2), "allow")
 
 
+# ------------------------------------------------------------------------------------------------ 8. S21 fourth batch
+def test_flag_words_inside_quotes_or_glued_to_other_text_do_not_skip_the_gate():
+    b = Box()
+    repo = b.repo()  # NO receipt: the gate must run
+    r = b.run('git commit -m "fix --dry-run"', repo)
+    expect(r, "deny")
+    assert "(commit)" in r.reason, r
+    r = b.run('git commit -m "fix -h"', repo)
+    expect(r, "deny")
+    assert "(commit)" in r.reason, r
+    for cmd in ("git push origin feature--help", "git push origin main --push-option=--dry-run",
+                "git push -o --dry-run origin main", "git push --push-option --dry-run origin main"):
+        _push_denied(b.run(cmd, repo), cmd)
+    # twins: the real flags of git skip the gate
+    for cmd in ("git push --dry-run origin main", "git push -h", "git commit --help", "git push --help",
+                "git commit --dry-run", "git push -o x --dry-run origin main"):
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+
+
+def test_git_dash_C_commit_is_judged_against_the_other_repository():
+    b = Box()
+    mine = b.repo("mine")
+    other = b.repo("other")
+    b.receipt(mine, ok=True)  # a receipt for the session folder only
+    r = b.run(f"git -C {other.as_posix()} commit -m x", mine)
+    expect(r, "deny")
+    assert "(commit)" in r.reason and "other" in r.reason, r
+    # twin: a plain commit in the session folder is covered by its receipt
+    expect(b.run("git commit -m x", mine), "allow")
+    # twin: a receipt for the other repository opens the -C commit, also from a cwd without one
+    b.receipt(other, ok=True)
+    expect(b.run(f"git -C {other.as_posix()} commit -m x", mine), "allow")
+    expect(b.run(f'git -C "{other}" commit -m x', b.root / "nogit"), "allow")
+    # reverse: the receipt of the session folder must not cover -C into a repository without one
+    b2 = Box()
+    a2 = b2.repo("a2")
+    c2 = b2.repo("c2")
+    b2.receipt(a2, ok=True)
+    expect(b2.run(f'git -C "{c2}" commit -m x', a2), "deny")
+
+
+def test_git_dash_C_commit_into_a_missing_folder_denies():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, ok=True)  # the session folder is fully covered
+    missing = b.root / "nogit" / "missing"
+    r = b.run(f"git -C {missing.as_posix()} commit -m x", repo)
+    expect(r, "deny")
+    assert "does not exist" in r.reason, r
+    # twin: the same commit with an existing folder passes
+    expect(b.run(f"git -C {repo.as_posix()} commit -m x", repo), "allow")
+
+
+def test_two_different_dash_C_folders_in_one_push_command_deny():
+    b = Box()
+    a = b.repo("repoA")
+    c = b.repo("repoB")
+    b.receipt(a, **GOOD)
+    b.receipt(c, **GOOD)  # BOTH repositories are good: the refusal is about the shape, not the receipts
+    cmd = f"git -C {a.as_posix()} push && git -C {c.as_posix()} push"
+    r = b.run(cmd, a)
+    expect(r, "deny")
+    assert "more than one repository" in r.reason, r
+    r = b.run(f"git -C {a.as_posix()} push; git -C {c.as_posix()} push", c)
+    expect(r, "deny")
+    assert "more than one repository" in r.reason, r
+    # twins: each push on its own is allowed, and so is the same folder twice
+    expect(b.run(f"git -C {a.as_posix()} push", a), "allow")
+    expect(b.run(f"git -C {c.as_posix()} push", a), "allow")
+    expect(b.run(f"git -C {a.as_posix()} push && git -C {a.as_posix()} push", c), "allow")
+    expect(b.run(f"git -C {a.as_posix()} status && git -C {c.as_posix()} push", a), "allow")
+
+
+def _junk_variants():
+    """Lines that must neither crash the gate nor stand in for a receipt."""
+    ok_ts = datetime.now(timezone.utc).isoformat()
+    return {
+        "naive timestamp": lambda repo: json.dumps({"timestamp": datetime.now().isoformat(), "cwd": str(repo),
+                                                    "ok": True, "final": True, "verdict": "APPROVE",
+                                                    "correlated": True}).encode(),
+        "cwd is a number": lambda repo: json.dumps({"timestamp": ok_ts, "cwd": 5, "ok": True}).encode(),
+        "cwd is a list": lambda repo: json.dumps({"timestamp": ok_ts, "cwd": ["x"], "ok": True}).encode(),
+        "cwd is an object": lambda repo: json.dumps({"timestamp": ok_ts, "cwd": {"a": 1}, "ok": True}).encode(),
+        "nested array 3000": lambda repo: b"[" * 3000 + b"]" * 3000,
+        "nested object 3000": lambda repo: b'{"a":' * 3000 + b"1" + b"}" * 3000,
+        "nested cwd 3000": lambda repo: b'{"timestamp":"' + ok_ts.encode() + b'","cwd":' + b"[" * 3000 + b"]" * 3000 + b"}",
+        "5 MB junk line": lambda repo: b"x" * 5_000_000,
+    }
+
+
+def test_junk_receipt_lines_before_a_valid_receipt_do_not_hide_it_for_push_and_commit():
+    for name in ("proj", "pm-bridge"):
+        for label, make in _junk_variants().items():
+            b = Box()
+            repo = b.repo(name)
+            b.receipts.write_bytes(make(repo) + b"\n" + _good_line(repo))
+            r = b.run("git push", repo)  # Box.run asserts exit code 0: no crash
+            assert r.kind == "allow", (name, label, r)
+            r = b.run("git commit -m x", repo)
+            assert r.kind == "allow" and r.err == "", (name, label, r)
+
+
+def test_junk_receipt_lines_after_a_valid_receipt_do_not_hide_it_for_commit():
+    for label, make in _junk_variants().items():
+        if label == "5 MB junk line":
+            continue  # the receipt would sit beyond the 4 MB tail window; covered by the before-case above
+        b = Box()
+        repo = b.repo()
+        b.receipts.write_bytes(_good_line(repo) + make(repo) + b"\n")
+        r = b.run("git commit -m x", repo)
+        assert r.kind == "allow" and r.err == "", (label, r)
+    # junk lines that carry no usable cwd are skipped by the push scan as well
+    for label in ("cwd is a number", "cwd is a list", "cwd is an object", "nested array 3000", "nested object 3000",
+                  "nested cwd 3000"):
+        b = Box()
+        repo = b.repo()
+        b.receipts.write_bytes(_good_line(repo) + _junk_variants()[label](repo) + b"\n")
+        r = b.run("git push", repo)
+        assert r.kind == "allow", (label, r)
+
+
+def test_push_and_commit_with_only_junk_receipts_deny_without_a_crash():
+    for name in ("proj", "pm-bridge"):
+        for label, make in _junk_variants().items():
+            b = Box()
+            repo = b.repo(name)
+            b.receipts.write_bytes(make(repo) + b"\n")
+            r = b.run("git push", repo)
+            assert r.kind == "deny" and "(push)" in r.reason, (name, label, r)
+            if name == "proj":
+                r = b.run("git commit -m x", repo)
+                assert r.kind == "deny" and "(commit)" in r.reason, (label, r)
+    # twin: the same file shape holding a valid receipt opens the push
+    b = Box()
+    repo = b.repo()
+    b.receipts.write_bytes(_good_line(repo))
+    expect(b.run("git push", repo), "allow")
+
+
+DETECT_TRUE = [
+    "cat <<'EOF' | bash\ngit push origin main\nEOF",
+    "echo git push | sh",
+    "printf 'git push\\n' | bash",
+    "python - <<'PY'\nimport subprocess\nsubprocess.run('git push', shell=True)\nPY",
+    "python3 <<'PY'\nimport os\nos.system('git push origin main')\nPY",
+    "py -c \"import os; os.system('git push')\"",
+    "python3.12 -c \"import os; os.system('git push')\"",
+    "xargs -n1 git push",
+    "sudo -u x git push",
+    "env -i git push",
+    "nice -n 10 git push",
+    "start /b git push",
+    "wsl -d Ubuntu git push",
+    "cmd /d /c git push",
+    "powershell -ExecutionPolicy Bypass -Command git push",
+    "Start-Process git -ArgumentList push",
+    "$c='git push'; iex $c",
+]
+DETECT_FALSE = [
+    "git commit -m \"don't (git push) here\"",
+    "cat > notes.md <<'EOF'\nremember to git push later\nEOF",
+    "git log --oneline | head -3",
+    "echo hello | sh",
+    "git stash push",
+    "git diff | python -c \"print(1)\"",
+]
+
+
+def test_is_push_command_true_for_wrapped_and_piped_shapes():
+    missed = [c for c in DETECT_TRUE if _commit_detect.is_push_command(c) is not True]
+    assert not missed, f"not detected as a push: {missed!r}"
+
+
+def test_is_push_command_false_for_mentions_and_non_pushes():
+    wrong = [c for c in DETECT_FALSE if _commit_detect.is_push_command(c) is not False]
+    assert not wrong, f"wrongly detected as a push: {wrong!r}"
+    # twins: the same words as a real command are a push
+    assert _commit_detect.is_push_command("git push") is True
+    assert _commit_detect.is_push_command("git stash; git push") is True
+
+
+def test_detected_wrapped_pushes_deny_without_a_receipt_and_allow_with_a_good_one():
+    b = Box()
+    repo = b.repo()
+    for cmd in DETECT_TRUE:
+        _push_denied(b.run(cmd, repo), cmd)
+    for cmd in DETECT_FALSE:
+        r = b.run(cmd, repo)
+        assert "(push)" not in r.reason, (cmd, r)
+    b.receipt(repo, **GOOD)
+    for cmd in DETECT_TRUE:
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+
+
 def run_all(g) -> int:
     fails = 0
     for name in [n for n in g if n.startswith("test_")]:

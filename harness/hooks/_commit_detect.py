@@ -13,9 +13,13 @@ sessions, not a sandbox: the authority for the remote is the pre-push git hook. 
 """
 import re
 
+# options (and one value) a wrapper word may carry between itself and git: `xargs -n1`, `sudo -u x`, `nice -n 10`, `start /b`
+_WOPTS = r"(?:\s+[-/]\S+(?:\s+(?!git\b|-|/)\w\S*)?)*"
 _PREFIX = (
-    r"(?:^|[;&|\n(`{!]|\b(?:then|do|else|elif|if|while|until|time|exec|sudo|command|nohup|env|xargs|start|wsl|nice"
-    r"|timeout\s+\S+|cmd(?:\.exe)?\s+/c|(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-c(?:ommand)?)\b)\s*"
+    r"(?:^|[;&|\n(`{!]|\b(?:then|do|else|elif|if|while|until|time|exec|command|nohup)\b"
+    r"|\b(?:sudo|env|xargs|start|wsl|nice)\b" + _WOPTS +
+    r"|\btimeout\s+\S+|\bcmd(?:\.exe)?\s+(?:/[a-z]\s+)*/c\b"
+    r"|\b(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+(?:\s+(?!git\b)[^-\s]\S*)?\s+)*-c(?:ommand)?\b)\s*"
     r"(?:\w+=\S+\s+)*"
 )
 _GIT = r"(?:\S*[\\/])?git(?:\.exe)?"
@@ -24,7 +28,7 @@ _GIT_OPTS = (
     r"(?:(?:-[Cc]\s+" + _VAL + r"|--git-dir\s+\S+|--work-tree\s+\S+|--namespace\s+\S+|-p|-P"
     r"|--[\w-]+(?:=" + _VAL + r")?)\s+)*"
 )
-COMMAND_POS_COMMIT_RE = re.compile(_PREFIX + r"git\s+commit\b", re.IGNORECASE)
+COMMAND_POS_COMMIT_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"commit\b", re.IGNORECASE)
 COMMAND_POS_PUSH_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
 # a subcommand that is quoted or built by the shell: could be anything, including push
 OBFUSCATED_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"(?:\"[^\"]*\"|'[^']*'|\S*[$`(]\S*)", re.IGNORECASE)
@@ -36,10 +40,18 @@ QUOTED_GIT_PUSH_RE = re.compile(
 # a shell or interpreter that can run a quoted command string
 WRAPPER_RE = re.compile(
     r"(?:^|[;&|\n(`{!]|\s)(?:\S*[\\/])?(?:bash|sh|zsh|dash|pwsh|powershell|cmd|iex|invoke-expression|eval|ssh|xargs"
-    r"|sudo|exec|env|nohup|start|start-process|wsl|python3?|node)(?:\.exe)?\b",
+    r"|sudo|exec|env|nohup|start|start-process|saps|wsl|py|python[\d.]*|pypy[\d.]*|node)(?:\.exe)?\b",
     re.IGNORECASE)
+# a push piped into a shell or interpreter (`echo git push | sh`, `cat <<EOF | bash`)
+PIPE_TO_SHELL_RE = re.compile(
+    r"\|\s*(?:\S*[\\/])?(?:bash|sh|zsh|dash|pwsh|powershell|cmd|py|python[\d.]*|node|iex|invoke-expression|xargs)(?:\.exe)?\b",
+    re.IGNORECASE)
+# Start-Process git -ArgumentList push
+START_PROCESS_RE = re.compile(r"\b(?:start-process|saps)\s+\S*git(?:\.exe)?\b[^\n;|&]*\bpush\b", re.IGNORECASE)
+# eval / iex on something the shell builds (`$c='git push'; iex $c`)
+EVAL_RE = re.compile(r"(?:^|[;&|\n(`{!]|\s)(?:iex|invoke-expression|eval)\s", re.IGNORECASE)
 LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]*?\bpush\b", re.IGNORECASE)
-INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:python3?|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
+INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:py|python[\d.]*|pypy[\d.]*|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
 SPAWN_RE = re.compile(r"system|popen|subprocess|\brun\s*\(|\bcall\s*\(|check_output|check_call|exec|spawn|child_process|`", re.IGNORECASE)
 HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
 QUOTED_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
@@ -56,7 +68,8 @@ def _strip_heredocs(command: str) -> str:
             return "<<HEREDOC"
         if head.count('"') % 2 or head.count("'") % 2:
             return m.group(0)
-        if WRAPPER_RE.search(head) or INTERPRETER_RE.search(head):
+        first_line = m.group(0).split("\n", 1)[0]
+        if WRAPPER_RE.search(head) or INTERPRETER_RE.search(head) or PIPE_TO_SHELL_RE.search(first_line):
             return m.group(0)
         return "<<HEREDOC"
     return HEREDOC_RE.sub(repl, command)
@@ -83,6 +96,18 @@ def is_push_command(command: str) -> bool:
     if (COMMAND_POS_PUSH_RE.search(stripped) or QUOTED_GIT_PUSH_RE.search(no_heredoc)
             or OBFUSCATED_RE.search(stripped) or ALIAS_RE.search(no_heredoc)):
         return True
+    if START_PROCESS_RE.search(stripped):
+        return True
+    if EVAL_RE.search(stripped) and LOOSE_PUSH_RE.search(no_heredoc):
+        return True
+    if PIPE_TO_SHELL_RE.search(stripped) and LOOSE_PUSH_RE.search(no_heredoc):
+        return True
+    for hm in HEREDOC_RE.finditer(no_heredoc):  # a script fed to an interpreter that starts a process naming git push
+        first_line = hm.group(0).split("\n", 1)[0]
+        body = hm.group(0)[len(first_line):]
+        head = no_heredoc[no_heredoc.rfind("\n", 0, hm.start()) + 1:hm.start()]
+        if INTERPRETER_RE.search(head + first_line + " ") and LOOSE_PUSH_RE.search(body) and SPAWN_RE.search(body):
+            return True
     for m in QUOTED_RE.finditer(no_heredoc):
         inner = m.group(0)[1:-1]
         before = _SEGMENT_SPLIT_RE.split(no_heredoc[:m.start()])[-1]
@@ -90,6 +115,6 @@ def is_push_command(command: str) -> bool:
             return True
         if INTERPRETER_RE.search(before) and LOOSE_PUSH_RE.search(inner) and SPAWN_RE.search(inner):
             return True
-    if no_heredoc.count('"') % 2 or no_heredoc.count("'") % 2:
+    if stripped.count('"') % 2 or stripped.count("'") % 2:  # a quote that never closes is left in the blanked text
         return bool(COMMAND_POS_PUSH_RE.search(no_heredoc))
     return False

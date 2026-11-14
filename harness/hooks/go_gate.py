@@ -965,7 +965,7 @@ _TEMP_SENSITIVE_PART_RE = re.compile(
     r"(?i)^(claude_.*|.*(receipt|approval|gate|rosetta|pm_bridge|decision).*|\.claude|\.codex|\.git|\.harness.*)$"
 )
 _DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
-_BAD_TARGET_CHARS = "*?[]{}()$%~`,;|&<>^@!#"
+_BAD_TARGET_CHARS = "*?[]{}()$%~`,;|&<>^@!#'\"\x00"  # quotes too: bash drops a mid-token '..' or '' before use
 
 
 def _temp_roots() -> list[Path]:
@@ -1026,14 +1026,14 @@ def _paths_all_throwaway(paths, cwd) -> bool:
     if not paths:
         return False
     for raw in paths:
-        if any(c in raw for c in "*?[$%~`") or ".." in Path(raw).parts or raw[:1] in "/\\" and not _DRIVE_ABS_RE.match(raw):
+        if any(c in raw for c in "*?[$%~`\x00") or ".." in Path(raw).parts or raw[:1] in "/\\" and not _DRIVE_ABS_RE.match(raw):
             return False
         path = Path(raw)
         if not path.is_absolute():
             path = Path(cwd or os.getcwd()) / path
         try:
             resolved = path.resolve()
-        except OSError:
+        except (OSError, ValueError):
             return False
         if not _is_throwaway_path(resolved):
             return False
@@ -1114,7 +1114,7 @@ def _delete_is_harmless(segment: str, cwd, solo: bool = False, head: str = "", i
             if not solo or getattr(exc, "winerror", None) == 206:  # 206 = path too long, not "missing"
                 return False
             continue
-        except OSError:
+        except (OSError, ValueError):
             return False
         try:
             if _stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & 0x400):
@@ -1125,7 +1125,7 @@ def _delete_is_harmless(segment: str, cwd, solo: bool = False, head: str = "", i
                 continue
             if not _is_throwaway_path(path.resolve()):
                 return False
-        except OSError:
+        except (OSError, ValueError):
             return False
     return True
 
@@ -1178,7 +1178,7 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd, i
             raw_path = Path(cwd or os.getcwd()) / raw_path
         try:
             resolved = raw_path.resolve()
-        except OSError:
+        except (OSError, ValueError):
             return False
         if not _is_throwaway_path(resolved):
             return False

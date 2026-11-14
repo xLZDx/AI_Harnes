@@ -795,6 +795,98 @@ def test_f_receipts_and_approvals_file_names_in_a_plain_temp_folder_ask_but_note
     assert gg._paths_all_throwaway([str(d / "notes.txt")], str(TMPROOT)) is True
 
 
+# ------------------------------------------------------------------------------------------------ G: S21 fourth batch
+def test_g_redirect_target_with_quote_characters_inside_a_token_asks():
+    d = fresh()
+    repo = git_repo()
+    # `'..'` inside the token: bash drops the quotes, so the real target is d/../<repo>/a.txt = inside a git repo
+    assert_go(f"echo x > {d.as_posix()}/'..'/{repo.name}/a.txt")
+    assert_go(f'echo x > {d.as_posix()}/".."/{repo.name}/a.txt')
+    assert_go(f"echo x >> {d.as_posix()}/'..'/{repo.name}/a.txt")
+    assert_go(f"echo x > {d.as_posix()}/'..'/{d.name}/a.txt")  # resolves back to a throwaway folder: still asks
+    assert_go(f"echo x > {d.as_posix()}/ok''.txt")  # an empty quote pair glued to the name
+    assert_go(f"echo x > {d.as_posix()}/'ok'.txt")  # quote in the middle of the token
+    assert_go(f"echo x > {d.as_posix()}/'a'/'b'.txt")
+    # twins: a whole-token-quoted throwaway path needs no GO, as does the unquoted one
+    assert_free(f"echo x > '{d.as_posix()}/ok.txt'")
+    assert_free(f'echo x > "{d.as_posix()}/ok.txt"')
+    assert_free(f'echo x >> "{d.as_posix()}/ok.txt"')
+    assert_free(f"echo x > {d.as_posix()}/ok.txt")
+    # twin: a whole-token-quoted path INSIDE a git repo still asks
+    assert_go(f"echo x > '{repo.as_posix()}/a.txt'")
+
+
+def test_g_delete_target_with_quote_characters_inside_a_token_asks():
+    f = plain_file()
+    d = f.parent
+    assert_go(f"rm {f.as_posix()}''")  # empty quote pair after an existing throwaway file
+    assert_go(f'rm {f.as_posix()}""')
+    assert_go(f"rm {d.as_posix()}/''/plain.txt")
+    assert_go(f"rm {d.as_posix()}/'..'/{d.name}/plain.txt")
+    assert_go(f"rm {d.as_posix()}/pl'ain'.txt")
+    assert_go(f"rm -f {f.as_posix()}''")
+    assert_go(f"Remove-Item {f.as_posix()}''", ps=True)
+    empty = fresh("emp")
+    assert_go(f"rmdir {empty.as_posix()}''")
+    assert_go(f"rm -rf {empty.as_posix()}'x'/..")
+    # a gone target must not be excused as "missing" when it carries quote characters inside the token
+    gone = d / "gone.txt"
+    assert_go(f"rm {gone.as_posix()}''")
+    # twins: the very same targets as whole-token-quoted or plain paths need no GO
+    assert_free(f"rm {f.as_posix()}")
+    assert_free(f"rm '{f.as_posix()}'")
+    assert_free(f'rm "{f.as_posix()}"')
+    assert_free(f"rmdir '{empty.as_posix()}'")
+    assert_free(f"rm {gone.as_posix()}")
+    # twin: a whole-token-quoted file inside a git repo still asks
+    g = git_repo() / "p.txt"
+    g.write_text("x")
+    assert_go(f"rm '{g.as_posix()}'")
+
+
+def test_g_nul_character_in_a_target_asks_and_does_not_crash():
+    d = fresh()
+    f = d / "plain.txt"
+    f.write_text("x")
+    assert_free(f"rm {f.as_posix()}")  # twins without NUL
+    assert_free(f"echo x > {(d / 'ok.txt').as_posix()}")
+    assert_go(f"rm {f.as_posix()}\x00")
+    assert_go(f"rm {d.as_posix()}/pl\x00ain.txt")
+    assert_go(f"rm -f {d.as_posix()}/gone\x00.txt")
+    assert_go(f"rm '{d.as_posix()}/pl\x00ain.txt'")
+    assert_go(f"rmdir {d.as_posix()}/e\x00mpty")
+    assert_go(f"Remove-Item {d.as_posix()}/pl\x00ain.txt", ps=True)
+    assert gg._paths_all_throwaway([f"{d.as_posix()}/a\x00b.txt"], str(TMPROOT)) is False
+    assert gg._paths_all_throwaway([f"{d.as_posix()}/a.txt"], str(TMPROOT)) is True  # twin
+
+
+def test_g_nul_character_in_a_redirect_target_asks_and_does_not_crash():
+    d = fresh()
+    assert_free(f"echo x > {d.as_posix()}/ok.txt")  # twin without NUL
+    assert_go(f"echo x > {d.as_posix()}/ok\x00.txt")
+    assert_go(f"echo x >> {d.as_posix()}/ok\x00.txt")
+    assert_go(f'echo x > "{d.as_posix()}/ok\x00.txt"')
+
+
+def test_g_hook_route_for_quotes_and_nul_delete_and_write():
+    f = plain_file()
+    assert_decision("allow", "Bash", {"command": f"rm {f.as_posix()}"})  # twin
+    assert_decision("deny", "Bash", {"command": f"rm {f.as_posix()}''"})
+    d = fresh()
+    assert_decision("allow", "Bash", {"command": f"echo x > '{d.as_posix()}/ok.txt'"})  # twin
+    repo = git_repo()
+    assert_decision("deny", "Bash", {"command": f"echo x > {d.as_posix()}/'..'/{repo.name}/a.txt"})
+    assert_decision("deny", "Bash", {"command": f"rm {d.as_posix()}/a\x00b.txt"})
+    assert_decision("deny", "Write", {"file_path": f"{d.as_posix()}/a\x00b.txt", "content": "x"})
+    assert_decision("allow", "Write", {"file_path": f"{d.as_posix()}/ab.txt", "content": "x"})  # twin
+
+
+def test_g_hook_route_for_nul_in_redirect():
+    d = fresh()
+    assert_decision("deny", "Bash", {"command": f"echo x > {d.as_posix()}/a\x00b.txt"})
+
+
+
 def run_all(g) -> int:
     fails = 0
     for name in [n for n in g if n.startswith("test_")]:

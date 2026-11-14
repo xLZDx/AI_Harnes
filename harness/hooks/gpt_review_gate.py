@@ -166,9 +166,9 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 # under ENABLED_REPO_ROOTS.
 EXCLUDED_REPO_ROOTS = []
 
-COMMIT_RE = re.compile(r"\bgit\s+commit\b", re.IGNORECASE)
+COMMIT_RE = re.compile(r"\bgit\b[^\n]*?\bcommit\b", re.IGNORECASE)  # prefilter only; _commit_detect decides (options may sit between git and commit)
 PUSH_RE = re.compile(r"\bgit\b", re.IGNORECASE)  # prefilter only; _commit_detect.is_push_command decides
-SKIP_RE = re.compile(r"--help\b|(?<!\S)-h\b|--dry-run\b", re.IGNORECASE)
+QUOTED_BLANK_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
 CD_RE = re.compile(r'^\s*(?:cd|pushd)\s+(?P<path>"[^"]+"|\'[^\']+\'|[^\s)]+)\s*\)?\s*$')
 
 # See codex_review_gate.py for the measured incident this guards against (Git-Bash
@@ -211,11 +211,29 @@ def split_segments(command):
     return cleaned
 
 
+def _is_skip_flag_segment(seg):
+    """True when the segment carries `--help`, `-h` or `--dry-run` as a real, standalone option: quoted text is
+    ignored (`git commit -m "fix --dry-run"`), a flag glued to other text is not a flag (`feature--help`,
+    `--push-option=--dry-run`), and the value of `-o`/`--push-option` is not a flag."""
+    toks = QUOTED_BLANK_RE.sub('""', seg).split()
+    skip_next = False
+    for tok in toks:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-o", "--push-option"):
+            skip_next = True
+            continue
+        if tok.lower() in ("--help", "-h", "--dry-run"):
+            return True
+    return False
+
+
 def skip_applies(command):
     """`--help`, `-h` and `--dry-run` skip the gate only when EVERY command segment that mentions git carries the
     flag itself: `git push origin main; echo -h` and `git push origin main # --help` are real pushes."""
     git_segments = [seg for seg in split_segments(command) if re.search(r"\bgit\b", seg)]
-    return bool(git_segments) and all(SKIP_RE.search(seg) for seg in git_segments)
+    return bool(git_segments) and all(_is_skip_flag_segment(seg) for seg in git_segments)
 
 
 def resolve_effective_cwd(command, base_cwd):
@@ -295,6 +313,20 @@ def warn_allow(payload, warn_reason):
     }))
 
 
+def _tail_lines(path, count=500, max_bytes=4_000_000):
+    """The last `count` lines of a text file, reading at most `max_bytes` from its end, so a huge receipts file
+    or one giant line cannot exhaust memory or the hook's time budget. Raises OSError like open() does."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # the first line is probably cut in the middle
+    return lines[-count:]
+
+
 def recent_receipt(repo_root):
     """Most recent fresh-enough receipt for this repo, or None. Returns the full entry (not just
     a bool) so the caller can tell an actual pass from a fail-open attempt -- see the commit-path
@@ -303,33 +335,31 @@ def recent_receipt(repo_root):
         return None
     now = datetime.now(timezone.utc)
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        lines = _tail_lines(RECEIPTS_FILE)
     except OSError:
         return None
-    for line in reversed(lines[-500:]):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(entry, dict):
-            continue
-        ts_raw = entry.get("timestamp")
-        cwd = entry.get("cwd")
-        if not ts_raw or not cwd:
-            continue
-        try:
+            if not isinstance(entry, dict):
+                continue
+            ts_raw = entry.get("timestamp")
+            cwd = entry.get("cwd")
+            if not ts_raw or not cwd:
+                continue
             ts = datetime.fromisoformat(ts_raw)
-        except (ValueError, TypeError):
-            continue
-        age_hours = (now - ts).total_seconds() / 3600.0
-        if age_hours > RECEIPT_MAX_AGE_HOURS:
-            continue
-        if is_under(cwd, repo_root):
-            return entry
+            if ts.tzinfo is None:
+                continue  # a time without a zone cannot be compared with now: not a usable receipt
+            age_hours = (now - ts).total_seconds() / 3600.0
+            if age_hours > RECEIPT_MAX_AGE_HOURS:
+                continue
+            if is_under(cwd, repo_root):
+                return entry
+        except Exception:
+            continue  # one hostile or malformed line must not hide the other receipts, nor crash the gate
     return None
 
 
@@ -337,26 +367,24 @@ def latest_receipt_for_repo(repo_root):
     if not RECEIPTS_FILE.is_file():
         return None
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
+        lines = _tail_lines(RECEIPTS_FILE)
     except OSError:
         return None
-    for line in reversed(lines[-500:]):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
+            if not isinstance(entry, dict):
+                continue
+            cwd = entry.get("cwd")
+            if not cwd:
+                continue
+            if is_under(cwd, repo_root):
+                return entry
+        except Exception:
             continue
-        if not isinstance(entry, dict):
-            continue
-        cwd = entry.get("cwd")
-        if not cwd:
-            continue
-        if is_under(cwd, repo_root):
-            return entry
-    return None
 
 
 def final_receipt_fresh(repo_root):
@@ -387,13 +415,15 @@ def _is_real_approve(entry):
                 and str(entry.get("verdict") or "").strip().upper() == "APPROVE")
 
 
-def git_dash_c_dir(command, base_cwd):
-    """The directory named by `git -C <dir>` in the command segment that holds `push` (quoted or not),
-    resolved against base_cwd; else None."""
+def git_dash_c_dirs(command, base_cwd):
+    """One entry per command segment that holds `push` or `commit` and names a repository folder with
+    `git -C <dir>`, `--work-tree` or `--git-dir` (quoted or not), resolved against base_cwd: the folder, or ""
+    when it does not exist. Segments that name no folder add nothing."""
+    found = []
     for seg in split_segments(command):
-        if not re.search(r"\bpush\b", seg):
+        if not re.search(r"\b(?:push|commit)\b", seg):
             continue
-        val =r"(\"[^\"]*\"|'[^']*'|\S+)"
+        val = r"(\"[^\"]*\"|'[^']*'|\S+)"
         m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+" + val, seg)
         is_git_dir = False
         if not m:
@@ -405,14 +435,20 @@ def git_dash_c_dir(command, base_cwd):
             continue
         raw = m.group(1).strip("\"'")
         if not raw:
-            return None
+            continue
         path = Path(normalise_shell_path(raw))
         if not path.is_absolute():
             path = Path(base_cwd) / path
         if is_git_dir and path.name.lower() == ".git":
             path = path.parent  # --git-dir <repo>/.git: the repository is the folder that holds it
-        return str(path) if path.is_dir() else ""
-    return None
+        found.append(str(path) if path.is_dir() else "")
+    return found
+
+
+def git_dash_c_dir(command, base_cwd):
+    """The first folder of git_dash_c_dirs (a path, or "" when missing); None when no segment names one."""
+    found = git_dash_c_dirs(command, base_cwd)
+    return found[0] if found else None
 
 
 OUTAGE_STEPS = (
@@ -461,10 +497,15 @@ def main():
 
     raw_cwd = payload.get("cwd") or os.getcwd()
     cwd = resolve_effective_cwd(command, raw_cwd)
-    git_c = git_dash_c_dir(command, cwd)
+    git_cs = git_dash_c_dirs(command, cwd)
+    git_c = git_cs[0] if git_cs else None
+    if is_push and len(set(git_cs)) > 1:
+        deny("GPT REVIEW gate (push): this command pushes more than one repository (`git -C` names different "
+             "folders). The gate can check only one review per command: push each repository on its own.",
+             {"command": command[:200]})
     if git_c:
         cwd = git_c
-    elif git_c == "" and is_push:
+    elif git_c == "" and (is_push or is_commit):
         deny("GPT REVIEW gate (push): `git -C`/`--work-tree`/`--git-dir` names a folder that does not exist, so the "
              "repository of this push cannot be checked. Use an existing folder.", {"command": command[:200]})
 
