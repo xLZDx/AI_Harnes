@@ -1067,8 +1067,14 @@ def restore_report(from_file=None) -> dict:
                 try:
                     d = store_dir() / "corrupt"
                     d.mkdir(parents=True, exist_ok=True)
-                    _write_raw(d / f"replaced-by-restore-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl",
-                               _jsonl().read_bytes())
+                    # a unique name that never replaces an earlier copy (GPT-PM S20 F2-R1); restores are serialized by
+                    # the writer lock, so the exists() check cannot race with another restore of this store
+                    stem = f"replaced-by-restore-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{time.time_ns() % 10**9:09d}"
+                    keep, n = d / f"{stem}.jsonl", 0
+                    while keep.exists():
+                        n += 1
+                        keep = d / f"{stem}-{n}.jsonl"
+                    _write_raw(keep, _jsonl().read_bytes())
                 except OSError as exc:
                     # never replace a store whose current bytes could not be kept (GPT-PM S20 F2)
                     _log_error("restore:keep", exc)
