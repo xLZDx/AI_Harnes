@@ -890,5 +890,87 @@ def test_off_drive_fallback_is_logged_once_per_store_with_a_marker():
     assert not (st2.dir / "backup-offdrive-off.marker").exists() and not any("off-drive" in e for e in st2.errors())
 
 
+QUEUE_DRIVER = """import json, sys
+sys.path.insert(0, sys.argv[1])
+import _lessons as L
+L.LOCK_WAIT_S = 0.2
+base = {"kind": "FAILURE", "project": "ProjA", "date": "2026-05-01", "title": "Same title", "ordinal": 1, "block": 1,
+        "actions": ["push"]}
+rules = json.loads(sys.argv[2])
+print(json.dumps(L.add_many([dict(base, rule=r) for r in rules])))
+"""
+
+
+def queue_via_driver(st, rules):
+    drv = st.root / "queue_driver.py"
+    drv.write_text(QUEUE_DRIVER, encoding="utf-8")
+    hooks = str(h.SRC / "harness" / "hooks")
+    return h.run([h.PY, "-I", "-s", str(drv), hooks, json.dumps(rules)], st.root, st.env)
+
+
+def test_reworded_rule_with_same_idem_queued_beside_its_earlier_wording_keeps_both():
+    st = Store("f1queue")
+    st.add("Existing rule about hooks.")
+    lock = st.dir / "lessons.jsonl.lock"
+    lock.write_text("99999", encoding="utf-8")  # a fresh lock held by someone else
+    try:
+        r = queue_via_driver(st, ["Wording one about reviewing the push.", "Wording two about reviewing the push."])
+        assert r.rc == 0 and [x["status"] for x in json.loads(r.out.splitlines()[-1])] == ["queued", "queued"], r.all
+        assert len(list((st.dir / "outbox").glob("*.json"))) == 2, "a reworded rule must not overwrite its earlier wording"
+    finally:
+        lock.unlink()
+    assert st.add("Third rule about commit.").rc == 0  # the next writer drains the outbox
+    rules = sorted(x["rule"] for x in st.records())
+    assert rules == ["Existing rule about hooks.", "Third rule about commit.", "Wording one about reviewing the push.",
+                     "Wording two about reviewing the push."], rules
+    assert not list((st.dir / "outbox").glob("*.json"))
+    assert st.add("Third rule about commit.").rc == 0  # a second drain adds nothing
+    again = queue_via_driver(st, ["Wording one about reviewing the push.", "Wording two about reviewing the push."])
+    assert [x["status"] for x in json.loads(again.out.splitlines()[-1])] == ["duplicate", "duplicate"], again.all
+    assert len(st.records()) == 4
+
+
+def test_the_same_entry_queued_twice_leaves_one_outbox_file_and_one_record():  # twin of the reworded-rule test
+    st = Store("f1queuetwin")
+    st.add("Existing rule about hooks.")
+    lock = st.dir / "lessons.jsonl.lock"
+    lock.write_text("99999", encoding="utf-8")
+    try:
+        for _ in range(2):
+            r = queue_via_driver(st, ["Wording one about reviewing the push."])
+            assert [x["status"] for x in json.loads(r.out.splitlines()[-1])] == ["queued"], r.all
+        assert len(list((st.dir / "outbox").glob("*.json"))) == 1
+    finally:
+        lock.unlink()
+    assert st.add("Third rule about commit.").rc == 0
+    assert sorted(x["rule"] for x in st.records()) == ["Existing rule about hooks.", "Third rule about commit.",
+                                                      "Wording one about reviewing the push."]
+
+
+def test_restore_refuses_when_the_current_store_cannot_be_preserved_and_leaves_it_unchanged():
+    st = Store("f2keepfail")
+    for n in range(2):
+        st.add(f"Keep rule {n} about push.")
+    assert n_backups(st) >= 1
+    p = st.dir / "lessons.jsonl"
+    before = p.read_bytes()
+    (st.dir / "corrupt").write_text("a file where the keep folder should be", encoding="utf-8")
+    r = st.cli("restore")
+    assert r.rc == 1 and "restore failed" in r.out and "could not be preserved" in r.out, r.all
+    assert p.read_bytes() == before
+    assert any("restore:keep" in e for e in st.errors()), st.errors()
+
+
+def test_restore_with_a_writable_corrupt_folder_succeeds_and_keeps_a_replaced_copy():  # twin
+    st = Store("f2keepok")
+    for n in range(2):
+        st.add(f"Keep rule {n} about push.")
+    before = (st.dir / "lessons.jsonl").read_bytes()
+    r = st.cli("restore")
+    assert r.rc == 0 and "restored from" in r.out, r.all
+    copies = list((st.dir / "corrupt").glob("replaced-by-restore-*.jsonl"))
+    assert len(copies) == 1 and copies[0].read_bytes() == before
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))
