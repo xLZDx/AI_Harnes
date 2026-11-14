@@ -4,7 +4,7 @@ keep their plan in PROJECT_PLAN.md and have no .harness/ledger.json (operator or
 
 Read-only: it never writes a plan or a ledger. Status mapping (PROJECT_PLAN.md -> ledger state):
   ACCEPTED -> done; IN_REVIEW -> verified; IN_PROGRESS -> in_progress; PARTIAL -> implemented; NOT_STARTED -> todo;
-  BLOCKED_OPERATOR / BLOCKED_EXTERNAL / PARKED -> todo with a `blocked` field; SUPERSEDED -> state `superseded` (kept: a sprint's
+  BLOCKED_OPERATOR / BLOCKED_EXTERNAL / BLOCKED_PROHIBITED / PARKED -> todo with a `blocked` field; SUPERSEDED -> state `superseded` (kept: a sprint's
   size is its canonical placement count, the report shows these as their own category). A sprint is `closed` when it has at
   least one non-superseded task and every non-superseded task is done, else `open`.
 Stdlib only.
@@ -21,7 +21,7 @@ MAP = {"SUPERSEDED": "superseded", "ACCEPTED": "done", "IN_REVIEW": "verified", 
        "APPROVED_PUSHED": "verified", "DONE_SPRINT_LEVEL": "verified",
        "GIT_ACTIVITY_NOT_CLOSED": "in_progress", "HANDOFF_NO_APPROVE": "in_progress", "ACTIVE": "in_progress",
        "QUEUED": "todo", "UNCONFIRMED": "todo", "NOT_RUN": "todo", "FOLLOW_ON": "todo",
-       "BLOCKED_OPERATOR": "todo", "BLOCKED_EXTERNAL": "todo", "PARKED": "todo"}
+       "BLOCKED_OPERATOR": "todo", "BLOCKED_EXTERNAL": "todo", "BLOCKED_PROHIBITED": "todo", "PARKED": "todo"}
 HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
 
 
