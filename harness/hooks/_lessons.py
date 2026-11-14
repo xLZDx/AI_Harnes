@@ -11,7 +11,8 @@ Store folder: HARNESS_LESSONS_DIR, else _agentio.state_dir("lessons") (outside e
   errors.jsonl       one line per swallowed error or notable event (every public function fails open).
 
 Backups: a raw byte copy of lessons.jsonl, taken only after a write (add, add_many, restore, CLI rebuild), never on the
-search path. Folder: HARNESS_LESSONS_BACKUP; else <store>/backup when HARNESS_LESSONS_DIR is set; else D:\\Backup\\lessons
+search path. Folder: HARNESS_LESSONS_BACKUP; else <store>/backup whenever the store is not the default
+~/.harness-hooks/lessons (HARNESS_LESSONS_DIR or HARNESS_HOOK_STATE moved it); else D:\\Backup\\lessons
 (a Windows default outside git). Names `lessons-<YYYYmmdd-HHMMSS>-<counter>.jsonl` sort by time. The last 20 are kept plus the
 newest one of each day for 30 days. A backup is skipped (and logged) when the store has an unparsable line or fewer valid
 records than the newest backup.
@@ -78,8 +79,13 @@ def backup_dir() -> Path:
     override = os.environ.get("HARNESS_LESSONS_BACKUP")
     if override:
         return Path(override)
-    if os.environ.get("HARNESS_LESSONS_DIR"):  # a redirected (test) store never reaches the real backup drive
-        return store_dir() / "backup"
+    sd = store_dir()
+    try:  # a store moved by HARNESS_LESSONS_DIR or HARNESS_HOOK_STATE never reaches the real backup drive
+        moved = sd.resolve() != (Path.home() / ".harness-hooks" / "lessons").resolve()
+    except OSError:
+        moved = True
+    if moved:
+        return sd / "backup"
     if os.name == "nt":
         return Path("D:\\Backup\\lessons")
     return Path.home() / ".harness-hooks" / "lessons-backup"
@@ -164,9 +170,11 @@ def rule_key(rule: str) -> str:
     return _sha(n if n else "raw:" + (rule or "").strip())
 
 
-def entry_idem(project: str, sha: str, date: str, title: str, kind: str, ordinal: int) -> str:
-    """Identity of a log entry: where it came from, never the rule wording (a reworded rule is the same entry)."""
-    return _sha("\n".join((project, sha, date, title, kind, str(int(ordinal)))))
+def entry_idem(project: str, date: str, title: str, kind: str, ordinal: int) -> str:
+    """Identity of a log entry: project, date, title, kind and ordinal among entries of that kind in the block. Never the rule
+    wording (a reworded rule is the same entry) and never the commit sha (a post-commit import and a bulk import of the same
+    entry match); the sha is kept only as provenance."""
+    return _sha("\n".join((project, date, title, kind, str(int(ordinal)))))
 
 
 URL_CRED_RE = re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s/:@]+:[^\s/@]+@", re.I)
@@ -284,7 +292,7 @@ def parse_log(text: str) -> dict:
     """Parse a core/LESSONS_LOG.md. Returns {"entries": [{date, kind, title, rule, text, ordinal}], "no_rule": n,
     "no_rule_texts": [text], "neutral": n, "unparsed": n, "total": n}. One entry per Kind marker; an entry with no rule is
     counted in no_rule, a NEUTRAL one in neutral; a `## ` header without a date or a dated block with no recognisable Kind
-    (and some content) is counted in unparsed. `ordinal` is the entry's position inside its block. Recognised shapes:
+    (and some content) is counted in unparsed. `ordinal` is the entry's position among entries of its kind inside its block. Recognised shapes:
     `## <date> <title>` blocks with bullet or plain `Kind:` lines, a `(KIND)` suffix in the header, one-line
     `- KIND <date> <scope>: text`, and `- <date> <scope>: KIND - text`."""
     text = (text or "").lstrip("\ufeff")
@@ -342,8 +350,10 @@ def parse_log(text: str) -> dict:
                 found.append({"kind": hk.group(1), "date": b["date"], "title": b["title"], "lines": list(b["lines"])})
             elif any(x.strip() for x in b["lines"]):
                 unparsed += 1  # a dated block with content but no recognisable Kind
-        for i, c in enumerate(found):
-            c["ordinal"] = i
+        per_kind: dict = {}
+        for c in found:
+            c["ordinal"] = per_kind.get(c["kind"], 0)  # position among the entries of the same kind in this block
+            per_kind[c["kind"]] = c["ordinal"] + 1
             _finish(c, entries)
     out, no_rule, no_rule_texts, neutral = [], 0, [], 0
     for e in entries:
@@ -409,21 +419,37 @@ def _line(obj: dict) -> bytes:
 
 
 def _report_bad(bad: list, action: str, where: str, save: bool) -> None:
-    """Log every unusable jsonl line (number and length); when `save`, keep its bytes in corrupt/<ts>.txt."""
+    """Log every unusable jsonl line (number and length) once per distinct content (corrupt/logged.txt keeps the hashes);
+    when `save`, keep the bytes with their line numbers in corrupt/<ts>.txt."""
     if not bad:
         return
+    d = store_dir() / "corrupt"
+    seen_f = d / "logged.txt"
+    try:
+        seen = set(seen_f.read_text(encoding="ascii", errors="replace").split())
+    except OSError:
+        seen = set()
+    fresh = []
     for n, raw, _ in bad:
+        h = hashlib.sha256(raw).hexdigest()[:24]
+        if h not in seen:
+            fresh.append((n, raw, h))
+    if not fresh and not save:
+        return
+    for n, raw, _h in fresh:
         _log_event(where, f"jsonl line {n} {action}", line=n, length=len(raw))
-    if save:
-        try:
-            d = store_dir() / "corrupt"
-            d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        if save:
             name = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.txt"
             with open(name, "ab") as fh:
                 for n, raw, _ in bad:
                     fh.write(f"# line {n} length {len(raw)}\n".encode("ascii") + raw + b"\n")
-        except OSError as exc:
-            _log_error(where + ":corrupt", exc)
+        if fresh:
+            with open(seen_f, "ab") as fh:
+                fh.write("".join(h + "\n" for _, _, h in fresh).encode("ascii"))
+    except OSError as exc:
+        _log_error(where + ":corrupt", exc)
 
 
 def _next_id(objs) -> str:
@@ -469,7 +495,9 @@ def _prepare(item: dict):
     ident_title = title if title is not None else "rule:" + key
     entry = {"date": date, "project": project, "kind": kind, "tags": tags, "actions": actions or ["general"],
              "rule": rule, "source": source, "key": key,
-             "idem": entry_idem(project, source["sha"], date, ident_title, kind, ordinal), "seen_in": [project]}
+             "idem": entry_idem(project, date, ident_title, kind, ordinal), "seen_in": [project]}
+    if source["sha"]:
+        entry["shas"] = [source["sha"]]
     return entry, None
 
 
@@ -486,14 +514,14 @@ def _apply(entries: list, results: list) -> bool:
     sc = _scan(path)
     recs = sc["recs"]
     rewrite = sc["bom"]
-    if recs and recs[-1][2] is None:  # truncated or corrupt last line: drop it, but keep its bytes and log it
-        _report_bad([recs[-1]], "dropped", "apply", save=True)
-        recs = recs[:-1]
+    bad = [r for r in recs if r[2] is None]
+    if bad:  # truncated or corrupt lines: keep their bytes in corrupt/, log once, rewrite the store without them
+        _report_bad(bad, "dropped", "apply", save=True)
+        recs = [r for r in recs if r[2] is not None]
         rewrite = True
     elif not sc["ends_nl"]:
         rewrite = True
-    _report_bad([r for r in recs if r[2] is None], "skipped (kept in file)", "apply", save=False)
-    objs = [o for _, _, o in recs if o is not None]
+    objs = [o for _, _, o in recs]
     by_idem: dict = {}
     by_key: dict = {}
     for o in objs:
@@ -501,50 +529,82 @@ def _apply(entries: list, results: list) -> bool:
             if i:
                 by_idem.setdefault(i, o)
         by_key.setdefault(o.get("key"), o)
+    batch_keys = {e["key"] for e in entries}
     added: list = []
+
+    def note_sha(rec: dict, e: dict) -> bool:
+        sha = (e.get("source") or {}).get("sha")
+        if not sha:
+            return False
+        shas = rec.setdefault("shas", [])
+        if sha in shas:
+            return False
+        shas.append(sha)
+        return True
+
     for e in entries:
         old = by_idem.get(e["idem"])
-        if old is not None:
-            if old.get("idem") == e["idem"] and old.get("rule") != e["rule"]:
-                _log_event("apply", f"{old.get('id')} rule reworded at its source; stored text updated in place")
-                old["rule"], old["key"] = e["rule"], e["key"]
-                old["tags"], old["actions"] = e["tags"], e["actions"]
-                by_key.setdefault(e["key"], old)
+        # in place only when the identity is the record's own, its old rule text is gone from this batch, and the new text
+        # is not already another record's rule (never two records with one key)
+        if (old is not None and old.get("idem") == e["idem"] and old.get("rule") != e["rule"]
+                and old.get("key") not in batch_keys and by_key.get(e["key"], old) is old):
+            _log_event("apply", f"{old.get('id')} rule reworded at its source; stored text updated in place")
+            if by_key.get(old.get("key")) is old:
+                del by_key[old.get("key")]
+            old["rule"], old["key"] = e["rule"], e["key"]
+            old["tags"], old["actions"] = e["tags"], e["actions"]
+            by_key[e["key"]] = old
+            note_sha(old, e)
+            rewrite = True
+            results.append({"status": "updated", "id": old.get("id")})
+            continue
+        if old is not None and old.get("key") == e["key"]:
+            if note_sha(old, e):
                 rewrite = True
-                results.append({"status": "updated", "id": old.get("id")})
-            else:
-                results.append({"status": "duplicate", "id": old.get("id")})
+            results.append({"status": "duplicate", "id": old.get("id")})
             continue
         old = by_key.get(e["key"])
         if old is not None:
+            changed = False
             idems = old.setdefault("idems", [])
-            if e["idem"] not in idems:
+            if e["idem"] not in idems and e["idem"] != old.get("idem"):
                 idems.append(e["idem"])
-            by_idem[e["idem"]] = old
-            seen = old.setdefault("seen_in", [old.get("project")])
-            rewrite = True
-            if e["project"] in seen:
+                changed = True
+            if not idems:
+                del old["idems"]
+            by_idem.setdefault(e["idem"], old)
+            if "seen_in" not in old:
+                old["seen_in"] = [old.get("project")]
+                changed = True
+            if note_sha(old, e):
+                changed = True
+            if e["project"] in old["seen_in"]:
                 results.append({"status": "duplicate", "id": old.get("id")})
             else:
-                seen.append(e["project"])
+                old["seen_in"].append(e["project"])
+                changed = True
                 results.append({"status": "merged", "id": old.get("id")})
+            if changed:
+                rewrite = True
             continue
         rec = dict(e)
         rec["id"] = _next_id(objs)
         ordered = {"id": rec["id"], **{k: v for k, v in rec.items() if k != "id"}}
         objs.append(ordered)
-        by_idem[e["idem"]] = ordered
+        by_idem.setdefault(e["idem"], ordered)
         by_key[e["key"]] = ordered
         added.append(ordered)
         results.append({"status": "added", "id": ordered["id"]})
     new_lines = [_line(o) for o in added]
     if rewrite:
-        lines = [raw if o is None else _line(o) for _, raw, o in recs]  # every record is written, whatever its key
+        lines = [_line(o) for _, _, o in recs]  # every valid record is written, whatever its key
         _write_raw(path, b"".join(ln + b"\n" for ln in lines + new_lines))
         return True
     if new_lines:
         with open(path, "ab") as fh:
             fh.write(b"".join(ln + b"\n" for ln in new_lines))
+            fh.flush()
+            os.fsync(fh.fileno())
         return True
     return False
 
@@ -692,6 +752,16 @@ def _prune_backups(bd: Path) -> None:
                 pass
 
 
+BASELINE_FILE = "restore-baseline.json"
+
+
+def _clear_baseline() -> None:
+    try:
+        (store_dir() / BASELINE_FILE).unlink()
+    except OSError:
+        pass
+
+
 def _backup(path: Path) -> None:
     """Raw byte copy of the store; skipped (and logged) when the store is damaged or smaller than the newest backup."""
     try:
@@ -712,9 +782,14 @@ def _backup(path: Path) -> None:
         if files:
             prev = files[-1].read_bytes()
             if prev == data:
+                _clear_baseline()
                 _set_backup("none", "identical to the newest backup")
                 return
             pv, _ = _valid_bad(prev)
+            try:  # after an explicit restore the restored store is the baseline, not the newest (larger) backup
+                pv = int(json.loads((store_dir() / BASELINE_FILE).read_text(encoding="ascii"))["valid"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
             if valid < pv:
                 _set_backup("skipped", f"store has {valid} records, newest backup {files[-1].name} has {pv}")
                 return
@@ -726,6 +801,7 @@ def _backup(path: Path) -> None:
                 counter = max(counter, int(m.group(3)) + 1)
         name = bd / f"lessons-{stamp}-{counter:03d}.jsonl"
         _write_raw(name, data)
+        _clear_baseline()
         _prune_backups(bd)
         _set_backup("ok", str(name))
     except Exception as exc:  # noqa: BLE001 - a missing backup drive must never block the store
@@ -765,7 +841,7 @@ def _index_line(o: dict) -> str:
 def _rebuild_locked(backup: bool = True) -> None:
     sd = store_dir()
     path = _jsonl()
-    _sweep_tmp([sd, sd / "outbox", backup_dir()])
+    _sweep_tmp([sd, sd / "outbox", sd / "sessions", backup_dir()])
     objs = load_lessons()
     size, mtime, digest = _file_state(path)
     head = f"<!-- lessons.jsonl size={size} mtime_ns={mtime} sha256={digest} count={len(objs)} -->"
@@ -968,6 +1044,7 @@ def restore_report(from_file=None) -> dict:
                     _log_error("restore:keep", exc)
             _LAST_BACKUP.update(status="none", detail="")
             _write_raw(_jsonl(), data)
+            _write_raw(store_dir() / BASELINE_FILE, json.dumps({"valid": _valid_bad(data)[0], "from": chosen.name}).encode("ascii", "replace"))
             _rebuild_locked(backup=True)
         rep["ok"], rep["path"] = True, str(chosen)
     except Exception as exc:  # noqa: BLE001

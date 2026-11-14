@@ -9,8 +9,9 @@
   lessons.py import --repo <path> [--repo <path> ...] [--all <root>] [--sha S]   (never reads Virtual_marketing_company or VMC_*)
   lessons.py import --repo <path> --commit <sha>   (post-commit writer: only entries that commit added or changed in the log)
 
-Store: HARNESS_LESSONS_DIR or ~/.harness-hooks/lessons; backups: HARNESS_LESSONS_BACKUP (default <store>/backup when
-HARNESS_LESSONS_DIR is set, else D:\\Backup\\lessons).
+Store: HARNESS_LESSONS_DIR or ~/.harness-hooks/lessons; backups: HARNESS_LESSONS_BACKUP (default <store>/backup when the
+store was moved by HARNESS_LESSONS_DIR or HARNESS_HOOK_STATE, else D:\\Backup\\lessons).
+`add` exits 1 when the add failed, 3 when it was refused (secret, excluded, invalid).
 The module is taken from harness/hooks next to this tool, or from the installed hooks folder (~/.claude/hooks, ~/.codex/hooks,
 or HARNESS_HOOKS_DIR). Exit code 0 unless the arguments are wrong, an import failed (1), an entry was queued because the
 store lock timed out (2), or a restore failed (1). A backup that failed or was skipped is printed, never fatal.
@@ -61,7 +62,12 @@ def cmd_add(a) -> int:
                 source={"repo": a.repo or "", "sha": a.sha or ""})
     print(json.dumps(res) if res else "lessons: add failed (see errors.jsonl)")
     _backup_note()
-    return 2 if res and res.get("status") == "queued" else 0
+    st = res.get("status") if res else None
+    if not res or st == "failed":
+        return 1
+    if st in ("secret", "excluded", "invalid"):
+        return 3
+    return 2 if st == "queued" else 0
 
 
 def cmd_search(a) -> int:

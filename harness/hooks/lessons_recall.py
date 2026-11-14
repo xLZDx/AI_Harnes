@@ -122,7 +122,8 @@ def _log(where: str, ex) -> None:
 
 
 def _marker(session: str, _agentio):
-    d = _agentio.state_dir("lessons") / "sessions"
+    import _lessons  # the store folder honours HARNESS_LESSONS_DIR too
+    d = _lessons.store_dir() / "sessions"
     d.mkdir(parents=True, exist_ok=True)
     import time
     cutoff = time.time() - SESSION_KEEP_S
