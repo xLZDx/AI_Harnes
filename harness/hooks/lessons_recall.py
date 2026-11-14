@@ -16,7 +16,9 @@ codex_spawn_shim.py forwards it and tests/test_hooks_dual.py treats it as an all
 Codex too; if Codex ignores it the lesson is simply not shown there (no failure), and the fallback is the CORE.md rule plus
 GLOBAL_LESSONS.md / `tools/lessons.py search`.
 
-Never blocks: always exit 0, errors go once per call to <state>/lessons/errors.jsonl (via _lessons) or stderr.
+Never blocks: always exit 0, errors go to <state>/lessons/errors.jsonl (via _lessons, or written directly when _lessons
+cannot be imported). The search path never takes a lock and never rebuilds: a stale INDEX.md is served as it is. A call without
+a session id has no dedup marker. The JSON is written (ASCII-escaped) before the session marker is saved.
 Kill switch: HARNESS_LESSONS_RECALL=off. Stdlib only.
 """
 from __future__ import annotations
@@ -95,7 +97,31 @@ def _actions(data: dict) -> tuple[list, str]:
     return [], ""
 
 
-def _marker(session: str, _agentio) -> Path:
+def _log(where: str, ex) -> None:
+    """errors.jsonl line for this hook's own failure; direct write when _lessons is not importable. Never raises."""
+    try:
+        import _lessons
+        _lessons._log_error(where, ex)
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import time
+        d = os.environ.get("HARNESS_LESSONS_DIR")
+        if d:
+            base = d
+        else:
+            base = os.path.join(os.environ.get("HARNESS_HOOK_STATE") or os.path.join(os.path.expanduser("~"), ".harness-hooks"),
+                                "lessons")
+        os.makedirs(base, exist_ok=True)
+        rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "where": where, "error": f"{type(ex).__name__}: {ex}"[:300]}
+        with open(os.path.join(base, "errors.jsonl"), "ab") as fh:
+            fh.write((json.dumps(rec, ensure_ascii=True) + "\n").encode("ascii"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _marker(session: str, _agentio):
     d = _agentio.state_dir("lessons") / "sessions"
     d.mkdir(parents=True, exist_ok=True)
     import time
@@ -109,7 +135,7 @@ def _marker(session: str, _agentio) -> Path:
                 pass
     except OSError:
         pass
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session)[:80] or "nosession"
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", session)[:80]
     return d / (safe + ".json")
 
 
@@ -130,13 +156,16 @@ def main() -> int:
                 found.append((a, r))
         if not found:
             return 0
-        mk = _marker(str(data.get("session_id") or ""), ae)
-        try:
-            shown = json.loads(mk.read_text(encoding="utf-8"))
-            if not isinstance(shown, dict):
+        session = str(data.get("session_id") or "").strip()
+        mk = _marker(session, ae) if session else None
+        shown = {}
+        if mk is not None:
+            try:
+                shown = json.loads(mk.read_bytes().decode("utf-8-sig"))
+                if not isinstance(shown, dict):
+                    shown = {}
+            except (OSError, ValueError):
                 shown = {}
-        except (OSError, ValueError):
-            shown = {}
         picked, ids = [], set()
         for a, r in found:
             if r["id"] in ids or r["id"] in shown.get(a, []):
@@ -147,17 +176,20 @@ def main() -> int:
                 break
         if not picked:
             return 0
-        for a, r in picked:
-            shown.setdefault(a, []).append(r["id"])
-        try:
-            ae.atomic_write_text(mk, json.dumps(shown))
-        except OSError as ex:
-            sys.stderr.write(f"lessons_recall: marker not saved: {ex}\n")
         label = "/".join(dict.fromkeys(a for a, _ in picked))
         ctx = f"Global lessons for {label}: " + "; ".join(f"{r['id']} {r['rule']}" for _, r in picked)
         sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": ctx}},
-                                    ensure_ascii=False))
+                                    ensure_ascii=True))
+        sys.stdout.flush()
+        if mk is not None:  # the marker is saved only after the lessons were actually written out
+            for a, r in picked:
+                shown.setdefault(a, []).append(r["id"])
+            try:
+                ae.atomic_write_text(mk, json.dumps(shown))
+            except OSError as ex:
+                _log("recall:marker", ex)
     except Exception as ex:  # never block the tool call
+        _log("recall", ex)
         try:
             sys.stderr.write(f"lessons_recall: {type(ex).__name__}: {ex}\n")
         except Exception:

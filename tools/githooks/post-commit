@@ -24,7 +24,7 @@ if [ -n "$T" ]; then
   run_py "$T/ledger.py" commit-hook || log_err "post-commit: ledger.py commit-hook failed"
 else log_err "post-commit: harness tools not found"; fi
 # Global lessons (S20): when this commit changed core/LESSONS_LOG.md, import the entries it added. Never fails the commit.
-if git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "core/LESSONS_LOG.md"; then
+if git diff-tree --root --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "core/LESSONS_LOG.md"; then
   LT="$HARNESS_LESSONS_TOOL"
   if [ -z "$LT" ]; then
     CFG="${HARNESS_HOOK_CONFIG:-$HOME/.harness-hooks/config.json}"
@@ -36,7 +36,12 @@ if git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "core
   if [ -z "$LT" ] && [ -f "$TOP/tools/lessons.py" ]; then LT="$TOP/tools/lessons.py"; fi
   if [ -z "$LT" ]; then log_err "post-commit: lessons tool not found"
   else
-    LOUT="$(run_py "$LT" import --repo "$TOP" --commit HEAD 2>&1)" || log_err "post-commit: lessons.py import failed: $(printf '%s' "$LOUT" | tail -n 1)"
+    LOUT="$(run_py "$LT" import --repo "$TOP" --commit HEAD 2>&1)"; LRC=$?
+    # One log line whenever something was queued, refused, skipped or failed, or the changed log parsed to nothing.
+    if [ "$LRC" -ne 0 ]; then log_err "post-commit: lessons.py import exit $LRC: $(printf '%s' "$LOUT" | tail -n 1)"
+    elif printf '%s' "$LOUT" | grep -Eq '(skipped-no-rule|skipped-secret|unparsed|queued|failed)=[1-9]|(^| )parsed=0( |$)'; then
+      log_err "post-commit: lessons import needs attention: $(printf '%s' "$LOUT" | tail -n 1)"
+    fi
   fi
 fi
 exit 0
