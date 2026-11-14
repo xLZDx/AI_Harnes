@@ -846,7 +846,7 @@ def _split_segments_quote_aware(command: str) -> list[str]:
     return segments
 
 
-def _segment_needs_go(segment: str) -> tuple[bool, str]:
+def _segment_needs_go(segment: str, cwd=None) -> tuple[bool, str]:
     """(needs_go, reason) for one `;`/`&&`/`|`-split segment, blocklist model (see above)."""
     segment = segment.strip()
     if not segment:
@@ -873,6 +873,8 @@ def _segment_needs_go(segment: str) -> tuple[bool, str]:
         return False, f"git_{sub or 'bare'}"
 
     if head in _DELETE_HEADS:
+        if _delete_is_harmless(segment, cwd):
+            return False, f"harmless_delete:{head}"
         return True, f"delete_command:{head}"
 
     return False, f"not_on_blocklist:{head}"
@@ -944,6 +946,149 @@ def _nearest_existing_dir(path: Path) -> Path:
     return p
 
 
+# S21-T1 (operator 2026-11-14: "на любую мелочь ГО давать, надо как то смягчить"). A path counts as
+# throwaway when it resolves under a temp root (the session scratchpad, D:\tmp, the OS temp folder),
+# its nearest existing ancestor is outside every git repository, and no part of it names evidence or
+# configuration the harness trusts (receipts, approvals, gate state, ~/.claude, ~/.codex): those
+# folders sit under D:\tmp or the user profile too, and a forged receipt written "to a temp file"
+# would defeat the review gates.
+_TEMP_SENSITIVE_PART_RE = re.compile(
+    r"(?i)^(claude_.*|.*(receipt|approval|gate).*|\.claude|\.codex|\.harness.*)$"
+)
+
+
+def _temp_roots() -> list[Path]:
+    roots = [Path("D:/tmp")]
+    try:
+        import tempfile
+        roots.append(Path(tempfile.gettempdir()))
+    except Exception:
+        pass
+    for name in ("TEMP", "TMP"):
+        if os.environ.get(name):
+            roots.append(Path(os.environ[name]))
+    return roots
+
+
+def _is_throwaway_path(resolved: Path) -> bool:
+    """True for a resolved path that is safe to write or delete without a GO (see the note above)."""
+    text = str(resolved)
+    under_root = None
+    for root in _temp_roots():
+        if _is_under(resolved, root):
+            under_root = root
+            break
+    if under_root is None and not _SCRATCHPAD_SEGMENT_RE.search(text):
+        return False
+    if under_root is not None:
+        try:
+            parts = resolved.resolve().relative_to(under_root.resolve()).parts
+        except (OSError, ValueError):
+            parts = ()
+    else:
+        parts = ()
+    if any(_TEMP_SENSITIVE_PART_RE.match(part) for part in parts):
+        return False
+    probe = resolved if resolved.is_dir() else resolved.parent
+    return not _git_toplevel(str(_nearest_existing_dir(probe)))
+
+
+def _paths_all_throwaway(paths, cwd) -> bool:
+    """True when every given path (relative ones against cwd) is throwaway; an empty list is False."""
+    paths = [str(x) for x in (paths or []) if x and str(x).strip()]
+    if not paths:
+        return False
+    for raw in paths:
+        if any(c in raw for c in "*?[$%~") or ".." in Path(raw).parts:
+            return False
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path(cwd or os.getcwd()) / path
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        if not _is_throwaway_path(resolved):
+            return False
+    return True
+
+
+# Flags of the delete heads that take no value; anything else unknown means "ask".
+_DELETE_FLAGS_NOVALUE = {"-f", "-r", "-rf", "-fr", "-d", "-v", "-i", "--force", "--recursive", "--dir",
+                         "--verbose", "-force", "-recurse", "-verbose", "-whatif", "-confirm", "-confirm:$false",
+                         "-confirm:false", "-p", "--parents"}
+_DELETE_FLAGS_PATH = {"-path", "-literalpath"}
+_DELETE_FLAGS_SKIP_VALUE = {"-erroraction"}
+
+
+def _delete_targets(segment: str):
+    """(targets, ok) for a delete-class segment; ok=False when the shape is not understood."""
+    try:
+        toks = shlex.split(segment, posix=False)
+    except ValueError:
+        return [], False
+    toks = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in toks]
+    while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]):
+        toks = toks[1:]
+    if not toks:
+        return [], False
+    args = toks[1:]
+    targets: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        low = a.lower()
+        if re.fullmatch(r"/[A-Za-z]", a):
+            i += 1
+        elif low in _DELETE_FLAGS_PATH:
+            if i + 1 >= len(args):
+                return [], False
+            targets.append(args[i + 1].strip("\"'"))
+            i += 2
+        elif low in _DELETE_FLAGS_SKIP_VALUE:
+            i += 2
+        elif a.startswith("-"):
+            if a in _DELETE_FLAGS_NOVALUE or low in _DELETE_FLAGS_NOVALUE:
+                i += 1
+            else:
+                return [], False
+        else:
+            targets.append(a)
+            i += 1
+    return targets, bool(targets)
+
+
+def _delete_is_harmless(segment: str, cwd) -> bool:
+    """A delete-class segment needs no GO when every target is already gone, an EMPTY directory,
+    or a plain file in a throwaway path (temp root outside git). A folder with content, a link or
+    junction, a wildcard, a variable, `..`, or any flag this function does not know still asks."""
+    targets, ok = _delete_targets(segment)
+    if not ok:
+        return False
+    for raw in targets:
+        if any(c in raw for c in "*?[$%~") or ".." in Path(raw).parts:
+            return False
+        path = Path(raw)
+        if not path.is_absolute():
+            path = Path(cwd or os.getcwd()) / path
+        try:
+            if path.is_symlink():
+                return False
+            if os.name == "nt" and path.exists() and (os.stat(path, follow_symlinks=False).st_file_attributes & 0x400):
+                return False
+            if not path.exists():
+                continue
+            if path.is_dir():
+                if any(path.iterdir()):
+                    return False
+                continue
+            if not _is_throwaway_path(path.resolve()):
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd) -> bool:
     """True only when EVERY write-redirect target in `command` resolves into a session's own
     scratchpad directory AND outside every git repository. Operator instruction, 2026-09-18: a
@@ -988,9 +1133,7 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd) -
             resolved = raw_path.resolve()
         except OSError:
             return False
-        if not _SCRATCHPAD_SEGMENT_RE.search(str(resolved)):
-            return False
-        if _git_toplevel(str(_nearest_existing_dir(resolved.parent))):
+        if not _is_throwaway_path(resolved):
             return False
     return True
 
@@ -1035,7 +1178,7 @@ def bash_needs_go(command: str, cwd=None, *, is_powershell: bool = False) -> tup
         if not _redirect_targets_all_in_scratchpad(command, redirect_view, cwd):
             return True, "redirection_or_heredoc"
     for segment in _split_segments_quote_aware(command):
-        needs, reason = _segment_needs_go(segment)
+        needs, reason = _segment_needs_go(segment, cwd)
         if needs:
             return True, reason
     return False, "not_dangerous"
@@ -1665,7 +1808,7 @@ def main():
                  "per repository so each one is checked against its own approval: " + ", ".join(patched[:6]))
             return
         tool_name = "Edit"
-        tool_input = {"file_path": patched[0] if patched else ""}
+        tool_input = {"file_path": patched[0] if patched else "", "_all_paths": list(patched)}
 
     try:
         if tool_name in ("Bash", "PowerShell"):
@@ -1680,6 +1823,10 @@ def main():
                 is_mutation, reason = False, "decision_log_append"
             elif is_mutation and tool_name in _PM_MODE_EXEMPT_TOOLS and pm_mode_active():
                 is_mutation, reason = False, "pm_mode_active"
+            elif is_mutation and tool_name in _PM_MODE_EXEMPT_TOOLS and _paths_all_throwaway(
+                    tool_input.get("_all_paths")
+                    or [tool_input.get("file_path") or tool_input.get("notebook_path")], cwd):
+                is_mutation, reason = False, "throwaway_path"
     except Exception as exc:
         context_unavailable(data, f"could not classify tool input: {type(exc).__name__}")
         return
