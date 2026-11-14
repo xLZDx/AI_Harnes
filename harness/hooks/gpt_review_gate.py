@@ -340,6 +340,15 @@ def final_receipt_fresh(repo_root):
     return True, None, entry
 
 
+OUTAGE_STEPS = (
+    "What to do (S21): 1) call pm_bridge_health; if it says DAEMON_DOWN or the error mentions a missing "
+    "orchestrator, call pm_bridge_mode_on yourself (any session may) and run the review again once. "
+    "2) If PM Bridge still does not answer, keep the commit local, do not update the remote, "
+    "start the next task, and come back to this review as soon as pm_bridge_health reports OK. "
+    "3) The remote is updated only after a review that really returned APPROVE for the exact HEAD."
+)
+
+
 def main():
     if os.environ.get("CLAUDE_GPT_REVIEW_GATE", "").lower() == "off":
         allow()
@@ -356,11 +365,13 @@ def main():
 
     is_push = bool(PUSH_RE.search(command))
     is_commit = bool(COMMIT_RE.search(command))
-    if is_commit:
+    if is_commit or is_push:
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from _commit_detect import is_commit_command
-            is_commit = is_commit_command(command)  # not a commit when only mentioned in a string/heredoc
+            from _commit_detect import is_commit_command, is_push_command
+            # not a commit or a push when only mentioned in a string/heredoc (S21-T2)
+            is_commit = is_commit and is_commit_command(command)
+            is_push = is_push and is_push_command(command)
         except Exception:
             pass
     if not is_push and not is_commit:
@@ -453,18 +464,13 @@ def main():
             receipt_ok = entry.get("ok") if entry else None
             receipt_error = entry.get("error") if entry else None
             if receipt_ok is False:
-                warn_reason = (
-                    f"GPT REVIEW gate (push): ALLOWING per fail-open policy, but the latest final "
-                    f"receipt for {repo_root} has ok=false (error={receipt_error!r}) -- the last GPT "
-                    f"round did NOT actually succeed; it was marked --final anyway. State this plainly "
-                    f"in the GPT-review: line of the stop-and-report -- do not report it as a clean "
-                    f"review."
-                )
-                log_decision({"decision": "allow-with-warning", "reason": warn_reason,
-                              "repo": repo_root, "command": command[:200],
-                              "receipt_ok": receipt_ok, "receipt_error": receipt_error})
-                warn_allow(payload, warn_reason)
-                sys.exit(0)
+                # S21-T2 (operator 2026-11-14): a failed review attempt is enough to COMMIT locally, never to
+                # update the remote. The push waits for a real review.
+                deny(
+                    f"GPT REVIEW gate (push): the latest final receipt for {repo_root} has ok=false "
+                    f"(error={receipt_error!r}) -- the review did not run, so nothing here was reviewed. "
+                    + OUTAGE_STEPS,
+                    {"repo": repo_root, "command": command[:200], "receipt_error": receipt_error})
 
             log_decision({"decision": "allow", "reason": "final review.js receipt found (ok)",
                           "repo": repo_root, "command": command[:200]})
@@ -494,7 +500,7 @@ def main():
                 f"review.js receipt for {repo_root} has ok=false (error={entry.get('error')!r}) -- "
                 f"the review was attempted, not completed. State this plainly in the GPT-review: "
                 f"line of the stop-and-report -- do not report it as a clean review or as CONSENSUS "
-                f"PASS."
+                f"PASS. This commit stays LOCAL. " + OUTAGE_STEPS
             )
             log_decision({"decision": "allow-with-warning", "reason": warn_reason,
                           "repo": repo_root, "command": command[:200],
