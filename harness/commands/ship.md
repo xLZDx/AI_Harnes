@@ -19,5 +19,7 @@ Follow skills `harness-flow`, `agent-consensus`, `gpt-pm-gate`.
    `python .harness-tools/ledger.py approve --request-id <PM Bridge request id>` (checked against the real GPT-PM reply: bare APPROVE for this HEAD). A new commit removes the approval.
 5. `git push` (the pre-push hook checks the approval), then create or update the sprint's one PR.
 6. Merge it yourself, without asking the operator (operator 2026-11-14): when the ledger approval is bound to the PR head (`gh pr view --json headRefOid`
-   equals the approved HEAD), run `gh pr merge <N> --merge`, update the main checkout, install, close the sprint. A newer head, a conflict or no
+   equals the approved HEAD), run `gh pr merge <N> --merge --match-head-commit <APPROVED_SHA>` (the flag makes GitHub refuse a head that moved after the check), then
+   `gh pr view <N> --json state,autoMergeRequest`: state MERGED is the goal; if an auto-merge request is pending (merge-queue branch) cancel it with
+   `gh pr merge <N> --disable-auto` and block the task as OPERATOR. Then update the main checkout, install, close the sprint. A newer head, a conflict or no
    approval means no merge: review again first. Never enable auto-merge; never force-push or delete remote branches.
