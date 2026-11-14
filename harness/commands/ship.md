@@ -13,6 +13,8 @@ Follow skills `harness-flow`, `agent-consensus`, `gpt-pm-gate`.
 3. Intermediate task (other tasks of the sprint are not done yet): stop here, no GPT-PM, no push;
    go to `/next`.
 4. Final task (every other task of the sprint is done): one GPT-PM review of the whole sprint diff
-   (skill `gpt-pm-gate`), rounds until APPROVE.
+   (skill `gpt-pm-gate`), rounds until APPROVE. If PM Bridge does not answer: turn it on yourself
+   (`pm_bridge_mode_on`), retry once, then keep the work as local commits, start the next sprint task and return
+   to this review when `pm_bridge_health` says OK. Never push without the real APPROVE.
    `python .harness-tools/ledger.py approve --request-id <PM Bridge request id>` (checked against the real GPT-PM reply: bare APPROVE for this HEAD). A new commit removes the approval.
 5. `git push` (the pre-push hook checks the approval), then create or update the sprint's one PR.
