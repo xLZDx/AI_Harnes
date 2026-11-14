@@ -33,7 +33,7 @@ COMMAND_POS_PUSH_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"push\b"
 # a subcommand that is quoted or built by the shell: could be anything, including push
 OBFUSCATED_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"(?:\"[^\"]*\"|'[^']*'|\S*[$`(]\S*)", re.IGNORECASE)
 # an alias defined on the command line can turn any word into a push
-ALIAS_RE = re.compile(_PREFIX + _GIT + r"\s+(?:\S+\s+)*?-c\s+[\"']?alias\.", re.IGNORECASE)
+ALIAS_RE = re.compile(_PREFIX + _GIT + r"\s+(?:\S+\s+){0,12}?-c\s+[\"']?alias\.", re.IGNORECASE)
 # a quoted git executable (a space in its path forces the quotes), then options and push
 QUOTED_GIT_PUSH_RE = re.compile(
     r"(?:^|[;&|\n(`{!]|&\s)\s*[\"'](?:[^\"'\n]*[\\/])?git(?:\.exe)?[\"']\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
@@ -54,7 +54,54 @@ EVAL_RE = re.compile(r"(?:^|[;&|\n(`{!]|\s)(?:iex|invoke-expression|eval)\s", re
 LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]{0,300}?\bpush\b", re.IGNORECASE)
 INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:py|python[\d.]*|pypy[\d.]*|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
 SPAWN_RE = re.compile(r"system|popen|subprocess|\brun\s*\(|\bcall\s*\(|check_output|check_call|exec|spawn|child_process|`", re.IGNORECASE)
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
+_HEREDOC_OPEN_RE = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]*\n")
+
+
+class _Heredoc:
+    """One heredoc: the `<<WORD` opener line, the body, and the terminator line (same span the old regex matched)."""
+    def __init__(self, text, start, end):
+        self._text, self._start, self._end = text, start, end
+
+    def start(self):
+        return self._start
+
+    def end(self):
+        return self._end
+
+    def group(self, _n=0):
+        return self._text[self._start:self._end]
+
+
+def iter_heredocs(command):
+    """Heredocs of a command in order, found in linear time: a terminator is a line that is only the delimiter
+    (blanks allowed), at least two lines after the opener line (one body line, possibly empty). An opener with no
+    terminator is skipped. (A backtracking regex here ran for minutes on 40000 unterminated `<<A` lines.)"""
+    import bisect
+    lines = command.split("\n")
+    offsets, pos = [], 0
+    for ln in lines:
+        offsets.append(pos)
+        pos += len(ln) + 1
+    by_word = {}
+    for i, ln in enumerate(lines):
+        w = ln.strip(" \t")
+        if w and re.fullmatch(r"\w+", w):
+            by_word.setdefault(w, []).append(i)
+    out, scan = [], 0
+    while True:
+        m = _HEREDOC_OPEN_RE.search(command, scan)
+        if not m:
+            return out
+        k = bisect.bisect_right(offsets, m.start()) - 1  # line index of the opener
+        cand = by_word.get(m.group(2), [])
+        j = bisect.bisect_left(cand, k + 2)
+        if j == len(cand):
+            scan = m.start() + 1
+            continue
+        t = cand[j]
+        end = offsets[t] + len(lines[t])
+        out.append(_Heredoc(command, m.start(), end))
+        scan = end
 QUOTED_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
 _SEGMENT_SPLIT_RE = re.compile(r"[;&|\n]")
 
@@ -73,7 +120,13 @@ def _strip_heredocs(command: str) -> str:
         if WRAPPER_RE.search(head) or INTERPRETER_RE.search(head) or PIPE_TO_SHELL_RE.search(first_line):
             return m.group(0)
         return "<<HEREDOC"
-    return HEREDOC_RE.sub(repl, command)
+    out, last = [], 0
+    for hd in iter_heredocs(command):
+        out.append(command[last:hd.start()])
+        out.append(repl(hd))
+        last = hd.end()
+    out.append(command[last:])
+    return "".join(out)
 
 
 def is_commit_command(command: str) -> bool:
@@ -103,7 +156,7 @@ def is_push_command(command: str) -> bool:
         return True
     if PIPE_TO_SHELL_RE.search(stripped) and LOOSE_PUSH_RE.search(no_heredoc):
         return True
-    for hm in HEREDOC_RE.finditer(no_heredoc):  # a script fed to an interpreter that starts a process naming git push
+    for hm in iter_heredocs(no_heredoc):  # a script fed to an interpreter that starts a process naming git push
         first_line = hm.group(0).split("\n", 1)[0]
         body = hm.group(0)[len(first_line):]
         head = no_heredoc[no_heredoc.rfind("\n", 0, hm.start()) + 1:hm.start()]
