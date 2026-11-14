@@ -972,5 +972,65 @@ def test_restore_with_a_writable_corrupt_folder_succeeds_and_keeps_a_replaced_co
     assert len(copies) == 1 and copies[0].read_bytes() == before
 
 
+def _in_process(st):
+    import os
+    for k, v in st.env.items():
+        os.environ[k] = v
+    hooks = str(h.SRC / "harness" / "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    import _lessons as L
+    return L
+
+
+def _store_with_extra_line(name):
+    """Store A = three added rules (valid backups exist) plus one extra valid line, so A differs from every backup."""
+    st = Store(name)
+    for n in range(3):
+        st.add(f"Concurrent restore rule {n} about push.")
+    assert n_backups(st) >= 2
+    p = st.dir / "lessons.jsonl"
+    p.write_bytes(p.read_bytes() + mk_rec(99).encode("utf-8"))
+    return st, p.read_bytes()
+
+
+def test_two_restores_in_one_process_in_one_second_keep_both_replaced_copies():
+    import time
+    st, a_bytes = _store_with_extra_line("f2r1two")
+    L = _in_process(st)
+    saved = (time.strftime, time.time_ns)
+    time.strftime = lambda fmt, *a: "20260101-000000"  # force identical stems
+    time.time_ns = lambda: 123456789
+    try:
+        r1 = L.restore_report()
+        after_first = (st.dir / "lessons.jsonl").read_bytes()
+        r2 = L.restore_report()
+    finally:
+        time.strftime, time.time_ns = saved
+    assert r1["ok"] and r2["ok"], (r1, r2)
+    assert after_first != a_bytes, "fixture: restore must change the store"
+    copies = sorted((st.dir / "corrupt").glob("replaced-by-restore-*.jsonl"))
+    assert len(copies) == 2, copies
+    assert sorted(c.read_bytes() for c in copies) == sorted([a_bytes, after_first])
+
+
+def test_two_back_to_back_restores_with_real_clock_keep_both_replaced_copies():
+    st, a_bytes = _store_with_extra_line("f2r1real")
+    L = _in_process(st)
+    assert L.restore_report()["ok"]
+    after_first = (st.dir / "lessons.jsonl").read_bytes()
+    assert L.restore_report()["ok"]
+    copies = list((st.dir / "corrupt").glob("replaced-by-restore-*.jsonl"))
+    assert len(copies) == 2 and sorted(c.read_bytes() for c in copies) == sorted([a_bytes, after_first])
+
+
+def test_single_restore_leaves_exactly_one_replaced_copy_with_the_old_bytes():  # twin
+    st, a_bytes = _store_with_extra_line("f2r1one")
+    L = _in_process(st)
+    assert L.restore_report()["ok"]
+    copies = list((st.dir / "corrupt").glob("replaced-by-restore-*.jsonl"))
+    assert len(copies) == 1 and copies[0].read_bytes() == a_bytes
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))
