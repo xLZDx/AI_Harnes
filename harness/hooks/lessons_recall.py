@@ -25,10 +25,7 @@ import json
 import os
 import re
 import sys
-import time
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 LIMIT = 5
 SESSION_KEEP_S = 7 * 24 * 3600
@@ -38,15 +35,36 @@ GH_PR_RE = re.compile(r"\bgh\s+pr\b")
 WORD_RE = re.compile(r"[a-z0-9-]+")
 
 
-def _actions(data: dict, ae) -> tuple[list, str]:
-    """(actions, words) for the call; ([], '') when nothing to recall."""
-    name = ae.tool_name(data)
+SHELL_TOOLS = {"Bash", "PowerShell", "exec_command", "shell", "local_shell"}
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}
+AGENT_TOOLS = {"Agent", "Task", "spawn_agent"}
+PATCH_PATH_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+?)\s*$|^\*\*\* Move to: (.+?)\s*$", re.M)
+
+
+def _read_stdin() -> dict:
+    """Same tolerant read as _agentio.read_stdin, without importing it (the prefilter must stay light)."""
+    try:
+        raw = sys.stdin.buffer.read().decode("utf-8-sig", errors="replace")
+        data = json.loads(raw) if raw.strip() else {}
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _actions(data: dict) -> tuple[list, str]:
+    """(actions, words) for the call; ([], '') when nothing to recall. Only json/re/sys are needed."""
+    name = str(data.get("tool_name") or "")
+    ti = data.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
     if PM_TOOL_RE.match(name):
         return ["gpt-pm"], "gpt-pm pm bridge"
-    if ae.is_agent_spawn(data):
-        return ["agent"], "agent " + ae.agent_type(data)
-    cmd = ae.shell_command(data)
-    if cmd:
+    if name in AGENT_TOOLS:
+        return ["agent"], "agent " + str(ti.get("subagent_type") or ti.get("agent_type") or data.get("agent_type") or "")
+    if name in SHELL_TOOLS:
+        cmd = ti.get("command", ti.get("cmd", ""))
+        if isinstance(cmd, list):
+            cmd = " ".join(str(x) for x in cmd)
+        cmd = str(cmd or "")
         acts = []
         for m in GIT_RE.finditer(cmd):
             if m.group(1) not in acts:
@@ -54,9 +72,15 @@ def _actions(data: dict, ae) -> tuple[list, str]:
         if GH_PR_RE.search(cmd):
             acts.append("pr")
         return acts, cmd[:300]
-    if ae.is_edit(data):
+    if name in EDIT_TOOLS:
+        if name == "apply_patch":
+            patch = str(ti.get("command") or ti.get("input") or ti.get("patch") or "")
+            paths = [x or y for x, y in PATCH_PATH_RE.findall(patch)]
+        else:
+            p = ti.get("file_path") or ti.get("notebook_path")
+            paths = [str(p)] if p else []
         acts, words = [], []
-        for p in ae.edited_paths(data):
+        for p in paths:
             q = p.replace("\\", "/").lower()
             hit = False
             if "harness/hooks/" in q:
@@ -71,10 +95,10 @@ def _actions(data: dict, ae) -> tuple[list, str]:
     return [], ""
 
 
-def _marker(session: str) -> Path:
-    import _agentio
+def _marker(session: str, _agentio) -> Path:
     d = _agentio.state_dir("lessons") / "sessions"
     d.mkdir(parents=True, exist_ok=True)
+    import time
     cutoff = time.time() - SESSION_KEEP_S
     try:
         for f in d.glob("*.json"):
@@ -93,11 +117,12 @@ def main() -> int:
     if os.environ.get("HARNESS_LESSONS_RECALL", "").lower() == "off":
         return 0
     try:
-        import _agentio as ae
-        data = ae.read_stdin()
-        actions, words = _actions(data, ae)
+        data = _read_stdin()
+        actions, words = _actions(data)
         if not actions:
             return 0
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import _agentio as ae  # heavy imports only after an action matched
         import _lessons
         found = []
         for a in actions:
@@ -105,7 +130,7 @@ def main() -> int:
                 found.append((a, r))
         if not found:
             return 0
-        mk = _marker(str(data.get("session_id") or ""))
+        mk = _marker(str(data.get("session_id") or ""), ae)
         try:
             shown = json.loads(mk.read_text(encoding="utf-8"))
             if not isinstance(shown, dict):
