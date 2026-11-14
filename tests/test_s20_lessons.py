@@ -458,7 +458,8 @@ def test_import_refuses_a_secret_entry_and_counts_it():
 
 
 def test_import_real_harness_log_is_idempotent_and_matches_independent_count():
-    log_path = Path(r"D:\tmp\scratch_worktrees\hv2-s20\core\LESSONS_LOG.md")
+    log_path = Path(__file__).resolve().parent.parent / "core" / "LESSONS_LOG.md"  # the repository this test file lives in
+    assert log_path.is_file(), log_path
     text = log_path.read_text(encoding="utf-8")
     # independent simple count: one entry starts at a Kind marker or a one-line `- KIND date` marker
     start_re = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?Kind(?:\*\*)?\s*:\s*(?:\*\*)?(FAILURE|SHORTCOMING|SUCCESS)\b"

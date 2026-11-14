@@ -2,40 +2,68 @@
 
 A plain regex over the command text also fires when the words are only mentioned inside a quoted
 string or a heredoc (for example a commit message or a test that contains them). A real commit or push
-sits at command position, possibly behind a wrapper word (`time`, `env X=1`, `if`, `{`, `!`), with a path
-or options in front (`/usr/bin/git`, `"C:/Program Files/Git/bin/git.exe"`, `git -C dir`), or inside the
-argument of a shell (`bash -c "git push"`). Detection errs on the side of "this is a push": a missed push
-skips the review gate, a false alarm only asks for a receipt. Stdlib only.
+sits at command position, possibly behind a wrapper word (`time`, `env X=1`, `if`, `{`, `!`, `xargs`,
+`cmd /c`), with a path or options in front (`/usr/bin/git`, `"C:/Program Files/Git/bin/git.exe"`,
+`git -C dir`, any `--long-option`), inside the argument of a shell (`bash -c "git push"`), inside a script
+that an interpreter runs (`python -c "os.system('git push')"`) or in the body of a heredoc fed to a shell.
+Detection errs on the side of "this is a push": a missed push skips the review gate, a false alarm only asks
+for a receipt. A subcommand that is quoted or built by the shell (`git "push"`, `git $(echo push)`) and an
+alias defined on the command line (`git -c alias.p=push p`) count as a push. This is a guard for honest
+sessions, not a sandbox: the authority for the remote is the pre-push git hook. Stdlib only.
 """
 import re
 
 _PREFIX = (
-    r"(?:^|[;&|\n(`{!]|\b(?:then|do|else|elif|if|while|until|time|exec|sudo|command|nohup|env)\b)\s*"
+    r"(?:^|[;&|\n(`{!]|\b(?:then|do|else|elif|if|while|until|time|exec|sudo|command|nohup|env|xargs|start|wsl|nice"
+    r"|timeout\s+\S+|cmd(?:\.exe)?\s+/c|(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-c(?:ommand)?)\b)\s*"
     r"(?:\w+=\S+\s+)*"
 )
 _GIT = r"(?:\S*[\\/])?git(?:\.exe)?"
+_VAL = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 _GIT_OPTS = (
-    r"(?:(?:-[Cc]\s+(?:\"[^\"]*\"|'[^']*'|\S+)|--no-pager|-p|--paginate|--git-dir(?:=|\s+)\S+"
-    r"|--work-tree(?:=|\s+)\S+|--namespace(?:=|\s+)\S+|--exec-path(?:=\S+)?|-P|--no-optional-locks"
-    r"|--literal-pathspecs|--bare)\s+)*"
+    r"(?:(?:-[Cc]\s+" + _VAL + r"|--git-dir\s+\S+|--work-tree\s+\S+|--namespace\s+\S+|-p|-P"
+    r"|--[\w-]+(?:=" + _VAL + r")?)\s+)*"
 )
 COMMAND_POS_COMMIT_RE = re.compile(_PREFIX + r"git\s+commit\b", re.IGNORECASE)
 COMMAND_POS_PUSH_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
-# a quoted path to git.exe (a space in the path forces the quotes), then options and push
+# a subcommand that is quoted or built by the shell: could be anything, including push
+OBFUSCATED_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"(?:\"[^\"]*\"|'[^']*'|\S*[$`(]\S*)", re.IGNORECASE)
+# an alias defined on the command line can turn any word into a push
+ALIAS_RE = re.compile(_PREFIX + _GIT + r"\s+(?:\S+\s+)*?-c\s+[\"']?alias\.", re.IGNORECASE)
+# a quoted git executable (a space in its path forces the quotes), then options and push
 QUOTED_GIT_PUSH_RE = re.compile(
-    r"(?:^|[;&|\n(`{!]|&\s)\s*[\"'][^\"'\n]*[\\/]git(?:\.exe)?[\"']\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
+    r"(?:^|[;&|\n(`{!]|&\s)\s*[\"'](?:[^\"'\n]*[\\/])?git(?:\.exe)?[\"']\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
 # a shell or interpreter that can run a quoted command string
 WRAPPER_RE = re.compile(
     r"(?:^|[;&|\n(`{!]|\s)(?:\S*[\\/])?(?:bash|sh|zsh|dash|pwsh|powershell|cmd|iex|invoke-expression|eval|ssh|xargs"
     r"|sudo|exec|env|nohup|start|start-process|wsl|python3?|node)(?:\.exe)?\b",
     re.IGNORECASE)
+LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]*?\bpush\b", re.IGNORECASE)
+INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:python3?|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
+SPAWN_RE = re.compile(r"system|popen|subprocess|\brun\s*\(|\bcall\s*\(|check_output|check_call|exec|spawn|child_process|`", re.IGNORECASE)
 HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
 QUOTED_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
 _SEGMENT_SPLIT_RE = re.compile(r"[;&|\n]")
 
 
+def _strip_heredocs(command: str) -> str:
+    """Blank heredoc bodies (usually prose such as a commit message), except where the body may be code:
+    a heredoc fed to a shell or interpreter keeps its body; `<<` inside quotes is no heredoc at all, except the
+    mandated `$(cat <<'EOF' ...)` commit-message shape, which is blanked."""
+    def repl(m):
+        head = command[command.rfind("\n", 0, m.start()) + 1:m.start()]
+        if re.search(r"\$\(\s*cat\s*$", head):
+            return "<<HEREDOC"
+        if head.count('"') % 2 or head.count("'") % 2:
+            return m.group(0)
+        if WRAPPER_RE.search(head) or INTERPRETER_RE.search(head):
+            return m.group(0)
+        return "<<HEREDOC"
+    return HEREDOC_RE.sub(repl, command)
+
+
 def is_commit_command(command: str) -> bool:
-    stripped = HEREDOC_RE.sub("<<HEREDOC", command)
+    stripped = _strip_heredocs(command)
     stripped = QUOTED_RE.sub('""', stripped)
     return bool(COMMAND_POS_COMMIT_RE.search(stripped))
 
@@ -43,23 +71,25 @@ def is_commit_command(command: str) -> bool:
 def is_push_command(command: str) -> bool:
     """True when `git push` is executed, or may be:
     - at command position in the text with heredocs and quoted strings blanked (wrapper words, paths and
-      git options allowed);
+      any git options allowed), or a quoted/obfuscated subcommand, or a command-line alias;
     - a quoted path to git.exe followed by push;
-    - a quoted string that itself holds a push at command position AND follows a shell or interpreter word
-      in the same command segment (`bash -c "git push"`, `ssh host 'git push'`): a commit message that only
-      mentions a push never follows such a word;
-    - an odd number of quote characters (an apostrophe in prose can pair with a later quote and hide a real
-      push): then the unblanked text is tested at command position."""
-    no_heredoc = HEREDOC_RE.sub("<<HEREDOC", command)
+    - a quoted string holding a push at command position that follows a shell or interpreter word in the same
+      segment (`bash -c "git push"`), or a script handed to an interpreter that starts a process and names
+      git push; a commit message or a print that only mentions a push is not flagged;
+    - an odd number of quote characters: then the unblanked text is tested at command position."""
+    command = command.replace("\\\n", " ").replace("\\'", "")
+    no_heredoc = _strip_heredocs(command)
     stripped = QUOTED_RE.sub('""', no_heredoc)
-    if COMMAND_POS_PUSH_RE.search(stripped) or QUOTED_GIT_PUSH_RE.search(no_heredoc):
+    if (COMMAND_POS_PUSH_RE.search(stripped) or QUOTED_GIT_PUSH_RE.search(no_heredoc)
+            or OBFUSCATED_RE.search(stripped) or ALIAS_RE.search(no_heredoc)):
         return True
     for m in QUOTED_RE.finditer(no_heredoc):
         inner = m.group(0)[1:-1]
-        if COMMAND_POS_PUSH_RE.search(inner):
-            before = _SEGMENT_SPLIT_RE.split(no_heredoc[:m.start()])[-1]
-            if WRAPPER_RE.search(before):
-                return True
+        before = _SEGMENT_SPLIT_RE.split(no_heredoc[:m.start()])[-1]
+        if COMMAND_POS_PUSH_RE.search(inner) and WRAPPER_RE.search(before):
+            return True
+        if INTERPRETER_RE.search(before) and LOOSE_PUSH_RE.search(inner) and SPAWN_RE.search(inner):
+            return True
     if no_heredoc.count('"') % 2 or no_heredoc.count("'") % 2:
         return bool(COMMAND_POS_PUSH_RE.search(no_heredoc))
     return False

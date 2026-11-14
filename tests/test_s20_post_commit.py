@@ -37,6 +37,17 @@ class World:
         self.env = {"HARNESS_LESSONS_DIR": str(self.store), "HARNESS_LESSONS_BACKUP": str(self.root / "backup"),
                     "HARNESS_HOOK_STATE": str(self.root / "state"), "HARNESS_HOOK_CONFIG": str(self.root / "no-config.json"),
                     "HARNESS_PYTHON": h.PY, "HARNESS_LESSONS_TOOL": (h.SRC / "tools" / "lessons.py").as_posix()}
+        # hide the real home folder (~/.claude/hooks, ~/.harness-hooks, machine config) from every subprocess of this World
+        self.home = self.root / "home"
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.env.update({"USERPROFILE": str(self.home), "HOME": str(self.home),
+                         "HOMEDRIVE": self.home.drive, "HOMEPATH": str(self.home)[len(self.home.drive):]})
+
+    def seen_home(self):
+        """The home folder a Python subprocess started with this World's env sees."""
+        r = h.run([h.PY, "-I", "-s", "-c", "import pathlib;print(pathlib.Path.home())"], self.root, dict(self.env))
+        assert r.rc == 0, r.all
+        return Path(r.out.strip())
 
     def repo(self, name="ProjA", hook="git-hooks-dir", stub_ledger=True):
         p = self.root / name
@@ -200,6 +211,17 @@ def test_tool_found_through_machine_config_key():
              env={"HARNESS_LESSONS_TOOL": "", "HARNESS_HOOK_CONFIG": str(cfg)})
     assert [x["rule"] for x in w.records()] == ["Rule found through the config key."]
     assert w.hook_errors(repo) == []
+
+
+def test_world_hides_the_real_home_folder_from_subprocesses():
+    w = World("t3home")
+    real = h.run([h.PY, "-I", "-s", "-c", "import pathlib;print(pathlib.Path.home())"], w.root, None)  # no sandbox: the real home
+    assert real.rc == 0, real.all
+    real_home = Path(real.out.strip())
+    assert real_home != w.home  # the failing twin: without the World env the subprocess sees the real home
+    assert w.seen_home() == w.home and w.home.parent == w.root
+    assert w.seen_home() != real_home
+    assert w.env["HARNESS_HOOK_CONFIG"] and not Path(w.env["HARNESS_HOOK_CONFIG"]).exists()
 
 
 def test_tool_found_in_installer_copy_under_dot_harness_tools():

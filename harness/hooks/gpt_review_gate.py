@@ -167,9 +167,9 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 EXCLUDED_REPO_ROOTS = []
 
 COMMIT_RE = re.compile(r"\bgit\s+commit\b", re.IGNORECASE)
-PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]*?\bpush\b", re.IGNORECASE)
+PUSH_RE = re.compile(r"\bgit\b", re.IGNORECASE)  # prefilter only; _commit_detect.is_push_command decides
 SKIP_RE = re.compile(r"--help\b|(?<!\S)-h\b|--dry-run\b", re.IGNORECASE)
-CD_RE = re.compile(r'^\s*cd\s+(?P<path>"[^"]+"|\'[^\']+\'|\S+)\s*$')
+CD_RE = re.compile(r'^\s*(?:cd|pushd)\s+(?P<path>"[^"]+"|\'[^\']+\'|[^\s)]+)\s*\)?\s*$')
 
 # See codex_review_gate.py for the measured incident this guards against (Git-Bash
 # `/d/Repo/x` style paths silently resolving to the wrong drive-joined path on Windows).
@@ -184,10 +184,17 @@ def normalise_shell_path(path):
     return f"{m.group(1).upper()}:{rest or chr(92)}"
 
 
+def skip_applies(command):
+    """`--help`, `-h` and `--dry-run` skip the gate only when EVERY command segment that mentions git carries the
+    flag itself: `git push origin main; echo -h` is a real push."""
+    git_segments = [seg for seg in re.split(r"[;&|\n]", command) if re.search(r"\bgit\b", seg)]
+    return bool(git_segments) and all(SKIP_RE.search(seg) for seg in git_segments)
+
+
 def resolve_effective_cwd(command, base_cwd):
     cwd = base_cwd
-    for part in re.split(r"&&|;", command):
-        m = CD_RE.match(part.strip())
+    for part in re.split(r"&&|\|\||;|\n", command):
+        m = CD_RE.match(part.strip().lstrip("({ "))
         if not m:
             continue
         path = normalise_shell_path(m.group("path").strip("\"'"))
@@ -269,7 +276,7 @@ def recent_receipt(repo_root):
         return None
     now = datetime.now(timezone.utc)
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8") as f:
+        with open(RECEIPTS_FILE, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -281,13 +288,15 @@ def recent_receipt(repo_root):
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(entry, dict):
+            continue
         ts_raw = entry.get("timestamp")
         cwd = entry.get("cwd")
         if not ts_raw or not cwd:
             continue
         try:
             ts = datetime.fromisoformat(ts_raw)
-        except ValueError:
+        except (ValueError, TypeError):
             continue
         age_hours = (now - ts).total_seconds() / 3600.0
         if age_hours > RECEIPT_MAX_AGE_HOURS:
@@ -301,7 +310,7 @@ def latest_receipt_for_repo(repo_root):
     if not RECEIPTS_FILE.is_file():
         return None
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8") as f:
+        with open(RECEIPTS_FILE, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError:
         return None
@@ -312,6 +321,8 @@ def latest_receipt_for_repo(repo_root):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
             continue
         cwd = entry.get("cwd")
         if not cwd:
@@ -332,7 +343,7 @@ def final_receipt_fresh(repo_root):
         return False, "latest final receipt has no timestamp", entry
     try:
         ts = datetime.fromisoformat(ts_raw)
-    except ValueError:
+    except (ValueError, TypeError):
         return False, "latest final receipt has an unparseable timestamp", entry
     if ts.tzinfo is None:
         return False, "latest final receipt has a timestamp without a time zone", entry
@@ -346,7 +357,7 @@ def _is_real_approve(entry):
     """A receipt that may open a push: the review ran (ok true), the reply was matched to this request
     (correlated true) and the verdict names APPROVE. A null verdict (no parsable verdict line) is not one."""
     return bool(entry and entry.get("ok") is True and entry.get("correlated") is True
-                and "APPROVE" in str(entry.get("verdict") or "").upper())
+                and str(entry.get("verdict") or "").strip().upper() == "APPROVE")
 
 
 def git_dash_c_dir(command, base_cwd):
@@ -355,7 +366,14 @@ def git_dash_c_dir(command, base_cwd):
     for seg in re.split(r"[;&|\n]", command):
         if not re.search(r"\bpush\b", seg):
             continue
-        m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+(\"[^\"]*\"|'[^']*'|\S+)", seg)
+        val = r"(\"[^\"]*\"|'[^']*'|\S+)"
+        m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+" + val, seg)
+        is_git_dir = False
+        if not m:
+            m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?--work-tree(?:=|\s+)" + val, seg)
+        if not m:
+            m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?--git-dir(?:=|\s+)" + val, seg)
+            is_git_dir = True
         if not m:
             continue
         raw = m.group(1).strip("\"'")
@@ -364,7 +382,9 @@ def git_dash_c_dir(command, base_cwd):
         path = Path(normalise_shell_path(raw))
         if not path.is_absolute():
             path = Path(base_cwd) / path
-        return str(path) if path.is_dir() else None
+        if is_git_dir and path.name.lower() == ".git":
+            path = path.parent  # --git-dir <repo>/.git: the repository is the folder that holds it
+        return str(path) if path.is_dir() else ""
     return None
 
 
@@ -390,7 +410,7 @@ def main():
         allow()
 
     command = agentio.shell_command(payload)
-    if SKIP_RE.search(command):
+    if skip_applies(command):
         allow()
 
     is_push = bool(PUSH_RE.search(command))
@@ -403,7 +423,7 @@ def main():
             is_commit = is_commit and is_commit_command(command)
             is_push = is_push and is_push_command(command)
         except Exception:
-            pass
+            is_push = bool(re.search(r"\bgit\b[^\n]*\bpush\b", command, re.IGNORECASE))
     if not is_push and not is_commit:
         allow()
 
@@ -417,16 +437,26 @@ def main():
     git_c = git_dash_c_dir(command, cwd)
     if git_c:
         cwd = git_c
+    elif git_c == "" and is_push:
+        deny("GPT REVIEW gate (push): `git -C`/`--work-tree`/`--git-dir` names a folder that does not exist, so the "
+             "repository of this push cannot be checked. Use an existing folder.", {"command": command[:200]})
 
     try:
         toplevel = git(["rev-parse", "--show-toplevel"], cwd=cwd)
         if toplevel.returncode != 0:
             log_decision({"decision": "fail-open", "reason": "not a git repo or git error",
                           "cwd": cwd, "stderr": toplevel.stderr.strip()[:300]})
+            if is_push:
+                deny("GPT REVIEW gate (push): the repository of this push cannot be determined from the working "
+                     f"folder ({cwd}). Run it as `cd <repo> && git push` or `git -C <repo> push` so the gate can "
+                     "check that repository's review.", {"command": command[:200]})
             allow()
         repo_root = toplevel.stdout.strip()
     except Exception as e:
         log_decision({"decision": "fail-open", "reason": f"git rev-parse failed: {e}", "cwd": cwd})
+        if is_push:
+            deny(f"GPT REVIEW gate (push): git could not tell which repository this push belongs to ({e}).",
+                 {"command": command[:200]})
         allow()
 
     if not ALL_REPOS_ENABLED and not any(is_under(repo_root, root) for root in ENABLED_REPO_ROOTS):
@@ -454,7 +484,11 @@ def main():
     # it is why the receipt's CONTENT still has to be read before pushing, by a human or by the
     # session that ran it.
     if is_push and is_transport_repo(repo_root):
-        entry = latest_receipt_for_repo(repo_root)
+        try:
+            entry = latest_receipt_for_repo(repo_root)
+        except Exception as e:
+            deny(f"GPT REVIEW gate (push): the receipt file could not be read ({type(e).__name__}); "
+                 "no push without a readable receipt. " + OUTAGE_STEPS, {"repo": repo_root})
         fresh = False
         if entry and entry.get("timestamp"):
             try:
@@ -497,8 +531,9 @@ def main():
         try:
             passes, why, entry = final_receipt_fresh(repo_root)
         except Exception as e:
-            log_decision({"decision": "fail-open", "reason": f"receipt scan failed: {e}", "repo": repo_root})
-            allow()
+            log_decision({"decision": "deny", "reason": f"receipt scan failed: {e}", "repo": repo_root})
+            deny(f"GPT REVIEW gate (push): the receipt file could not be read ({type(e).__name__}); "
+                 "no push without a readable receipt. " + OUTAGE_STEPS, {"repo": repo_root})
 
         if passes:
             receipt_ok = entry.get("ok") if entry else None

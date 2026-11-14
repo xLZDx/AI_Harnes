@@ -971,7 +971,11 @@ _BAD_TARGET_CHARS = "*?[]{}()$%~`,;|&<>^@!#"
 def _temp_roots() -> list[Path]:
     # HARNESS_TEMP_ROOTS (os.pathsep list, usually set in ~/.harness-hooks/config.json) names extra throwaway
     # folders of this machine; the OS temp folder is always one.
-    roots = [Path(x) for x in os.environ.get("HARNESS_TEMP_ROOTS", "").split(os.pathsep) if x.strip()]
+    roots = []
+    for x in os.environ.get("HARNESS_TEMP_ROOTS", "").split(os.pathsep):
+        # a relative entry or a drive root would make most of a disk "throwaway": ignored
+        if x.strip() and _DRIVE_ABS_RE.match(x.strip()) and len(Path(x.strip()).parts) > 1:
+            roots.append(Path(x.strip()))
     try:
         import tempfile
         roots.append(Path(tempfile.gettempdir()))
@@ -997,6 +1001,8 @@ def _is_throwaway_path(resolved: Path) -> bool:
             return False
         parts = resolved.relative_to(under_root.resolve()).parts
         folder_parts = parts if resolved.is_dir() else parts[:-1]
+        if parts and re.search(r"(?i)(receipts?|approvals?)[^\\/]*\.jsonl?$", _norm_part(parts[-1])):
+            return False
         if any(_TEMP_SENSITIVE_PART_RE.match(_norm_part(part)) for part in folder_parts):
             return False
         probe = resolved
