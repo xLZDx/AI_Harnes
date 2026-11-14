@@ -918,6 +918,118 @@ def test_detected_wrapped_pushes_deny_without_a_receipt_and_allow_with_a_good_on
         assert r.kind == "allow", (cmd, r)
 
 
+# ------------------------------------------------------------------------------------------------ fifth batch
+import importlib.util  # noqa: E402
+import time  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("_s21_grg", str(HOOK))
+_grg = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_grg)
+
+OPTION_MENTIONS = [
+    'git commit -m "fix: pass -C to git"',
+    "git commit -F - <<'EOF'\nHandle git -C for commit and push\nEOF",
+    "git commit --amend -C HEAD",
+]
+
+
+def test_fifth_commit_options_and_mentions_of_dash_C_are_ordinary_commits_allowed_with_receipt():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, ok=True)
+    for cmd in OPTION_MENTIONS:
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+        assert "does not exist" not in r.reason, (cmd, r)
+
+
+def test_fifth_commit_options_and_mentions_of_dash_C_are_denied_as_commits_without_receipt():
+    b = Box()
+    repo = b.repo()
+    for cmd in OPTION_MENTIONS:
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "(commit)" in r.reason and "does not exist" not in r.reason, (cmd, r)
+
+
+def test_fifth_real_dash_C_commit_existing_other_repo_and_missing_folder():
+    b = Box()
+    mine = b.repo("mine")
+    other = b.repo("other")
+    b.receipt(mine, ok=True)
+    expect(b.run(f"git -C {other.as_posix()} commit -m x", mine), "deny")
+    b.receipt(other, ok=True)
+    expect(b.run(f"git -C {other.as_posix()} commit -m x", mine), "allow")
+    missing = b.root / "nogit" / "missing"
+    r = b.run(f"git -C {missing.as_posix()} commit -m x", mine)
+    expect(r, "deny")
+    assert "does not exist" in r.reason, r
+
+
+def test_fifth_two_dash_C_commits_with_different_existing_folders_deny_same_folder_twice_does_not():
+    b = Box()
+    a = b.repo("repoA")
+    c = b.repo("repoB")
+    b.receipt(a, ok=True)
+    b.receipt(c, ok=True)
+    r = b.run(f"git -C {a.as_posix()} commit -m x; git -C {c.as_posix()} commit -m y", a)
+    expect(r, "deny")
+    assert "more than one repository" in r.reason, r
+    expect(b.run(f"git -C {a.as_posix()} commit -m x; git -C {a.as_posix()} commit -m y", c), "allow")
+
+
+def test_fifth_detector_start_process_pushes_and_plain_commit_is_not_a_push():
+    for cmd in ("Start-Process git -ArgumentList 'push','origin'", "Start-Process -FilePath git -ArgumentList push"):
+        assert _commit_detect.is_push_command(cmd) is True, cmd
+    assert _commit_detect.is_push_command("git commit -m x") is False
+
+
+def test_fifth_detector_and_skip_applies_are_fast_on_200kb_hostile_inputs():
+    inputs = ["xargs -n1 " * 22000, "sudo -a " * 25000, "powershell -a b " * 12000,
+              "env -i " * 30000, "git " * 50000]
+    slow = []
+    for s in inputs:
+        for name, fn in (("push", _commit_detect.is_push_command), ("commit", _commit_detect.is_commit_command),
+                         ("skip", _grg.skip_applies)):
+            t = time.monotonic()
+            fn(s)
+            dt = time.monotonic() - t
+            if dt >= 15:
+                slow.append((name, s[:12], round(dt, 1)))
+    assert not slow, slow
+
+
+def test_fifth_receipt_line_with_u2028_inside_a_json_string_is_one_receipt():
+    b = Box()
+    repo = b.repo()
+    other = b.repo("other")
+    odd = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "cwd": str(other), "ok": True,
+                      "round": 1, "note": "a b"}, ensure_ascii=False) + "\n"
+    # the odd line first, a good receipt for the repo after it
+    b.receipts.write_bytes(odd.encode("utf-8") + _good_line(repo))
+    expect(b.run("git push", repo), "allow")
+    expect(b.run("git commit -m x", repo), "allow")
+    # the odd line itself is usable (U+2028 does not split it)
+    b2 = Box()
+    r2 = b2.repo()
+    line = json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "cwd": str(r2), "ok": True,
+                       "round": 1, "note": "a b", **GOOD}, ensure_ascii=False) + "\n"
+    b2.receipts.write_bytes(line.encode("utf-8"))
+    expect(b2.run("git push", r2), "allow")
+    # twin: no receipt for the repo at all denies
+    b3 = Box()
+    r3 = b3.repo()
+    expect(b3.run("git push", r3), "deny")
+
+
+def test_fifth_parenthesised_dry_run_push_skips_the_gate():
+    b = Box()
+    repo = b.repo()  # no receipt
+    expect(b.run("(git push --dry-run)", repo), "allow")
+    expect(b.run("git push --dry-run", repo), "allow")
+    expect(b.run("(git push)", repo), "deny")  # twin
+
+
 def run_all(g) -> int:
     fails = 0
     for name in [n for n in g if n.startswith("test_")]:

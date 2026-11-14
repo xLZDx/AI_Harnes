@@ -166,7 +166,16 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 # under ENABLED_REPO_ROOTS.
 EXCLUDED_REPO_ROOTS = []
 
-COMMIT_RE = re.compile(r"\bgit\b[^\n]*?\bcommit\b", re.IGNORECASE)  # prefilter only; _commit_detect decides (options may sit between git and commit)
+class _AllWords:
+    """Prefilter: every word is present somewhere in the text (linear time; _commit_detect decides)."""
+    def __init__(self, *words):
+        self._res = [re.compile(w, re.IGNORECASE) for w in words]
+
+    def search(self, text):
+        return all(r.search(text) for r in self._res)
+
+
+COMMIT_RE = _AllWords(r"\bgit\b", r"\bcommit\b")  # options may sit between git and commit
 PUSH_RE = re.compile(r"\bgit\b", re.IGNORECASE)  # prefilter only; _commit_detect.is_push_command decides
 QUOTED_BLANK_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
 CD_RE = re.compile(r'^\s*(?:cd|pushd)\s+(?P<path>"[^"]+"|\'[^\']+\'|[^\s)]+)\s*\)?\s*$')
@@ -224,7 +233,7 @@ def _is_skip_flag_segment(seg):
         if tok in ("-o", "--push-option"):
             skip_next = True
             continue
-        if tok.lower() in ("--help", "-h", "--dry-run"):
+        if tok.lower().rstrip(")") in ("--help", "-h", "--dry-run"):
             return True
     return False
 
@@ -321,7 +330,7 @@ def _tail_lines(path, count=500, max_bytes=4_000_000):
         size = f.tell()
         f.seek(max(0, size - max_bytes))
         data = f.read()
-    lines = data.decode("utf-8", errors="replace").splitlines()
+    lines = data.decode("utf-8", errors="replace").split("\n")  # not splitlines(): JSON may hold U+2028 etc.
     if size > max_bytes and lines:
         lines = lines[1:]  # the first line is probably cut in the middle
     return lines[-count:]
@@ -415,25 +424,52 @@ def _is_real_approve(entry):
                 and str(entry.get("verdict") or "").strip().upper() == "APPROVE")
 
 
+def _mask_quoted(seg):
+    """The segment with the inside of every quoted string replaced by `x` (same length, quote marks kept), so
+    a search for options never matches words that sit in a commit message."""
+    out, quote = [], None
+    for ch in seg:
+        if quote:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            else:
+                out.append("x")
+        else:
+            if ch in "\"'":
+                quote = ch
+            out.append(ch)
+    return "".join(out)
+
+
 def git_dash_c_dirs(command, base_cwd):
-    """One entry per command segment that holds `push` or `commit` and names a repository folder with
-    `git -C <dir>`, `--work-tree` or `--git-dir` (quoted or not), resolved against base_cwd: the folder, or ""
-    when it does not exist. Segments that name no folder add nothing."""
+    """One entry per command segment that holds `push` or `commit` and names a repository folder with the GLOBAL
+    options `git -C <dir>`, `--work-tree` or `--git-dir` (before the subcommand, outside quotes: `git commit -C HEAD`
+    and a message saying `pass -C to git` name no folder), resolved against base_cwd: the folder, or "" when it does
+    not exist. Segments that name no folder add nothing."""
     found = []
+    pre = r"\bgit(?:\.exe)?\s+(?:(?:(?!\b(?:push|commit)\b)[^\n]){0,300}?\s)?"
+    val = r"(\"[^\"]*\"|'[^']*'|\S+)"
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from _commit_detect import _strip_heredocs
+        command = _strip_heredocs(command)  # a prose heredoc (commit message fed to -F -) names no folder
+    except Exception:
+        pass
     for seg in split_segments(command):
-        if not re.search(r"\b(?:push|commit)\b", seg):
+        masked = _mask_quoted(seg)
+        if not re.search(r"\b(?:push|commit)\b", masked):
             continue
-        val = r"(\"[^\"]*\"|'[^']*'|\S+)"
-        m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+" + val, seg)
         is_git_dir = False
+        m = re.search(pre + r"-C\s+" + val, masked)
         if not m:
-            m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?--work-tree(?:=|\s+)" + val, seg)
+            m = re.search(pre + r"--work-tree(?:=|\s+)" + val, masked)
         if not m:
-            m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?--git-dir(?:=|\s+)" + val, seg)
+            m = re.search(pre + r"--git-dir(?:=|\s+)" + val, masked)
             is_git_dir = True
         if not m:
             continue
-        raw = m.group(1).strip("\"'")
+        raw = seg[m.start(1):m.end(1)].strip("\"'")
         if not raw:
             continue
         path = Path(normalise_shell_path(raw))
@@ -499,9 +535,9 @@ def main():
     cwd = resolve_effective_cwd(command, raw_cwd)
     git_cs = git_dash_c_dirs(command, cwd)
     git_c = git_cs[0] if git_cs else None
-    if is_push and len(set(git_cs)) > 1:
-        deny("GPT REVIEW gate (push): this command pushes more than one repository (`git -C` names different "
-             "folders). The gate can check only one review per command: push each repository on its own.",
+    if (is_push or is_commit) and len(set(git_cs)) > 1:
+        deny("GPT REVIEW gate: this command commits or pushes more than one repository (`git -C` names different "
+             "folders). The gate can check only one review per command: do each repository on its own.",
              {"command": command[:200]})
     if git_c:
         cwd = git_c

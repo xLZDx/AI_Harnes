@@ -14,19 +14,19 @@ sessions, not a sandbox: the authority for the remote is the pre-push git hook. 
 import re
 
 # options (and one value) a wrapper word may carry between itself and git: `xargs -n1`, `sudo -u x`, `nice -n 10`, `start /b`
-_WOPTS = r"(?:\s+[-/]\S+(?:\s+(?!git\b|-|/)\w\S*)?)*"
+_WOPTS = r"(?:\s+[-/]\S+(?:\s+(?!git\b|-|/)\w\S*)?){0,6}"  # bounded: no catastrophic backtracking on long input
 _PREFIX = (
     r"(?:^|[;&|\n(`{!]|\b(?:then|do|else|elif|if|while|until|time|exec|command|nohup)\b"
     r"|\b(?:sudo|env|xargs|start|wsl|nice)\b" + _WOPTS +
     r"|\btimeout\s+\S+|\bcmd(?:\.exe)?\s+(?:/[a-z]\s+)*/c\b"
-    r"|\b(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+(?:\s+(?!git\b)[^-\s]\S*)?\s+)*-c(?:ommand)?\b)\s*"
+    r"|\b(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+(?:\s+(?!git\b)[^-\s]\S*)?\s+){0,6}-c(?:ommand)?\b)\s*"
     r"(?:\w+=\S+\s+)*"
 )
 _GIT = r"(?:\S*[\\/])?git(?:\.exe)?"
 _VAL = r"(?:\"[^\"]*\"|'[^']*'|\S+)"
 _GIT_OPTS = (
     r"(?:(?:-[Cc]\s+" + _VAL + r"|--git-dir\s+\S+|--work-tree\s+\S+|--namespace\s+\S+|-p|-P"
-    r"|--[\w-]+(?:=" + _VAL + r")?)\s+)*"
+    r"|--[\w-]+(?:=" + _VAL + r")?)\s+){0,12}"
 )
 COMMAND_POS_COMMIT_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"commit\b", re.IGNORECASE)
 COMMAND_POS_PUSH_RE = re.compile(_PREFIX + _GIT + r"\s+" + _GIT_OPTS + r"push\b", re.IGNORECASE)
@@ -47,10 +47,11 @@ PIPE_TO_SHELL_RE = re.compile(
     r"\|\s*(?:\S*[\\/])?(?:bash|sh|zsh|dash|pwsh|powershell|cmd|py|python[\d.]*|node|iex|invoke-expression|xargs)(?:\.exe)?\b",
     re.IGNORECASE)
 # Start-Process git -ArgumentList push
-START_PROCESS_RE = re.compile(r"\b(?:start-process|saps)\s+\S*git(?:\.exe)?\b[^\n;|&]*\bpush\b", re.IGNORECASE)
+START_PROCESS_RE = re.compile(
+    r"\b(?:start-process|saps)\b[^\n;|&]{0,200}?\bgit(?:\.exe)?\b[^\n;|&]{0,200}?\bpush\b", re.IGNORECASE)
 # eval / iex on something the shell builds (`$c='git push'; iex $c`)
 EVAL_RE = re.compile(r"(?:^|[;&|\n(`{!]|\s)(?:iex|invoke-expression|eval)\s", re.IGNORECASE)
-LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]*?\bpush\b", re.IGNORECASE)
+LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]{0,300}?\bpush\b", re.IGNORECASE)
 INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:py|python[\d.]*|pypy[\d.]*|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
 SPAWN_RE = re.compile(r"system|popen|subprocess|\brun\s*\(|\bcall\s*\(|check_output|check_call|exec|spawn|child_process|`", re.IGNORECASE)
 HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
@@ -96,7 +97,7 @@ def is_push_command(command: str) -> bool:
     if (COMMAND_POS_PUSH_RE.search(stripped) or QUOTED_GIT_PUSH_RE.search(no_heredoc)
             or OBFUSCATED_RE.search(stripped) or ALIAS_RE.search(no_heredoc)):
         return True
-    if START_PROCESS_RE.search(stripped):
+    if START_PROCESS_RE.search(no_heredoc):  # on the unblanked text: the argument list is usually quoted
         return True
     if EVAL_RE.search(stripped) and LOOSE_PUSH_RE.search(no_heredoc):
         return True
