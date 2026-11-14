@@ -80,6 +80,7 @@ instruction wins; platform permission and safety controls always apply.
   answer: commit locally, do not update the remote, start the next task, and return to the review when `pm_bridge_health` says OK. A review that
   did not run is not a review: the remote is updated only after a real APPROVE for the exact HEAD. The authority is the pre-push hook
   (ledger approval checked against the real PM reply); `gpt_review_gate` also refuses an `ok=false` or non-APPROVE receipt and `--no-verify`.
+- Merge (operator 2026-11-14, every project): the operator's approval is not needed for the merge, as it is not for a commit or a push, when GPT-PM said APPROVE. Once the ledger holds the approval for the exact head of the sprint PR (`ledger.py approve`, checked against the real PM reply) and the PR head equals that approved HEAD, the agent merges the sprint PR itself (`gh pr merge <N> --merge`, no question to the operator), then updates the main checkout, installs and closes the sprint. Limits that stay: never merge a head newer than the approved one (a new commit means a new review), no auto-merge setting, no force-push, no deploy to production, no deletion of remote branches, no real money, and a merge conflict is resolved by the agent in a new commit and reviewed again. The merge is recorded in `core/DECISION_LOG.md` with the PR number and the approved head.
 - One branch and one PR per sprint. Commit message: at most two sentences + `Task: <ID>`.
 - Each commit adds an entry to `core/LESSONS_LOG.md` (FAILURE / SHORTCOMING / SUCCESS).
 - Global lessons: a hook injects "Global lessons for <action>" before git commit/push, gh pr, agent spawn, edits of hooks/guards/workflows and a GPT-PM send; follow them. A new FAILURE/SHORTCOMING entry in `core/LESSONS_LOG.md` reaches the global store at commit.
@@ -109,7 +110,7 @@ instruction wins; platform permission and safety controls always apply.
   step, report the result. Never list as "not done" an item that nothing prohibits; do it. Waiting for your own background agent or job
   is not a blocker for the operator: do the independent steps meanwhile; if none is left, end the turn with a plain status line, with
   no question and no `ledger.py block` (the agent's finish message resumes the work). The only open questions allowed are the
-  operator-only cases below, and push/PR/merge only when the project's instructions forbid doing them unasked.
+  operator-only cases below, and push/PR only when the project's instructions forbid doing them unasked (merge: see the Merge rule above).
   The same pattern in disguise, also forbidden: a status table or "Блокеры: EXTERNAL" as the end of a turn for something that resumes by
   itself (own agent, own job, a queue); handing the operator a click or a command for a platform approval before the agent has
   searched for the platform's own route (help output, binary strings, config keys) and logged the rejected options; and breaking a
