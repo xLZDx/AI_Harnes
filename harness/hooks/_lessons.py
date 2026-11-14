@@ -536,7 +536,10 @@ def _prepare(item: dict):
 def _queue(entry: dict) -> None:
     box = store_dir() / "outbox"
     box.mkdir(parents=True, exist_ok=True)
-    _agentio.atomic_write_text(box / (entry["idem"] + ".json"), json.dumps(entry, ensure_ascii=False))
+    # The name carries the rule key as well as the identity: a reworded rule shares the idem with its earlier wording, and
+    # both must survive the queue (GPT-PM S20 F1). A retry of the same entry still lands on the same file.
+    name = f"{entry['idem']}-{_sha(entry['key'])[:16]}.json"
+    _agentio.atomic_write_text(box / name, json.dumps(entry, ensure_ascii=False))
 
 
 def _apply(entries: list, results: list) -> bool:
@@ -1067,7 +1070,10 @@ def restore_report(from_file=None) -> dict:
                     _write_raw(d / f"replaced-by-restore-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl",
                                _jsonl().read_bytes())
                 except OSError as exc:
+                    # never replace a store whose current bytes could not be kept (GPT-PM S20 F2)
                     _log_error("restore:keep", exc)
+                    rep["reason"] = f"current store could not be preserved, nothing restored: {type(exc).__name__}: {exc}"
+                    return rep
             _LAST_BACKUP.update(status="none", detail="")
             try:  # the marker goes first; a failed marker never turns a completed restore into a failure
                 _write_raw(store_dir() / BASELINE_FILE,
