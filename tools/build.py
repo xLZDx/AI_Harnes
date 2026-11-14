@@ -531,7 +531,8 @@ def build(python: str = "") -> int:
     return 0
 
 
-TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py", "workflow_guard.py")
+TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py", "workflow_guard.py", "lessons.py")
+LESSON_MODULES = ("_lessons.py", "_agentio.py", "secret_policy.py")  # harness/hooks/* -> <project>/.harness-tools/
 REPORT_ASSETS = ("report.css", "filter.js", "copy.js")  # harness/report/* -> <project>/.harness-tools/report/
 HOOKS = ("pre-commit", "post-commit", "pre-push", "post-merge")
 
@@ -547,7 +548,7 @@ def install_project(target: Path, force: bool = False) -> int:
         return 1
     common = Path(r.stdout.strip())
     main = common.parent if common.name == ".git" else common  # tools live in the main checkout
-    missing = [p for p in [*(ROOT / "tools" / f for f in TOOL_FILES), *(ROOT / "tools" / "githooks" / h for h in HOOKS),
+    missing = [p for p in [*(ROOT / "tools" / f for f in TOOL_FILES), *(SRC / "hooks" / h for h in LESSON_MODULES), *(ROOT / "tools" / "githooks" / h for h in HOOKS),
                            SRC / "routing.json", SRC / "manifest.json",
                            *(SRC / "report" / a for a in REPORT_ASSETS)] if not p.exists()]
     if missing:
@@ -565,6 +566,8 @@ def install_project(target: Path, force: bool = False) -> int:
     (tools / "harness").mkdir(parents=True, exist_ok=True)
     for f in TOOL_FILES:
         shutil.copy2(ROOT / "tools" / f, tools / f)
+    for m in LESSON_MODULES:  # lessons.py imports these from its own folder
+        shutil.copy2(SRC / "hooks" / m, tools / m)
     (tools / "report").mkdir(parents=True, exist_ok=True)
     for a in REPORT_ASSETS:
         shutil.copy2(SRC / "report" / a, tools / "report" / a)

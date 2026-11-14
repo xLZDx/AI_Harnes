@@ -134,6 +134,14 @@
    "codex": "spawn_agent"
   },
   {
+   "event": "PreToolUse",
+   "script": "lessons_recall.py",
+   "timeout": 5,
+   "status": "global lessons recall",
+   "claude": "Bash|PowerShell|Agent|Task|Edit|Write|MultiEdit|mcp__pm-bridge__gpt_send.*",
+   "codex": "Bash|apply_patch|spawn_agent"
+  },
+  {
    "event": "PreCompact",
    "script": "decision_log_precompact.py",
    "timeout": 15,

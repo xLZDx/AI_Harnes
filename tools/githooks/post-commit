@@ -19,7 +19,30 @@ run_py() {
   esac
 }
 log_err() { mkdir -p "$COMMON/.harness"; echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$COMMON/.harness/hook-error.log"; echo "HARNESS HOOK ERROR: $1" >&2; }
-[ -n "$T" ] || { log_err "post-commit: harness tools not found"; exit 0; }
+if [ -n "$T" ]; then
 # Record the commit against its task (line 'Task: <ID>').
-run_py "$T/ledger.py" commit-hook || log_err "post-commit: ledger.py commit-hook failed"
+  run_py "$T/ledger.py" commit-hook || log_err "post-commit: ledger.py commit-hook failed"
+else log_err "post-commit: harness tools not found"; fi
+# Global lessons (S20): when this commit changed core/LESSONS_LOG.md, import the entries it added. Never fails the commit.
+if git diff-tree --root --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "core/LESSONS_LOG.md"; then
+  LT="$HARNESS_LESSONS_TOOL"
+  if [ -z "$LT" ]; then
+    CFG="${HARNESS_HOOK_CONFIG:-$HOME/.harness-hooks/config.json}"
+    LT="$(sed -n 's/.*"HARNESS_LESSONS_TOOL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CFG" 2>/dev/null | head -n 1 | sed 's|\\|/|g')"
+    case "$LT" in "<"*) LT="" ;; esac
+  fi
+  if [ -n "$LT" ] && [ ! -f "$LT" ]; then LT=""; fi
+  if [ -z "$LT" ] && [ -f "$COMMON/.harness-tools/lessons.py" ]; then LT="$COMMON/.harness-tools/lessons.py"; fi
+  if [ -z "$LT" ] && [ -f "$TOP/tools/lessons.py" ]; then LT="$TOP/tools/lessons.py"; fi
+  if [ -z "$LT" ]; then log_err "post-commit: lessons tool not found"
+  else
+    LOUT="$(run_py "$LT" import --repo "$TOP" --commit HEAD 2>&1)"; LRC=$?
+    # One log line whenever something was queued, refused, skipped or failed, or the changed log parsed to nothing.
+    if [ "$LRC" -ne 0 ]; then log_err "post-commit: lessons.py import exit $LRC: $(printf '%s' "$LOUT" | tail -n 1)"
+    elif printf '%s' "$LOUT" | grep -Eq '^[^ ]+: excluded'; then :  # an intended exclusion (VMC) is not an attention case
+    elif printf '%s' "$LOUT" | grep -Eq '(skipped-no-rule|skipped-secret|unparsed|queued|failed)=[1-9]|(^| )parsed=0( |$)'; then
+      log_err "post-commit: lessons import needs attention: $(printf '%s' "$LOUT" | tail -n 1)"
+    fi
+  fi
+fi
 exit 0

@@ -79,3 +79,52 @@ them; a new FAILURE or SHORTCOMING goes to core/LESSONS_LOG.md and reaches the g
 
 S20, after S19 is approved and closed: T1 store and `lessons.py` with import; T2 commit-time writer; T3 recall hooks
 and registry; T4 initial import across projects and install. Reviewers by route.py; tests by functional-test-reviewer.
+
+## Revision after architect review (2026-11-14)
+
+The architect review found one BLOCKER and several MAJOR gaps. The design changes as follows; where this section and the
+text above differ, this section wins.
+
+1. Real entry format (BLOCKER): `core/LESSONS_LOG.md` entries are `## <date> <title>` blocks with bullets `Kind:`,
+   `Facts:`, `Root cause:`, `Caught by:`, `Rule:` (one-line variants exist too). The parser reads blocks, one entry per
+   `Kind:`, `Rule:` required; an entry without `Rule:` is skipped and counted. A fixture covers every variant, and an
+   import of Harness_v2's own log must give its known counts.
+2. Writer runs from `post-commit`, not pre-commit: the commit exists, the real sha is recorded, an aborted commit adds
+   nothing. Idempotency key `(project, source sha, entry hash)`; lesson identity `sha256(normalised rule)`; a repeat
+   from another project goes into `seen_in` (a "repeated N times" ranking signal).
+3. Core logic lives in `harness/hooks/_lessons.py` (stdlib, imported by hooks, no extra Python start); `tools/lessons.py`
+   is a thin CLI (`add`, `search`, `show`, `rebuild`, `restore`, `import`). The git hooks find it through a machine
+   config key `HARNESS_LESSONS_TOOL` and through the `.harness-tools` copy the installer places in every project.
+4. Store: `state_dir("lessons")` = `~/.harness-hooks/lessons/`. `lessons.jsonl` is the only source of truth; INDEX.md
+   and GLOBAL_LESSONS.md are derived, carry the jsonl size/hash in a header, and `search` rebuilds a stale index.
+   `add` repairs a truncated last line, assigns ids inside the lock, waits up to 10 s for the lock and otherwise leaves
+   the entry in `lessons/outbox/` for the next writer to drain.
+5. Backup: a dated copy under `D:\Backup\lessons\` on every rebuild (last 20 kept), `restore` rebuilds from it.
+   Nothing from the store is committed to the public Harness_v2 repo (lessons come from private projects).
+6. Privacy: no `facts` text is stored, only `rule`, `tags`, `actions`, `kind`, `date`, `project`, `source`; input that
+   matches the secret_guard patterns is refused. Excluded projects (Virtual_marketing_company, VMC_*) are skipped by
+   both import and writer.
+7. Recall: one hook with a cheap regex prefilter (git commit/push, gh pr, agent spawn, edits under hooks/guards/
+   workflows), FAILURE and SHORTCOMING only, ranked by action, then tag overlap, then repeats, then recency; at most 5
+   one-line rules with ids; a per-session marker file (cleaned after 7 days) shows each lesson once per session. Word
+   recall on the Russian prompt is out of v1. Both clients through `_agentio` helpers (`shell_command`, `edited_paths`,
+   `is_agent_spawn`), Codex matcher `Bash|apply_patch|spawn_agent`; Codex acceptance of PreToolUse additionalContext is
+   verified with a real payload, else a documented fallback.
+
+Reworded rules: a stored lesson is never rewritten in place. When a log entry keeps its identity (same project, date, title,
+kind, ordinal and block ordinal) but its rule text changes, the new text becomes a new lesson and the earlier one is kept
+(one log event names both ids). The identity also holds the ordinal of the block among blocks with the same date and title.
+Only provenance (shas, idems, seen_in) is appended to a record, and only when the incoming rule has the same key.
+
+Codex note (S20-T4): the recall hook `harness/hooks/lessons_recall.py` emits PreToolUse `additionalContext` for both clients. Claude Code documents it; for Codex it is not proven by a real run (the repo only shows `codex_spawn_shim.py` forwarding it and the dual-client test allowing the field). If Codex ignores it, nothing breaks and the lessons are simply not shown there; the fallback is the CORE.md rule and `GLOBAL_LESSONS.md` / `tools/lessons.py search`.
+
+## Tasks (replaces the plan above)
+
+- T1 store core and CLI: concurrency (8 writers, 4 rules -> 4 entries), truncated-line repair, stale-index rebuild,
+  secret refusal, ranked limited search, missing/corrupt store fails open.
+- T2 parser and import of the real format: known counts on Harness_v2, idempotent re-import, exclusions, skipped
+  entries counted.
+- T3 post-commit writer and installer: one entry with the real sha, nothing on an unchanged log or an amend, works in
+  another project and in a worktree, a missing tool never fails the commit.
+- T4 recall hook, registry, CORE.md and reminder text, backup/restore, Codex payload check, then the one-time import
+  across all projects and install.
