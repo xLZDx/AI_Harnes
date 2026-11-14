@@ -77,6 +77,7 @@ instruction wins; platform permission and safety controls always apply.
   to HEAD; a new commit removes it. The pre-push git hook checks it.
 - One branch and one PR per sprint. Commit message: at most two sentences + `Task: <ID>`.
 - Each commit adds an entry to `core/LESSONS_LOG.md` (FAILURE / SHORTCOMING / SUCCESS).
+- Global lessons: a hook injects "Global lessons for <action>" before git commit/push, gh pr, agent spawn, edits of hooks/guards/workflows and a GPT-PM send; follow them. A new FAILURE/SHORTCOMING entry in `core/LESSONS_LOG.md` reaches the global store at commit.
 - Every project produces program status reports ONLY in the one global format (`tools/report.py`, Russian HTML,
   the layout of the operator's template: hero tiles, provenance bar with copy button, program bar with formula,
   sprint rows, active-sprint table, all tasks with criteria, formulas, commit update log). Never hand-write another layout.

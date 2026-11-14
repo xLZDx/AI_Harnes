@@ -97,7 +97,9 @@ def main():
                 "cause (or why it worked), which layer missed it (author, tests, "
                 "reviewers, gate) and the rule to apply next time. Record your OWN "
                 "mistakes at once, without being asked, and any defect a test, "
-                "reviewer or the operator found."
+                "reviewer or the operator found. A FAILURE/SHORTCOMING entry with a Rule "
+                "also reaches the global lessons store at commit and is then shown "
+                "to every project before the matching action."
             )
         else:
             context += (
