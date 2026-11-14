@@ -714,7 +714,7 @@ def _strip_inert_cat_heredoc_spans(command: str) -> str:
 # explicitly rejected keeping them, same message: "это тоже разрешить - Правка на месте (sed -i),
 # установка пакетов (pip/npm/go install и т.п.), смена прав (chmod/icacls)". Only deletion-class
 # commands (plus substitution/redirection, which can hide one) still need a GO from this hook.
-_DELETE_HEADS = {"rm", "rmdir", "del", "erase", "remove-item", "ri"}
+_DELETE_HEADS = {"rm", "rmdir", "rd", "del", "erase", "remove-item", "ri"}
 
 # `N>&M` (e.g. `2>&1`) duplicates one already-open file descriptor onto another -- it never
 # targets a real file and is one of the single most common shell idioms there is (merging stderr
@@ -957,6 +957,10 @@ def _nearest_existing_dir(path: Path) -> Path:
 #     too, and a forged receipt or plan written "to a temp file" would defeat the review gates;
 #   - no ancestor holds a `.git` entry (checkout, worktree file, bare clone): found by looking at the disk,
 #     not by asking git, because a failed git call used to read as "not a repository".
+def _norm_part(part: str) -> str:
+    return part.rstrip(" .") if part not in (".", "..") else part
+
+
 _TEMP_SENSITIVE_PART_RE = re.compile(
     r"(?i)^(claude_.*|.*(receipt|approval|gate|rosetta|pm_bridge|decision).*|\.claude|\.codex|\.git|\.harness.*)$"
 )
@@ -991,12 +995,14 @@ def _is_throwaway_path(resolved: Path) -> bool:
             return False
         parts = resolved.relative_to(under_root.resolve()).parts
         folder_parts = parts if resolved.is_dir() else parts[:-1]
-        if any(_TEMP_SENSITIVE_PART_RE.match(part) for part in folder_parts):
+        if any(_TEMP_SENSITIVE_PART_RE.match(_norm_part(part)) for part in folder_parts):
             return False
         probe = resolved
         while True:
             if os.path.lexists(probe / ".git"):
                 return False
+            if os.path.lexists(probe / "HEAD") and os.path.lexists(probe / "objects") and os.path.lexists(probe / "refs"):
+                return False  # a bare repository has no .git entry
             if probe.parent == probe:
                 break
             probe = probe.parent
@@ -1035,7 +1041,7 @@ _DELETE_FLAGS_SKIP_VALUE = {"-erroraction"}
 
 
 def _has_sensitive_part(path: Path) -> bool:
-    return any(_TEMP_SENSITIVE_PART_RE.match(part) for part in path.parts[1:])
+    return any(_TEMP_SENSITIVE_PART_RE.match(_norm_part(part)) for part in path.parts[1:])
 
 
 def _delete_targets(segment: str, head: str = "", is_ps: bool = False):
@@ -1096,8 +1102,8 @@ def _delete_is_harmless(segment: str, cwd, solo: bool = False, head: str = "", i
         path = Path(raw)
         try:
             st = os.lstat(path)
-        except FileNotFoundError:
-            if not solo:
+        except FileNotFoundError as exc:
+            if not solo or getattr(exc, "winerror", None) == 206:  # 206 = path too long, not "missing"
                 return False
             continue
         except OSError:
@@ -1106,7 +1112,7 @@ def _delete_is_harmless(segment: str, cwd, solo: bool = False, head: str = "", i
             if _stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & 0x400):
                 return False
             if _stat.S_ISDIR(st.st_mode):
-                if any(path.iterdir()) or _has_sensitive_part(path):
+                if any(path.iterdir()) or _has_sensitive_part(path) or _has_sensitive_part(path.resolve()):
                     return False
                 continue
             if not _is_throwaway_path(path.resolve()):
@@ -1116,7 +1122,7 @@ def _delete_is_harmless(segment: str, cwd, solo: bool = False, head: str = "", i
     return True
 
 
-def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd) -> bool:
+def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd, is_ps: bool = False) -> bool:
     """True only when EVERY write-redirect target in `command` resolves into a session's own
     scratchpad directory AND outside every git repository. Operator instruction, 2026-09-18: a
     live Fitness_App session was denied piping diagnostic output into its own throwaway session
@@ -1147,6 +1153,8 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd) -
         raw_target = command[start:end]
         if len(raw_target) >= 2 and raw_target[0] == raw_target[-1] and raw_target[0] in "\"'":
             raw_target = raw_target[1:-1]
+        elif not is_ps and "\\" in raw_target:
+            return False  # unquoted backslash: bash reads `D:\tmp\x` as `D:tmpx`
         if not raw_target:
             return False
         targets.append(raw_target)
@@ -1206,7 +1214,7 @@ def bash_needs_go(command: str, cwd=None, *, is_powershell: bool = False) -> tup
         if not safe:
             return True, "command_substitution"
     if _GO_REDIRECT_RE.search(redirect_view):
-        if not _redirect_targets_all_in_scratchpad(command, redirect_view, cwd):
+        if not _redirect_targets_all_in_scratchpad(command, redirect_view, cwd, is_powershell):
             return True, "redirection_or_heredoc"
     segments = _split_segments_quote_aware(command)
     for segment in segments:

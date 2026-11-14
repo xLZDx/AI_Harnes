@@ -342,18 +342,30 @@ def final_receipt_fresh(repo_root):
     return True, None, entry
 
 
+def _is_real_approve(entry):
+    """A receipt that may open a push: the review ran (ok true), the reply was matched to this request
+    (correlated true) and the verdict names APPROVE. A null verdict (no parsable verdict line) is not one."""
+    return bool(entry and entry.get("ok") is True and entry.get("correlated") is True
+                and "APPROVE" in str(entry.get("verdict") or "").upper())
+
+
 def git_dash_c_dir(command, base_cwd):
-    """The directory named by the first `git -C <dir>` (quoted or not), resolved against base_cwd; else None."""
-    m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n;|&]*?\s)?-C\s+(\"[^\"]*\"|'[^']*'|\S+)", command)
-    if not m:
-        return None
-    raw = m.group(1).strip("\"'")
-    if not raw:
-        return None
-    path = Path(normalise_shell_path(raw))
-    if not path.is_absolute():
-        path = Path(base_cwd) / path
-    return str(path) if path.is_dir() else None
+    """The directory named by `git -C <dir>` in the command segment that holds `push` (quoted or not),
+    resolved against base_cwd; else None."""
+    for seg in re.split(r"[;&|\n]", command):
+        if not re.search(r"\bpush\b", seg):
+            continue
+        m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+(\"[^\"]*\"|'[^']*'|\S+)", seg)
+        if not m:
+            continue
+        raw = m.group(1).strip("\"'")
+        if not raw:
+            return None
+        path = Path(normalise_shell_path(raw))
+        if not path.is_absolute():
+            path = Path(base_cwd) / path
+        return str(path) if path.is_dir() else None
+    return None
 
 
 OUTAGE_STEPS = (
@@ -395,8 +407,8 @@ def main():
     if not is_push and not is_commit:
         allow()
 
-    if is_push and re.search(r"--no-verify\b|\bHARNESS_SKIP_APPROVAL\s*=", command):
-        deny("GPT REVIEW gate (push): `--no-verify` and an inline HARNESS_SKIP_APPROVAL turn off the pre-push "
+    if is_push and re.search(r"--no-v[a-z]*\b|\bHARNESS_SKIP_APPROVAL\s*=|core\.hooksPath", command, re.IGNORECASE):
+        deny("GPT REVIEW gate (push): `--no-verify` (or an abbreviation), an inline HARNESS_SKIP_APPROVAL and core.hooksPath turn off the pre-push "
              "approval check, so this push would update the remote without a real review. " + OUTAGE_STEPS,
              {"command": command[:200]})
 
@@ -451,10 +463,8 @@ def main():
                 fresh = age_h <= PUSH_RECEIPT_MAX_AGE_HOURS
             except (ValueError, TypeError):
                 fresh = False
-        if fresh and entry.get("ok") is not True:
-            fresh = False  # S21: a failed attempt never opens a push, also here
-        if fresh and str(entry.get("verdict") or "APPROVE").upper().find("APPROVE") < 0:
-            fresh = False
+        if fresh and not _is_real_approve(entry):
+            fresh = False  # S21: only a successful, correlated APPROVE receipt opens a push, also here
         if fresh:
             log_decision({"decision": "allow-push-on-receipt",
                           "reason": "pm-bridge is the review transport; it pushes on a fresh "
@@ -493,14 +503,15 @@ def main():
         if passes:
             receipt_ok = entry.get("ok") if entry else None
             receipt_error = entry.get("error") if entry else None
-            verdict = str(entry.get("verdict") or "APPROVE") if entry else "APPROVE"
-            if receipt_ok is not True or "APPROVE" not in verdict.upper() or entry.get("correlated") is False:
+            verdict = str(entry.get("verdict")) if entry else "None"
+            if not _is_real_approve(entry):
                 # S21-T2 (operator 2026-11-14): a failed review attempt is enough to COMMIT locally, never to
                 # update the remote. The push waits for a real review.
                 deny(
                     f"GPT REVIEW gate (push): the latest final receipt for {repo_root} is not a successful "
-                    f"review (ok={receipt_ok!r}, verdict={verdict!r}, error={receipt_error!r}) -- ok=false means the "
-                    f"review did not run, so nothing here was reviewed. "
+                    f"APPROVE review (ok={receipt_ok!r}, correlated={entry.get('correlated')!r}, verdict={verdict!r}, "
+                    f"error={receipt_error!r}); a push needs ok true, correlated true and an APPROVE verdict. "
+                    f"ok=false means the review did not run, so nothing here was reviewed. "
                     + OUTAGE_STEPS,
                     {"repo": repo_root, "command": command[:200], "receipt_error": receipt_error})
 
