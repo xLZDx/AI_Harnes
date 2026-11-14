@@ -184,10 +184,37 @@ def normalise_shell_path(path):
     return f"{m.group(1).upper()}:{rest or chr(92)}"
 
 
+def split_segments(command):
+    """Command segments split at ; & | and newline, but not inside quotes (`git -C 'my;dir' push` is one segment)
+    and with a shell comment (`# ...` at a word start) cut off. A quote that never closes keeps the rest of the
+    command in one segment."""
+    masked = list(command)
+    quote = None
+    for i, ch in enumerate(command):
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                masked[i] = "x"
+        elif ch in "\"'":
+            quote = ch
+    masked = "".join(masked)
+    out, start = [], 0
+    for m in re.finditer(r"[;&|\n]", masked):
+        out.append(command[start:m.start()])
+        start = m.end()
+    out.append(command[start:])
+    cleaned = []
+    for seg, mseg in zip(out, re.split(r"[;&|\n]", masked)):
+        cm = re.search(r"(?:^|\s)#", mseg)
+        cleaned.append(seg[:cm.start()] if cm else seg)
+    return cleaned
+
+
 def skip_applies(command):
     """`--help`, `-h` and `--dry-run` skip the gate only when EVERY command segment that mentions git carries the
-    flag itself: `git push origin main; echo -h` is a real push."""
-    git_segments = [seg for seg in re.split(r"[;&|\n]", command) if re.search(r"\bgit\b", seg)]
+    flag itself: `git push origin main; echo -h` and `git push origin main # --help` are real pushes."""
+    git_segments = [seg for seg in split_segments(command) if re.search(r"\bgit\b", seg)]
     return bool(git_segments) and all(SKIP_RE.search(seg) for seg in git_segments)
 
 
@@ -363,10 +390,10 @@ def _is_real_approve(entry):
 def git_dash_c_dir(command, base_cwd):
     """The directory named by `git -C <dir>` in the command segment that holds `push` (quoted or not),
     resolved against base_cwd; else None."""
-    for seg in re.split(r"[;&|\n]", command):
+    for seg in split_segments(command):
         if not re.search(r"\bpush\b", seg):
             continue
-        val = r"(\"[^\"]*\"|'[^']*'|\S+)"
+        val =r"(\"[^\"]*\"|'[^']*'|\S+)"
         m = re.search(r"\bgit(?:\.exe)?\s+(?:[^\n]*?\s)?-C\s+" + val, seg)
         is_git_dir = False
         if not m:

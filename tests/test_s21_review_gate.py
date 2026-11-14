@@ -531,6 +531,197 @@ def test_dash_C_in_an_earlier_segment_does_not_hide_the_pushed_repo():
     expect(b.run(f"git -C {a.as_posix()} status && git -C {bb.as_posix()} push", a), "deny")
 
 
+# ------------------------------------------------------------------------------------------------ 7. S21 third batch
+def _push_denied(r, cmd):
+    expect(r, "deny")
+    assert "(push)" in r.reason, (cmd, r)
+
+
+def test_skip_flags_only_skip_when_they_belong_to_the_git_command():
+    b = Box()
+    repo = b.repo()  # NO receipt
+    for cmd in ("git push origin main; echo -h", "git push origin main && echo --dry-run",
+                "git push origin main; echo --help",
+                "git push origin main | cat --dry-run"):
+        _push_denied(b.run(cmd, repo), cmd)
+    # twins: the flag is git's own, so the command is harmless and passes with no receipt
+    for cmd in ("git push --dry-run", "git push -h", "git commit --dry-run", "git push --help"):
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+
+
+OBFUSCATED_PUSHES = [
+    'git "push"', "git 'push'", '"git" push', "git -c alias.p=push p", "git --no-replace-objects push",
+    "git --glob-pathspecs push origin", "git $(echo push)", "git ${P:-push}", 'git -c "x=a;b" push',
+    "git \\\npush", 'echo "<<A"\ngit push\nA', "echo it\\'s; git push; echo don\\'t",
+    "bash <<'EOF'\ngit push origin main\nEOF", "cmd /c git push", "powershell -c git push", "wsl git push",
+    "timeout 60 git push", "echo x | xargs git push",
+    "python -c \"import os; os.system('git push')\"",
+    "node -e \"require('child_process').execSync('git push')\"",
+]
+
+
+def test_obfuscated_subcommands_deny_without_a_receipt():
+    b = Box()
+    repo = b.repo()
+    for cmd in OBFUSCATED_PUSHES:
+        _push_denied(b.run(cmd, repo), cmd)
+    # -C into a folder that does not exist: the repository of the push cannot be checked
+    expect(b.run("git -C 'my;dir' push", repo), "deny")
+
+
+def test_obfuscated_subcommands_are_allowed_with_a_good_receipt_twin():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, **GOOD)
+    for cmd in OBFUSCATED_PUSHES:
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+
+
+def test_trailing_comment_with_a_skip_flag_does_not_skip_the_push_gate():
+    b = Box()
+    repo = b.repo()  # NO receipt
+    _push_denied(b.run("git push origin main # --help", repo), "# --help")
+
+
+def test_dash_C_into_a_missing_quoted_folder_with_semicolon_denies_even_with_a_good_receipt():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, **GOOD)
+    expect(b.run("git -C 'my;dir' push", repo), "deny")
+
+
+NOT_PUSHES = [
+    "git status", "git lg", "git log $(git rev-parse HEAD)..HEAD", 'git commit -m "msg with git push inside"',
+    "git commit -m \"$(cat <<'EOF'\nsubject line\n\ngit push later\nEOF\n)\"",
+    "python -c \"print('git push is blocked')\"", "echo hello", "git --no-pager log -3",
+]
+
+
+def test_non_push_twins_never_count_as_a_push():
+    b = Box()
+    repo = b.repo()  # no receipt: a commit is denied as a commit, anything else is allowed
+    for cmd in NOT_PUSHES:
+        r = b.run(cmd, repo)
+        if cmd.startswith("git commit"):
+            expect(r, "deny")
+            assert "(commit)" in r.reason and "(push)" not in r.reason, (cmd, r)
+        else:
+            assert r.kind == "allow", (cmd, r)
+    # with a recent non-final receipt the commits pass, a real push on the same receipt does not
+    b.receipt(repo, ok=True)
+    for cmd in NOT_PUSHES:
+        assert b.run(cmd, repo).kind == "allow", cmd
+    expect(b.run("git push", repo), "deny")
+
+
+def test_undecidable_repository_denies_a_push_but_not_a_commit():
+    b = Box()
+    repo = b.repo()
+    nogit = b.root / "nogit"
+    r = b.run("git push", nogit)
+    expect(r, "deny")
+    assert "cannot be determined" in r.reason, r
+    # twin: a commit from the non-git folder is still allowed (fail-open kept for commits)
+    assert b.run("git commit -m x", nogit).kind == "allow"
+    expect(b.run("git push", repo), "deny")
+
+
+def _repo_forms(repo: Path):
+    p = repo.as_posix()
+    return [
+        f"cd {p} && git push", f"git -C {p} push", f"git --work-tree {p} push", f"git --git-dir {p}/.git push",
+        f"cd {p}\ngit push", f"(cd {p} && git push)", f"pushd {p}; git push", f"cd {p} || exit; git push",
+    ]
+
+
+def test_push_from_a_non_git_folder_is_judged_against_the_named_repository():
+    b = Box()
+    repo = b.repo()
+    nogit = b.root / "nogit"
+    missing = nogit / "missing"
+    for cmd in _repo_forms(repo):
+        r = b.run(cmd, nogit)
+        _push_denied(r, cmd)
+        assert "proj" in r.reason, (cmd, r)
+    expect(b.run(f"git -C {missing.as_posix()} push", nogit), "deny")
+    b.receipt(repo, **GOOD)
+    for cmd in _repo_forms(repo):
+        r = b.run(cmd, nogit)
+        assert r.kind == "allow", (cmd, r)
+    # twin: a good receipt for the repo does not open a push into a folder that does not exist
+    expect(b.run(f"git -C {missing.as_posix()} push", nogit), "deny")
+    # twin: another repository without a receipt is still denied
+    other = b.repo("other")
+    _push_denied(b.run(f"git -C {other.as_posix()} push", nogit), "other")
+
+
+def _good_line(repo, **kw) -> bytes:
+    rec = {"timestamp": datetime.now(timezone.utc).isoformat(), "cwd": str(repo), "ok": True, "round": 1}
+    rec.update(GOOD)
+    rec.update(kw)
+    return (json.dumps(rec) + "\n").encode("utf-8")
+
+
+def test_receipt_file_with_invalid_utf8_before_a_good_receipt_still_allows():
+    b = Box()
+    repo = b.repo()
+    b.receipts.write_bytes(b"\xff\xfe\x80 not json\n" + _good_line(repo))
+    expect(b.run("git push", repo), "allow")
+    # twin: the same garbage with no good receipt behind it denies
+    b2 = Box()
+    repo2 = b2.repo()
+    b2.receipts.write_bytes(b"\xff\xfe\x80 not json\n")
+    expect(b2.run("git push", repo2), "deny")
+
+
+def test_malformed_receipt_lines_deny_without_a_crash():
+    for name in ("proj", "pm-bridge"):
+        for raw in (b"5\n", b"[]\n", b'"text"\n', b"null\n"):
+            b = Box()
+            repo = b.repo(name)
+            b.receipts.write_bytes(raw)
+            expect(b.run("git push", repo), "deny")
+        for ts in (5, ["x"]):
+            b = Box()
+            repo = b.repo(name)
+            b.receipts.write_bytes(_good_line(repo, timestamp=ts))
+            expect(b.run("git push", repo), "deny")
+    # twin: the same good line with a string timestamp opens the push
+    b = Box()
+    repo = b.repo()
+    b.receipts.write_bytes(_good_line(repo))
+    expect(b.run("git push", repo), "allow")
+
+
+def test_only_a_real_approve_verdict_opens_a_push():
+    for verdict in ("DO NOT APPROVE", "NOT APPROVED", "approved?", "REJECT", ""):
+        b = Box()
+        repo = b.repo()
+        b.receipt(repo, **{**GOOD, "verdict": verdict})
+        r = b.run("git push", repo)
+        assert r.kind == "deny", (verdict, r)
+    for verdict in ("APPROVE", "approve", " APPROVE "):
+        b = Box()
+        repo = b.repo()
+        b.receipt(repo, **{**GOOD, "verdict": verdict})
+        r = b.run("git push", repo)
+        assert r.kind == "allow", (verdict, r)
+
+
+def test_unreadable_receipts_path_denies_the_push():
+    b = Box()
+    repo = b.repo()
+    b.receipts.mkdir()  # a folder where the file should be
+    _push_denied(b.run("git push", repo), "git push")
+    # twin: a normal file with the good receipt allows
+    b2 = Box()
+    repo2 = b2.repo()
+    b2.receipt(repo2, **GOOD)
+    expect(b2.run("git push", repo2), "allow")
+
+
 def run_all(g) -> int:
     fails = 0
     for name in [n for n in g if n.startswith("test_")]:

@@ -279,7 +279,7 @@ def _transcript(box: Path, client: str, text: str) -> Path:
     return p
 
 
-def run_hook(tool, tool_input, client="claude", text=NO_GO_TEXT, cwd=None):
+def run_hook(tool, tool_input, client="claude", text=NO_GO_TEXT, cwd=None, extra_env=None):
     box = fresh("box")
     payload = {"session_id": "s21", "hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input,
                "cwd": str(cwd or box), "transcript_path": str(_transcript(box, client, text))}
@@ -287,7 +287,7 @@ def run_hook(tool, tool_input, client="claude", text=NO_GO_TEXT, cwd=None):
         payload["turn_id"] = "t1"
     cp = subprocess.run([sys.executable, "-s", str(GO_GATE), f"--harness-client={client}"], input=json.dumps(payload),
                         capture_output=True, text=True, encoding="utf-8", errors="replace",
-                        env=_sandbox_env(box), cwd=str(box), timeout=90)
+                        env={**_sandbox_env(box), **(extra_env or {})}, cwd=str(box), timeout=90)
     assert cp.returncode == 0, (cp.returncode, cp.stderr[-400:])
     out = cp.stdout.strip()
     if not out:
@@ -748,6 +748,51 @@ def test_e_path_longer_than_260_chars_as_only_rm_segment_asks():
         os.lstat = real_lstat
     # twin: a short missing path as the only segment is free
     assert_free(f"rm {(base / 'short-gone.txt').as_posix()}")
+
+
+# ------------------------------------------------------------------------------------------------ F: S21 third batch
+def _outside_os_temp_root(prefix="s21x_") -> Path:
+    """A real folder that is NOT under the OS temp folder and not in a git repository (D:\\tmp on this machine)."""
+    base = Path(r"D:\tmp")
+    if not base.is_dir():
+        base = Path(r"C:\Users\Public")
+    d = Path(tempfile.mkdtemp(prefix=prefix, dir=str(base))).resolve()
+    atexit.register(lambda: shutil.rmtree(d, ignore_errors=True))
+    return d
+
+
+def test_f_harness_temp_roots_valid_absolute_folder_is_honoured_and_bad_entries_are_ignored():
+    root = _outside_os_temp_root()
+    target = {"file_path": str(root / "sub" / "new.txt"), "content": "x"}
+    # without the variable the folder is not a throwaway folder
+    assert_decision("deny", "Write", target)
+    # twin: with the folder named as a root, a write under it is free
+    assert_decision("allow", "Write", target, extra_env={"HARNESS_TEMP_ROOTS": str(root)})
+    # bad entries do not widen the throwaway area: drive root, relative and empty
+    drive = root.drive + "\\"
+    for bad in (drive, "tmp", "", "   "):
+        assert_decision("deny", "Write", target, extra_env={"HARNESS_TEMP_ROOTS": bad})
+    # a bad entry beside a good one: the good one still works, the bad one adds nothing
+    other = _outside_os_temp_root("s21y_")
+    t2 = {"file_path": str(other / "n.txt"), "content": "x"}
+    assert_decision("deny", "Write", t2, extra_env={"HARNESS_TEMP_ROOTS": drive + os.pathsep + str(root)})
+    assert_decision("allow", "Write", target, extra_env={"HARNESS_TEMP_ROOTS": drive + os.pathsep + str(root)})
+    # twin: the OS temp folder stays free whatever the variable says
+    d = fresh()
+    assert_decision("allow", "Write", {"file_path": str(d / "ok.txt"), "content": "x"},
+                    extra_env={"HARNESS_TEMP_ROOTS": drive})
+
+
+def test_f_receipts_and_approvals_file_names_in_a_plain_temp_folder_ask_but_notes_are_free():
+    d = fresh()
+    for name in ("receipts.jsonl", "approvals.json", "receipt.jsonl", "approval.json"):
+        assert_decision("deny", "Write", {"file_path": str(d / name), "content": "x"})
+        assert_go(f"echo x > {(d / name).as_posix()}")
+    # twin: an ordinary file in the very same folder is free
+    assert_decision("allow", "Write", {"file_path": str(d / "notes.txt"), "content": "x"})
+    assert_free(f"echo x > {(d / 'notes.txt').as_posix()}")
+    assert gg._paths_all_throwaway([str(d / "receipts.jsonl")], str(TMPROOT)) is False
+    assert gg._paths_all_throwaway([str(d / "notes.txt")], str(TMPROOT)) is True
 
 
 def run_all(g) -> int:
