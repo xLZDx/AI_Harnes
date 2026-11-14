@@ -7,6 +7,7 @@
   lessons.py rebuild
   lessons.py restore
   lessons.py import --repo <path> [--repo <path> ...] [--all <root>] [--sha S]   (never reads Virtual_marketing_company or VMC_*)
+  lessons.py import --repo <path> --commit <sha>   (post-commit writer: only entries that commit added or changed in the log)
 
 Store: HARNESS_LESSONS_DIR or ~/.harness-hooks/lessons; backups: HARNESS_LESSONS_BACKUP (default D:\\Backup\\lessons).
 The module is taken from harness/hooks next to this tool, or from the installed hooks folder (~/.claude/hooks, ~/.codex/hooks,
@@ -17,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,7 +26,7 @@ from pathlib import Path
 def _load():
     here = Path(__file__).resolve().parent
     cands = [Path(os.environ["HARNESS_HOOKS_DIR"])] if os.environ.get("HARNESS_HOOKS_DIR") else []
-    cands += [here.parent / "harness" / "hooks", Path.home() / ".claude" / "hooks", Path.home() / ".codex" / "hooks"]
+    cands += [here, here.parent / "harness" / "hooks", Path.home() / ".claude" / "hooks", Path.home() / ".codex" / "hooks"]
     for c in cands:
         if (c / "_lessons.py").is_file():
             sys.path.insert(0, str(c))
@@ -104,7 +106,60 @@ def import_repo(repo: Path, sha: str) -> dict:
     return counts
 
 
+def _git_out(repo: Path, *args) -> str:
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.stdout if r.returncode == 0 else ""
+
+
+def project_name(repo: Path) -> str:
+    """Folder name of the main checkout (a worktree resolves through the git common dir)."""
+    common = _git_out(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    if common:
+        c = Path(common)
+        return (c.parent if c.name == ".git" else c).name
+    return repo.name
+
+
+def import_commit(repo: Path, sha: str, project: str = "") -> dict:
+    """Import only the entries that `sha` added or changed in core/LESSONS_LOG.md (compared with its first parent)."""
+    counts = {"added": 0, "merged": 0, "duplicate": 0, "skipped-no-rule": 0, "skipped-neutral": 0, "skipped-secret": 0,
+              "queued": 0, "failed": 0}
+    full = _git_out(repo, "rev-parse", sha).strip()
+    if not full:
+        counts["failed"] = 1
+        return counts
+    project = project or project_name(repo)
+    if L.EXCLUDED_PROJECT_RE.match(project):
+        print(f"{project}: excluded")
+        return counts
+    new = L.parse_log(_git_out(repo, "show", f"{full}:core/LESSONS_LOG.md"))
+    old = L.parse_log(_git_out(repo, "show", f"{full}^:core/LESSONS_LOG.md"))
+    before = {e["text"] for e in old["entries"]}
+    items = []
+    for e in new["entries"]:
+        if e["text"] in before:
+            continue
+        tags = L.derive_tags(e["title"], e["rule"])
+        items.append({"rule": e["rule"], "kind": e["kind"], "project": project, "date": e["date"], "tags": tags,
+                      "actions": L.derive_actions(tags), "source": {"repo": project, "sha": full}, "entry_text": e["text"]})
+    results = L.add_many(items) if items else []
+    if len(results) != len(items):
+        counts["failed"] = len(items)
+        return counts
+    for r in results:
+        k = "skipped-secret" if r["status"] == "secret" else r["status"]
+        counts[k if k in counts else "failed"] += 1
+    return counts
+
+
 def cmd_import(a) -> int:
+    if a.commit:
+        if not a.repo or len(a.repo) != 1:
+            print("import --commit needs exactly one --repo")
+            return 2
+        c = import_commit(Path(a.repo[0]).resolve(), a.commit)
+        print("commit import: " + " ".join(f"{k}={v}" for k, v in c.items()))
+        return 1 if c.get("failed") else 0
     repos = [Path(r) for r in (a.repo or [])]
     if a.all:
         root = Path(a.all)
@@ -157,6 +212,7 @@ def main(argv=None) -> int:
     s.add_argument("--repo", action="append")
     s.add_argument("--all", default="")
     s.add_argument("--sha", default="import")
+    s.add_argument("--commit", default="")
     s.set_defaults(fn=cmd_import)
     a = p.parse_args(argv)
     if a.cmd == "import" and not (a.repo or a.all):
