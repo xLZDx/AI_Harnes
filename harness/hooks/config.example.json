@@ -6,6 +6,7 @@
  "CLAUDE_GPT_REVIEW_CLI": "<pm-bridge checkout>/src/cli/review.js",
  "CLAUDE_GPT_REVIEW_ROOTS": "<parent folder of the repositories under the GPT review gate>",
  "CLAUDE_WORKTREE_SCRATCH_ROOT": "<folder for scratch worktrees>",
+ "HARNESS_TEMP_ROOTS": "<extra throwaway folders (outside git) where go_gate needs no GO for temp files; the OS temp folder always counts; separate several with ;>",
  "SESSION_CLOSE_PLAN_TOOL": "<path to project_plan.py>",
  "SESSION_SUPERVISOR_ROOTS": "<parent folder of supervised repositories>",
  "SESSION_SUPERVISOR_SKIP": "<comma-separated repo folder names never supervised>",

@@ -565,6 +565,191 @@ def test_d_file_named_gate_in_plain_temp_folder_is_still_free():
     assert_go(f"echo x > {g.as_posix()}")
 
 
+# ------------------------------------------------------------------------------------------------ E: S21 regressions (7a5b291)
+def test_e_rd_is_a_delete_head_nonempty_asks_empty_plain_is_free():
+    full = fresh("full")
+    (full / "keep.txt").write_text("x")
+    assert_go(f"rd /s /q {full.as_posix()}")
+    assert_go(f"rd /s /q {full.as_posix()}", ps=True)
+    assert_go(f"rd {full.as_posix()}")  # non-empty: still asks without switches
+    empty = fresh("empty")
+    assert_free(f"rd {empty.as_posix()}")  # twin: abs, empty, plain temp
+    assert_free(f"rmdir {empty.as_posix()}")  # same shape with the older head
+    # rd on a sensitive empty dir asks too
+    sens = fresh() / ".claude"
+    sens.mkdir()
+    assert_go(f"rd {sens.as_posix()}")
+    assert full.exists() and (full / "keep.txt").exists()
+
+
+def test_e_redirect_with_unquoted_backslash_target_asks_outside_powershell():
+    f = fresh() / "throw.txt"
+    native = str(f)
+    assert "\\" in native
+    assert_go(f"echo x > {native}")  # bash reads D:\tmp\x as D:tmpx
+    assert_go(f"echo x >> {native}")
+    assert_free(f'echo x > "{native}"')  # twin: quoted
+    assert_free(f"echo x > '{native}'")
+    assert_free(f"echo x > {native}", ps=True)  # twin: PowerShell keeps backslashes
+    assert_free(f"echo x > {f.as_posix()}")  # twin: forward slashes
+    # an unquoted backslash target inside a git repo asks in every form (judged by the path too)
+    g = git_repo() / "p.txt"
+    assert_go(f'echo x > "{g}"')
+    assert_go(f"echo x > {g}", ps=True)
+
+
+def _bare_repo() -> Path:
+    p = fresh("bareparent") / "remote.git"
+    cp = subprocess.run(["git", "init", "-q", "--bare", str(p)], capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stderr
+    assert (p / "HEAD").exists() and (p / "objects").is_dir() and (p / "refs").is_dir() and not (p / ".git").exists()
+    return p
+
+
+def test_e_bare_repository_refs_and_hooks_ask_but_a_plain_folder_does_not():
+    bare = _bare_repo()
+    for target in (bare / "refs" / "heads" / "main", bare / "hooks" / "x", bare / "config",
+                   bare / "refs" / "heads" / "sub" / "deeper" / "new"):
+        assert_go(f'echo x > "{target}"')
+        assert_go(f"echo x > {target.as_posix()}")
+        assert_go(f"echo x >> {target.as_posix()}")
+        assert_decision("deny", "Write", {"file_path": str(target), "content": "x"})
+    sample = next((bare / "hooks").glob("*.sample"), None)
+    if sample is not None:
+        assert_go(f"rm {sample.as_posix()}")
+    # twin: the same relative shape in a plain folder (no HEAD+objects+refs) is free
+    plain = fresh("notbare") / "remote.git"
+    (plain / "refs" / "heads").mkdir(parents=True)
+    (plain / "hooks").mkdir()
+    assert_free(f"echo x > {(plain / 'refs' / 'heads' / 'main').as_posix()}")
+    assert_free(f"echo x > {(plain / 'hooks' / 'x').as_posix()}")
+    assert_decision("allow", "Write", {"file_path": str(plain / "hooks" / "x"), "content": "x"})
+    # twin: HEAD alone (a folder that merely has a file named HEAD) does not make a bare repo
+    only_head = fresh("onlyhead")
+    (only_head / "HEAD").write_text("x")
+    assert_free(f"echo x > {(only_head / 'f.txt').as_posix()}")
+
+
+def _try_make_trailing(parent: Path, name: str) -> Path | None:
+    """Create a folder whose name ends in a dot or space, using the extended-length prefix. None if refused."""
+    p = parent / name
+    try:
+        os.mkdir("\\\\?\\" + str(p))
+    except OSError:
+        return None
+    return p if os.path.isdir("\\\\?\\" + str(p)) else None
+
+
+def test_e_sensitive_names_with_trailing_dot_or_space_ask():
+    # pure normalisation first: independent of what the file system lets us create
+    assert gg._norm_part(".claude.") == ".claude"
+    assert gg._norm_part(".git ") == ".git"
+    assert gg._norm_part(".") == "." and gg._norm_part("..") == ".."
+    for name in (".claude.", ".git ", ".codex..", ".harness-x. ", "receipts."):
+        assert gg._has_sensitive_part(Path("C:\\") / "tmpx" / name / "f.txt"), name
+    assert not gg._has_sensitive_part(Path("C:\\") / "tmpx" / "claudefoo." / "f.txt")  # twin
+    # the same through the path strings the Write/Edit route and the redirect route use
+    created = []
+    for name in (".claude.", ".git "):
+        parent = fresh()
+        made = _try_make_trailing(parent, name)
+        if made is not None:
+            created.append(made)
+        p = parent / name / "f.txt"  # built by Python, passed as a string
+        assert gg._paths_all_throwaway([str(p)], str(TMPROOT)) is False, (name, str(p))
+        assert_decision("deny", "Write", {"file_path": str(p), "content": "x"})
+        assert_go(f'echo x > "{p}"')
+    if not created:
+        print("NOTE trailing-dot/space folders could not be created on disk; string-built paths and _norm_part were tested")
+    ok = fresh() / "claudefoo." / "f.txt"  # twin: not a sensitive name
+    assert gg._paths_all_throwaway([str(ok)], str(TMPROOT)) is True
+    for c in created:  # remove what we made, extended prefix
+        try:
+            os.rmdir("\\\\?\\" + str(c))
+        except OSError:
+            pass
+
+
+def test_e_empty_dir_under_a_junction_into_a_sensitive_folder_asks():
+    sens = fresh() / ".claude"
+    sens.mkdir()
+    emp = sens / "emp"
+    emp.mkdir()
+    link = fresh() / "junc"
+    cp = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(sens)], capture_output=True, text=True)
+    if cp.returncode != 0 or not link.exists():
+        print("SKIP junction case: mklink /J could not be created")
+        return
+    _JUNCTIONS.append(link)
+    try:
+        via = link / "emp"
+        assert via.is_dir() and not any(via.iterdir())
+        assert_go(f"rmdir {via.as_posix()}")
+        assert_go(f"rd {via.as_posix()}")
+        assert_go(f"rm -r {via.as_posix()}")
+        assert_go(f"Remove-Item {via.as_posix()}", ps=True)
+        assert emp.exists()
+    finally:
+        os.rmdir(link)  # the link only
+    assert emp.exists()
+    # twin: the same shape through a junction into a plain temp folder
+    plain_t = fresh("plaint")
+    pe = plain_t / "emp"
+    pe.mkdir()
+    link2 = fresh() / "junc2"
+    cp = subprocess.run(["cmd", "/c", "mklink", "/J", str(link2), str(plain_t)], capture_output=True, text=True)
+    if cp.returncode == 0 and link2.exists():
+        _JUNCTIONS.append(link2)
+        try:
+            assert_free(f"rmdir {(link2 / 'emp').as_posix()}")
+        finally:
+            os.rmdir(link2)
+
+
+def test_e_path_longer_than_260_chars_as_only_rm_segment_asks():
+    base = fresh("longbase")
+    p = base
+    while len(str(p)) <= 270:
+        p = p / ("a" * 60)
+    p = p / "f.txt"
+    assert len(str(p)) > 260
+    if os.path.lexists(p):
+        print("SKIP long path: it exists")
+        return
+    real_206 = False
+    try:
+        os.lstat(p)
+    except FileNotFoundError as exc:
+        real_206 = getattr(exc, "winerror", None) == 206
+    except OSError:
+        pass
+    if real_206:
+        assert_go(f"rm {p.as_posix()}")
+        assert_go(f'rm "{p}"')
+    else:
+        print("NOTE long paths are supported here (lstat gives winerror 3, not 206); the 206 branch is driven by a patched os.lstat")
+    real_lstat = os.lstat
+
+    def fake(winerror):
+        def _l(path, *a, **k):
+            if str(path) == str(p):
+                e = FileNotFoundError(2, "fake")
+                e.winerror = winerror
+                raise e
+            return real_lstat(path, *a, **k)
+        return _l
+    os.lstat = fake(206)  # lstat reports "path too long" for the only rm target
+    try:
+        assert_go(f"rm {p.as_posix()}")
+        assert_go(f'rm "{p}"')
+        os.lstat = fake(3)  # twin: a genuine "not found" on the same single target stays free
+        assert_free(f"rm {p.as_posix()}")
+    finally:
+        os.lstat = real_lstat
+    # twin: a short missing path as the only segment is free
+    assert_free(f"rm {(base / 'short-gone.txt').as_posix()}")
+
+
 def run_all(g) -> int:
     fails = 0
     for name in [n for n in g if n.startswith("test_")]:

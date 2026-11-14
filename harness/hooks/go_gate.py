@@ -969,7 +969,9 @@ _BAD_TARGET_CHARS = "*?[]{}()$%~`,;|&<>^@!#"
 
 
 def _temp_roots() -> list[Path]:
-    roots = [Path("D:/tmp")]
+    # HARNESS_TEMP_ROOTS (os.pathsep list, usually set in ~/.harness-hooks/config.json) names extra throwaway
+    # folders of this machine; the OS temp folder is always one.
+    roots = [Path(x) for x in os.environ.get("HARNESS_TEMP_ROOTS", "").split(os.pathsep) if x.strip()]
     try:
         import tempfile
         roots.append(Path(tempfile.gettempdir()))

@@ -478,7 +478,7 @@ def test_gpt_review_gate_commit_and_push_receipts_and_codex_warning_goes_to_stde
     assert res["newx"].out.strip() == "" and "ok=false" in res["newx"].err, res["newx"].dump()  # criterion 3
     cp, xp = pl(sb, PRE, tool="Bash", ti=bash("git push origin main"), cwd=r)
     trio(sb, "gpt_review_gate.py", cp, xp, "deny")  # latest receipt is not final
-    write_receipt(sb, r, final=True, ok=True)
+    write_receipt(sb, r, final=True, ok=True, verdict="APPROVE", correlated=True)  # S21: a push needs a real APPROVE
     trio(sb, "gpt_review_gate.py", cp, xp, "allow")
     trio(sb, "gpt_review_gate.py", c, x, "allow")
 
@@ -506,7 +506,7 @@ def test_gpt_review_gate_transport_repo_pushes_on_fresh_receipt():
     cp, xp = pl(sb, PRE, tool="Bash", ti=bash("git push origin main"), cwd=r)
     assert run_hook(sb, "new", "gpt_review_gate.py", cp).kind == "deny"
     assert run_hook(sb, "newx", "gpt_review_gate.py", xp).kind == "deny"
-    write_receipt(sb, r, ok=True)  # fresh, not final
+    write_receipt(sb, r, ok=True, verdict="APPROVE", correlated=True)  # fresh, not final; S21: a real APPROVE
     for side, payload in (("new", cp), ("newx", xp)):
         res = run_hook(sb, side, "gpt_review_gate.py", payload)
         assert res.kind == "allow", res.dump()

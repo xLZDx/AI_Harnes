@@ -115,7 +115,7 @@ def test_push_with_final_receipt_ok_false_is_denied_with_next_steps():
 def test_push_with_final_receipt_ok_true_is_allowed_twin():
     b = Box()
     repo = b.repo()
-    b.receipt(repo, final=True, ok=True, verdict="APPROVE")
+    b.receipt(repo, final=True, ok=True, verdict="APPROVE", correlated=True)
     r = b.run("git push origin main", repo)
     expect(r, "allow")
     assert r.out == "" and r.err == "", r
@@ -228,20 +228,30 @@ def test_pm_bridge_repo_no_longer_pushes_on_a_fresh_ok_false_receipt():
     b1.receipt(repo1, final=True, ok=False, error=OUTAGE)
     expect(b1.run("git push origin main", repo1), "deny")
     # passing twins: a fresh ok=true receipt (verdict APPROVE, or no verdict) still opens the pm-bridge push
-    for kw in ({"ok": True, "verdict": "APPROVE"}, {"ok": True}, {"ok": True, "final": True, "verdict": "APPROVE"}):
+    # (S21 final: ok true + correlated true + APPROVE; final is not needed here)
+    for kw in ({"ok": True, "verdict": "APPROVE", "correlated": True},
+               {"ok": True, "final": True, "verdict": "APPROVE", "correlated": True}):
         bt = Box()
         rt = bt.repo("pm-bridge")
         bt.receipt(rt, **kw)
         expect(bt.run("git push origin main", rt), "allow")
-    # a fresh ok=true receipt whose verdict is not APPROVE does not
-    bv = Box()
-    rv = bv.repo("pm-bridge")
-    bv.receipt(rv, ok=True, verdict="REVISE")
-    expect(bv.run("git push origin main", rv), "deny")
+    # a fresh ok=true receipt that lacks any one of the three conditions does not (final or not)
+    for kw in ({"verdict": "REVISE", "correlated": True},
+               {"verdict": "APPROVE", "correlated": False},
+               {"verdict": "APPROVE"},                          # correlated missing
+               {"correlated": True},                            # verdict missing
+               {"correlated": True, "verdict": None},           # verdict null
+               {}):
+        for final in (False, True):
+            bv = Box()
+            rv = bv.repo("pm-bridge")
+            bv.receipt(rv, ok=True, final=final, **kw)
+            r = bv.run("git push origin main", rv)
+            assert r.kind == "deny", (kw, final, r)
     # a naive (no time zone) timestamp is stale for pm-bridge too, and does not crash the hook
     bn = Box()
     rn = bn.repo("pm-bridge")
-    bn.receipt(rn, ok=True, timestamp=datetime.now().isoformat())
+    bn.receipt(rn, ok=True, verdict="APPROVE", correlated=True, timestamp=datetime.now().isoformat())
     expect(bn.run("git push origin main", rn), "deny")
     # twin: the same ok=true receipt does not open the push of an ordinary repo unless it is final
     other = b.repo("ordinary")
@@ -258,7 +268,7 @@ def test_pm_bridge_repo_no_longer_pushes_on_a_fresh_ok_false_receipt():
 
 
 # ------------------------------------------------------------------------------------------------ 5. S21 fixes (770455b)
-GOOD = dict(final=True, ok=True, verdict="APPROVE")
+GOOD = dict(final=True, ok=True, verdict="APPROVE", correlated=True)
 WRAPPED_PUSHES = [
     'bash -c "git push origin main"',
     "sh -c 'git push'",
@@ -358,16 +368,22 @@ def test_no_verify_and_inline_skip_approval_deny_even_with_a_good_receipt():
 
 
 def test_final_receipt_with_wrong_verdict_or_uncorrelated_denies():
-    for kw in ({"verdict": "REVISE"}, {"correlated": False}, {"verdict": "REJECT"},
-               {"verdict": "REVISE", "correlated": True}):
+    for kw in ({"verdict": "APPROVE", "correlated": False},      # ok true, uncorrelated
+               {"verdict": "APPROVE"},                           # correlated key missing
+               {"correlated": True},                             # verdict missing
+               {"correlated": True, "verdict": None},            # verdict null
+               {"correlated": True, "verdict": ""},
+               {"verdict": "REVISE", "correlated": True},
+               {"verdict": "REJECT", "correlated": True},
+               {"verdict": "REVISE"}, {}):
         b = Box()
         repo = b.repo()
         b.receipt(repo, final=True, ok=True, **kw)
         r = b.run("git push origin main", repo)
         expect(r, "deny")
         assert "pm_bridge_mode_on" in r.reason, (kw, r)
-    # twins that open the push
-    for kw in ({"verdict": "APPROVE"}, {}, {"verdict": "APPROVE", "correlated": True}, {"correlated": True}):
+    # twins that open the push: ok true + correlated true + APPROVE in the verdict
+    for kw in ({"verdict": "APPROVE", "correlated": True}, {"verdict": "approve", "correlated": True}):
         b = Box()
         repo = b.repo()
         b.receipt(repo, final=True, ok=True, **kw)
@@ -379,14 +395,14 @@ def test_receipt_timestamp_without_time_zone_is_stale_not_a_crash():
     repo = b.repo()
     naive = datetime.now().isoformat()  # no tz suffix
     assert "+" not in naive and not naive.endswith("Z")
-    b.receipt(repo, final=True, ok=True, verdict="APPROVE", timestamp=naive)
+    b.receipt(repo, final=True, ok=True, verdict="APPROVE", correlated=True, timestamp=naive)
     r = b.run("git push origin main", repo)  # Box.run asserts exit code 0: no crash
     expect(r, "deny")
     assert "time zone" in r.reason, r
     # twin: the same receipt with an explicit UTC offset opens the push
     b2 = Box()
     repo2 = b2.repo()
-    b2.receipt(repo2, final=True, ok=True, verdict="APPROVE", timestamp=datetime.now(timezone.utc).isoformat())
+    b2.receipt(repo2, final=True, ok=True, verdict="APPROVE", correlated=True, timestamp=datetime.now(timezone.utc).isoformat())
     expect(b2.run("git push origin main", repo2), "allow")
 
 
@@ -405,6 +421,114 @@ def test_denial_and_commit_warning_name_the_remedy_tools():
     assert "pm_bridge_mode_on" in r.reason and "review.js" in r.reason, r
     r = b2.run('git commit -m "x"', repo2, client="codex")
     assert "pm_bridge_mode_on" in r.err and "review.js" in r.err, r
+
+
+# ------------------------------------------------------------------------------------------------ 6. S21 regressions (7a5b291)
+sys.path.insert(0, str(ROOT / "harness" / "hooks"))
+import _commit_detect  # noqa: E402  (the worktree's copy, not the installed one)
+
+
+def _pushes(box, repo):
+    """Commands that MUST be treated as a push: (command, label). Paths come from the given repo."""
+    return [
+        ("/usr/bin/git push", "absolute posix git path"),
+        ('"C:/Program Files/Git/bin/git.exe" push', "quoted git.exe path with a space"),
+        (f"git --git-dir {(repo / '.git').as_posix()} push", "--git-dir space form"),
+        ("git push --no-ver", "abbreviated --no-verify (alone: still a push, still needs a receipt)"),
+        ('bash -c "git push origin main"', "bash -c"),
+        ("ssh host 'git push'", "ssh quoted"),
+        ('powershell -Command "git push"', "powershell -Command"),
+        ("echo don't; git push origin x; echo 'y'", "apostrophe in prose before a real push"),
+    ]
+
+
+MENTIONS = [
+    'git commit -m "do X, then git push later"',
+    'git commit -m "Block git push when env missing"',
+    'git commit -m "fix" && echo "git push"',
+]
+
+
+def test_is_push_command_true_for_the_hard_shapes_and_false_for_mentions():
+    b = Box()
+    repo = b.repo()
+    for cmd, label in _pushes(b, repo):
+        assert _commit_detect.is_push_command(cmd) is True, (label, cmd)
+    assert _commit_detect.is_push_command("git -c core.hooksPath=NUL push") is True
+    for cmd in MENTIONS + ['echo "git push"']:
+        assert _commit_detect.is_push_command(cmd) is False, cmd
+    # twin of each commit mention: the bare commit is a commit and not a push
+    assert _commit_detect.is_commit_command('git commit -m "do X, then git push later"') is True
+    assert _commit_detect.is_push_command('git commit -m "x"') is False
+
+
+def test_hard_push_shapes_deny_without_receipt_and_allow_with_a_good_one():
+    b = Box()
+    repo = b.repo()
+    for cmd, label in _pushes(b, repo):
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "(push)" in r.reason, (label, cmd, r)
+    b.receipt(repo, **GOOD)
+    for cmd, label in _pushes(b, repo):
+        if "--no-ver" in cmd:
+            continue  # an abbreviated skip-hook flag is denied even with a receipt, see the next test
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (label, cmd, r)
+
+
+def test_skip_hook_flags_deny_even_with_a_good_receipt_abbreviation_and_hookspath():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, **GOOD)
+    expect(b.run("git push", repo), "allow")  # twin
+    for cmd in ("git push --no-ver", "git push --no-verif origin main",
+                "git -c core.hooksPath=NUL push", "git -c core.hooksPath=/dev/null push origin main"):
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "pm_bridge_mode_on" in r.reason, (cmd, r)
+    # and without any receipt
+    b2 = Box()
+    repo2 = b2.repo()
+    expect(b2.run("git -c core.hooksPath=NUL push", repo2), "deny")
+
+
+def test_mentions_of_push_in_a_commit_are_commits_with_a_recent_receipt():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, ok=True)  # recent, NOT final and without verdict: opens a commit, never a push
+    for cmd in MENTIONS:
+        r = b.run(cmd, repo)
+        assert r.kind == "allow" and r.out == "" and r.err == "", (cmd, r)
+    expect(b.run('echo "git push"', repo), "allow")
+    expect(b.run("git push", repo), "deny")  # twin: the real push on the same receipt
+
+
+def test_mentions_of_push_in_a_commit_are_denied_as_commits_without_a_receipt():
+    b = Box()
+    repo = b.repo()  # no receipt
+    for cmd in MENTIONS:
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "(commit)" in r.reason and "(push)" not in r.reason, (cmd, r)
+    expect(b.run('echo "git push"', repo), "allow")  # not a commit, not a push
+    r = b.run("git push", repo)  # twin
+    expect(r, "deny")
+    assert "(push)" in r.reason, r
+
+
+def test_dash_C_in_an_earlier_segment_does_not_hide_the_pushed_repo():
+    b = Box()
+    a = b.repo("repoA")
+    bb = b.repo("repoB")
+    b.receipt(a, **GOOD)  # A is good, B has nothing
+    r = b.run(f"git -C {a.as_posix()} status; git -C {bb.as_posix()} push", a)
+    expect(r, "deny")
+    assert "(push)" in r.reason and "repoB" in r.reason, r
+    # twin: the push targets the good repo, the status targets the bare one
+    expect(b.run(f"git -C {bb.as_posix()} status; git -C {a.as_posix()} push", bb), "allow")
+    # twin: same shape with && and a payload cwd that is the good repo
+    expect(b.run(f"git -C {a.as_posix()} status && git -C {bb.as_posix()} push", a), "deny")
 
 
 def run_all(g) -> int:
