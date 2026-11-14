@@ -888,7 +888,12 @@ _REDIRECT_TARGET_RE = re.compile(
     r"(?:(?<![0-9<>])>{1,2}(?![>&])"   # `>` / `>>`
     r"|(?<!\d)>&(?!\s*[-\d])"           # `>&TARGET`
     r"|(?<!\d)&>(?!\s*[-\d])"           # `&>TARGET`
-    r")\s*(\S+)"
+    r")\s*([^\s;&|]+)"  # the target ends at a shell separator: `> D:/tmp/x; next` names D:/tmp/x (S23)
+)
+_REDIRECT_OP_RE = re.compile(
+    r"(?<![0-9<>])>{1,2}(?![>&])"
+    r"|(?<!\d)>&(?!\s*[-\d])"
+    r"|(?<!\d)&>(?!\s*[-\d])"
 )
 _SCRATCHPAD_SEGMENT_RE = re.compile(r"[\\/]scratchpad[\\/]", re.IGNORECASE)
 
@@ -1167,6 +1172,10 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd, i
             return False
         targets.append(raw_target)
     if not targets:
+        return False
+    # every write operator must have produced a target: `>| file` (noclobber override) has none the regex can
+    # read, and a second redirect must not hide behind a harmless first one (found by the S23 failure review)
+    if len(_REDIRECT_OP_RE.findall(masked)) != len(targets):
         return False
     for target in targets:
         # an unexpanded variable, home marker or wildcard hides the real destination: it would be read
