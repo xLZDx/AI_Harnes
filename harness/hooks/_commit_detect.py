@@ -54,7 +54,7 @@ EVAL_RE = re.compile(r"(?:^|[;&|\n(`{!]|\s)(?:iex|invoke-expression|eval)\s", re
 LOOSE_PUSH_RE = re.compile(r"\bgit(?:\.exe)?\b[^\n;|&]{0,300}?\bpush\b", re.IGNORECASE)
 INTERPRETER_RE = re.compile(r"(?:^|\s)(?:\S*[\\/])?(?:py|python[\d.]*|pypy[\d.]*|node|perl|ruby|php|deno|bun)(?:\.exe)?\s", re.IGNORECASE)
 SPAWN_RE = re.compile(r"system|popen|subprocess|\brun\s*\(|\bcall\s*\(|check_output|check_call|exec|spawn|child_process|`", re.IGNORECASE)
-_HEREDOC_OPEN_RE = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]*\n")
+_HEREDOC_OPEN_RE = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]{0,2000}\n")  # bounded: 50000 openers on one line were quadratic
 
 
 class _Heredoc:

@@ -27,6 +27,15 @@ TIMING = {
     "env": "env -i " * 30000,
     "git_git": "git " * 50000,
     "heredoc_terminated": "<<A\nx\nA\n" * 20000,
+    "heredoc_openers_one_line": "<<A " * 50000,
+    "git_a_dollar": "git " + "a$ " * 60000,
+    "git_x_dollar_y": "git " + "x$y" * 60000,
+}
+
+TWIN_PREFIX = {
+    "heredoc_openers_one_line": "<<A " * 3,
+    "git_a_dollar": "git " + "a$ " * 3,
+    "git_x_dollar_y": "git " + "x$y" * 3,
 }
 
 
@@ -47,6 +56,18 @@ def _mk_timing(name):
 
 for _n in TIMING:
     globals()[f"test_timing_{_n}"] = _mk_timing(_n)
+
+
+def _mk_twin(name):
+    def t():
+        p = TWIN_PREFIX[name]
+        assert PUSH(p + "\ngit push origin main") is True
+        assert COMMIT(p + "\ngit commit -m x") is True
+    return t
+
+
+for _n in TWIN_PREFIX:
+    globals()[f"test_timing_twin_{_n}"] = _mk_twin(_n)
 
 
 def test_timing_twin_small_inputs_still_detect():
