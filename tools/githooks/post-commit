@@ -39,6 +39,7 @@ if git diff-tree --root --no-commit-id --name-only -r HEAD 2>/dev/null | grep -q
     LOUT="$(run_py "$LT" import --repo "$TOP" --commit HEAD 2>&1)"; LRC=$?
     # One log line whenever something was queued, refused, skipped or failed, or the changed log parsed to nothing.
     if [ "$LRC" -ne 0 ]; then log_err "post-commit: lessons.py import exit $LRC: $(printf '%s' "$LOUT" | tail -n 1)"
+    elif printf '%s' "$LOUT" | grep -Eq '^[^ ]+: excluded'; then :  # an intended exclusion (VMC) is not an attention case
     elif printf '%s' "$LOUT" | grep -Eq '(skipped-no-rule|skipped-secret|unparsed|queued|failed)=[1-9]|(^| )parsed=0( |$)'; then
       log_err "post-commit: lessons import needs attention: $(printf '%s' "$LOUT" | tail -n 1)"
     fi

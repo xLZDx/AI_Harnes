@@ -990,6 +990,8 @@ def search(action: str, words="", limit: int = 5, refresh: bool = False) -> list
                                                       "kind": meta.get("K"), "seen": seen, "date": date}))
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
         out, n_general = [], 0
+        if int(limit) <= 0:
+            return out
         for s in scored:
             if s[2]:
                 if n_general >= GENERAL_CAP:

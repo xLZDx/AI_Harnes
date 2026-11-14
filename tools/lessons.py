@@ -71,6 +71,10 @@ def cmd_add(a) -> int:
 
 
 def cmd_search(a) -> int:
+    if not L._jsonl().exists():
+        # criterion: a missing store gives exit 0, no output and one log line (CLI only; the recall hook stays silent)
+        L._log_event("search", "lessons store missing; nothing served")
+        return 0
     for r in L.search(a.action, a.words or "", a.limit, refresh=True):
         print(f"{r['id']} | {','.join(r['actions'])} | {r['rule']}")
     return 0
