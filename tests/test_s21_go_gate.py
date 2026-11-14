@@ -100,7 +100,10 @@ def test_a_plain_file_in_temp_outside_git_is_free_but_same_file_in_git_repo_is_n
     f.write_text("x")
     assert_free(f"rm {f.as_posix()}")
     assert_free(f"rm -f {f.as_posix()}")
-    assert_free("rm plain.txt", cwd=d)  # relative target resolved against cwd
+    # S21 (770455b): a RELATIVE target is unsafe (an earlier `cd` in the same command changes its meaning): it asks
+    assert_go("rm plain.txt", cwd=d)
+    assert_go("rm ./plain.txt", cwd=d)
+    assert_go("rm -f plain.txt", cwd=d)
     repo = git_repo()
     g = repo / "plain.txt"
     g.write_text("x")
@@ -356,6 +359,210 @@ def test_c_bash_hook_route_matches_function_for_free_rmdir():
     full = fresh("full")
     (full / "f").write_text("x")
     assert_decision("deny", "Bash", {"command": f"rmdir {full.as_posix()}"})
+
+
+# ------------------------------------------------------------------------------------------------ D: S21 fixes (770455b)
+def plain_file(name="plain.txt") -> Path:
+    f = fresh() / name
+    f.write_text("x")
+    return f
+
+
+def test_d_cd_then_relative_rm_asks_but_absolute_target_is_free():
+    d = fresh()
+    f = d / "plain.txt"
+    f.write_text("x")
+    assert_go(f"cd {d.as_posix()} && rm plain.txt")
+    assert_go(f"cd {d.as_posix()} && rm -f plain.txt")
+    assert_go(f'cd "{d}" && rm plain.txt')
+    assert_free(f"cd {d.as_posix()} && rm {f.as_posix()}")  # twin: absolute
+
+
+def test_d_git_bash_absolute_forms_ask():
+    assert_go("rm -rf /d/Repo/x")
+    assert_go("rm /d/tmp/x.txt")
+    assert_go("rm -rf /c/Users/someone/x")
+    assert_go("rm /c/Users/someone/x.txt")
+    assert_go("rm -rf /d/Repo/x", ps=False)
+    f = plain_file()
+    assert_free(f"rm {f.as_posix()}")  # twin: real drive form of an existing plain throwaway file
+
+
+def test_d_lists_braces_and_comma_targets_ask():
+    a, b = plain_file("a.py"), plain_file("b.py")
+    assert_free(f"rm {a.as_posix()}")  # twins
+    assert_free(f"rm {b.as_posix()}")
+    assert_go(f"Remove-Item {a.as_posix()},{b.as_posix()} -Recurse -Force", ps=True)
+    assert_go(f"Remove-Item {a.as_posix()},{b.as_posix()} -Recurse -Force")
+    assert_go(f'Remove-Item "{a}","{b}" -Recurse -Force', ps=True)
+    assert_go(f"rm {a.parent.as_posix()}/{{a,b}}.py")
+    assert_go(f"del a.txt,b.txt")
+    assert_go("del a.txt,b.txt", cwd=a.parent)
+    assert_go(f"del {a.as_posix()},{b.as_posix()}")
+
+
+def test_d_powershell_subexpression_target_asks():
+    assert_go("Remove-Item (Get-ChildItem)", ps=True)
+    assert_go("Remove-Item (Get-ChildItem -Path .)", ps=True)
+    assert_go("Remove-Item (Get-ChildItem)")
+    f = plain_file()
+    assert_free(f"Remove-Item {f.as_posix()}", ps=True)  # twin
+
+
+def test_d_backtick_target_asks():
+    d = fresh()
+    f = d / "plain.txt"
+    f.write_text("x")
+    assert_go(f"rm {d.as_posix()}/`echo plain`.txt")
+    assert_go(f"rm `echo {f.as_posix()}`")
+    assert_go(f"Remove-Item {d.as_posix()}/pl`ain.txt", ps=True)
+    assert_free(f"rm {f.as_posix()}")  # twin
+
+
+def test_d_unquoted_backslash_target_outside_powershell_asks():
+    f = plain_file()
+    native = str(f)
+    assert "\\" in native
+    assert_go(f"rm {native}")  # the shell eats the backslashes: it would remove another path
+    assert_go(f"rm -f {native}")
+    assert_free(f'rm "{native}"')  # twin: quoted
+    assert_free(f"rm '{native}'")
+    assert_free(f"rm {native}", ps=True)  # twin: PowerShell keeps backslashes
+    assert_free(f"Remove-Item {native}", ps=True)
+    assert_free(f"rm {f.as_posix()}")  # twin: forward slashes
+    # still judged by the file: a plain file in a git repo asks in every form
+    g = git_repo() / "p.txt"
+    g.write_text("x")
+    assert_go(f'rm "{g}"')
+    assert_go(f"rm {g}", ps=True)
+
+
+def test_d_rm_slash_f_is_a_root_path_but_cmd_del_slash_q_is_a_switch():
+    f = plain_file()
+    assert_go(f"rm /f {f.as_posix()}")
+    assert_go(f"rm /q {f.as_posix()}")
+    assert_go(f"rm /f {f.as_posix()}", ps=True)
+    assert_free(f"del /q {f.as_posix()}")
+    f2 = plain_file()
+    assert_free(f'del /q "{f2}"')
+    f3 = plain_file()
+    assert_free(f"del /f /q {f3.as_posix()}")
+    assert_free(f"rm -f {plain_file().as_posix()}")  # twin: a real flag
+
+
+def test_d_dot_git_hooks_and_config_of_a_real_clone_ask():
+    repo = git_repo()
+    hook = repo / ".git" / "hooks" / "pre-push"
+    cfg = repo / ".git" / "config"
+    assert cfg.exists()
+    assert_go(f"echo x > {hook.as_posix()}")
+    assert_go(f"echo x > {cfg.as_posix()}")
+    assert_go(f"echo x >> {cfg.as_posix()}")
+    assert_go(f"rm {cfg.as_posix()}")
+    assert_go(f"Remove-Item {cfg.as_posix()}", ps=True)
+    assert_decision("deny", "Write", {"file_path": str(hook), "content": "#!/bin/sh\nexit 0\n"})
+    assert_decision("deny", "Write", {"file_path": str(cfg), "content": "[core]\n"})
+    assert_decision("deny", "Edit", {"file_path": str(cfg), "old_string": "a", "new_string": "b"})
+    # twin: a plain temp folder outside git is free
+    d = fresh()
+    assert_free(f"echo x > {(d / 'pre-push').as_posix()}")
+    assert_decision("allow", "Write", {"file_path": str(d / "pre-push"), "content": "x"})
+
+
+def test_d_scratchpad_folder_under_fake_home_claude_asks_but_real_temp_scratchpad_is_free():
+    fake = Path(os.environ.get("SystemDrive", "C:") + "\\") / "s21_fakehome_xyz" / ".claude" / "skills" / "scratchpad"
+    skill = fake / "SKILL.md"
+    assert gg._paths_all_throwaway([str(skill)], str(TMPROOT)) is False
+    assert_decision("deny", "Write", {"file_path": str(skill), "content": "x"})
+    assert_decision("deny", "Edit", {"file_path": str(skill), "old_string": "a", "new_string": "b"})
+    assert_go(f"echo x > {skill.as_posix()}")
+    # the same folder names under a temp root: .claude is sensitive, so still asks
+    inside = fresh() / "home" / ".claude" / "skills" / "scratchpad" / "SKILL.md"
+    assert_decision("deny", "Write", {"file_path": str(inside), "content": "x"})
+    # twin: a folder named scratchpad directly under a plain temp folder is free (no .claude)
+    sp = fresh() / "scratchpad" / "notes.md"
+    assert_decision("allow", "Write", {"file_path": str(sp), "content": "x"})
+    assert gg._paths_all_throwaway([str(sp)], str(TMPROOT)) is True
+
+
+def test_d_rosetta_pm_bridge_state_and_decisions_folders_ask():
+    for name in ("rosetta", "pm_bridge_state", "decisions", "Rosetta_Mode", "pm_bridge", "decision_log"):
+        d = fresh() / name
+        d.mkdir()
+        f = d / "f.txt"
+        f.write_text("x")
+        assert_go(f"rm {f.as_posix()}")
+        assert_go(f"echo x > {f.as_posix()}")
+        assert_go(f"Remove-Item {f.as_posix()}", ps=True)
+        assert_decision("deny", "Write", {"file_path": str(f), "content": "x"})
+        e = d / "emptysub"
+        e.mkdir()
+        assert_go(f"rmdir {e.as_posix()}")
+    d = fresh() / "notes"  # twin
+    d.mkdir()
+    f = d / "f.txt"
+    f.write_text("x")
+    assert_free(f"rm {f.as_posix()}")
+    assert_free(f"echo x > {f.as_posix()}")
+    assert_decision("allow", "Write", {"file_path": str(f), "content": "x"})
+
+
+def test_d_missing_target_is_free_only_as_the_whole_command():
+    d = fresh()
+    gone = d / "gone.txt"
+    assert not gone.exists()
+    assert_free(f"rm {gone.as_posix()}")
+    assert_free(f"rm -f {gone.as_posix()}")
+    assert_go(f"echo hi; rm {gone.as_posix()}")
+    assert_go(f"echo hi && rm {gone.as_posix()}")
+    assert_go(f"rm {gone.as_posix()}; echo hi")
+    assert_go(f"cd {d.as_posix()} && rm {gone.as_posix()}")
+    # twin: an existing plain file stays free inside a longer command
+    f = d / "there.txt"
+    f.write_text("x")
+    assert_free(f"echo hi; rm {f.as_posix()}")
+
+
+def test_d_empty_dir_inside_dot_claude_or_dot_git_asks_but_plain_temp_empty_dir_is_free():
+    plain = fresh("emp")
+    assert_free(f"rmdir {plain.as_posix()}")  # twin
+    for name in (".claude", ".git", ".codex", ".harness-x"):
+        parent = fresh() / name
+        parent.mkdir()
+        e = parent / "emptysub"
+        e.mkdir()
+        assert_go(f"rmdir {e.as_posix()}")
+        assert_go(f"rm -r {e.as_posix()}")
+        assert_go(f"Remove-Item {e.as_posix()}", ps=True)
+    # the sensitive folder itself, when empty
+    solo = fresh() / ".claude"
+    solo.mkdir()
+    assert_go(f"rmdir {solo.as_posix()}")
+
+
+def test_d_unc_paths_ask():
+    assert_go(r"rm \\server\share\x.txt")
+    assert_go(r'rm "\\server\share\x.txt"')
+    assert_go("rm //server/share/x.txt")
+    assert_go(r"Remove-Item \\server\share\x.txt", ps=True)
+    assert_go(r"rmdir \\server\share\emptydir")
+    assert gg._paths_all_throwaway([r"\\server\share\x.txt"], str(TMPROOT)) is False
+    assert gg._paths_all_throwaway(["//server/share/x.txt"], str(TMPROOT)) is False
+    assert gg._is_throwaway_path(Path(r"\\server\share\x.txt")) is False
+
+
+def test_d_file_named_gate_in_plain_temp_folder_is_still_free():
+    d = fresh()
+    f = d / "test_x_gate.py"
+    assert_decision("allow", "Write", {"file_path": str(f), "content": "x"})
+    assert_free(f"echo x > {f.as_posix()}")
+    f.write_text("x")
+    assert_free(f"rm {f.as_posix()}")
+    assert gg._paths_all_throwaway([str(f)], str(TMPROOT)) is True
+    # twin: a FOLDER named gate asks
+    g = fresh() / "my_gate" / "a.py"
+    assert_decision("deny", "Write", {"file_path": str(g), "content": "x"})
+    assert_go(f"echo x > {g.as_posix()}")
 
 
 def run_all(g) -> int:

@@ -216,14 +216,36 @@ def test_git_dash_C_push_denies_without_a_receipt():
 
 
 # ------------------------------------------------------------------------------------------------ 4. pm-bridge rule
-def test_pm_bridge_repo_still_pushes_on_a_fresh_receipt_even_when_ok_false():
+def test_pm_bridge_repo_no_longer_pushes_on_a_fresh_ok_false_receipt():
+    """S21 (770455b): the pm-bridge exception for failed receipts is retired."""
     b = Box()
     repo = b.repo("pm-bridge")
     b.receipt(repo, ok=False, error=OUTAGE)  # fresh, not final, ok=false
-    expect(b.run("git push origin main", repo), "allow")
-    # twin: the same receipt does not open the push of an ordinary repo
+    expect(b.run("git push origin main", repo), "deny")
+    # also with a FINAL ok=false receipt
+    b1 = Box()
+    repo1 = b1.repo("pm-bridge")
+    b1.receipt(repo1, final=True, ok=False, error=OUTAGE)
+    expect(b1.run("git push origin main", repo1), "deny")
+    # passing twins: a fresh ok=true receipt (verdict APPROVE, or no verdict) still opens the pm-bridge push
+    for kw in ({"ok": True, "verdict": "APPROVE"}, {"ok": True}, {"ok": True, "final": True, "verdict": "APPROVE"}):
+        bt = Box()
+        rt = bt.repo("pm-bridge")
+        bt.receipt(rt, **kw)
+        expect(bt.run("git push origin main", rt), "allow")
+    # a fresh ok=true receipt whose verdict is not APPROVE does not
+    bv = Box()
+    rv = bv.repo("pm-bridge")
+    bv.receipt(rv, ok=True, verdict="REVISE")
+    expect(bv.run("git push origin main", rv), "deny")
+    # a naive (no time zone) timestamp is stale for pm-bridge too, and does not crash the hook
+    bn = Box()
+    rn = bn.repo("pm-bridge")
+    bn.receipt(rn, ok=True, timestamp=datetime.now().isoformat())
+    expect(bn.run("git push origin main", rn), "deny")
+    # twin: the same ok=true receipt does not open the push of an ordinary repo unless it is final
     other = b.repo("ordinary")
-    b.receipt(other, ok=False, error=OUTAGE)
+    b.receipt(other, ok=True)
     expect(b.run("git push origin main", other), "deny")
     # twin: pm-bridge with NO fresh receipt is still denied
     b2 = Box()
@@ -233,6 +255,156 @@ def test_pm_bridge_repo_still_pushes_on_a_fresh_receipt_even_when_ok_false():
     repo3 = b3.repo("pm-bridge")
     b3.receipt(repo3, age_hours=30, ok=True)
     expect(b3.run("git push origin main", repo3), "deny")
+
+
+# ------------------------------------------------------------------------------------------------ 5. S21 fixes (770455b)
+GOOD = dict(final=True, ok=True, verdict="APPROVE")
+WRAPPED_PUSHES = [
+    'bash -c "git push origin main"',
+    "sh -c 'git push'",
+    'powershell -Command "git push"',
+    "time git push",
+    "env X=1 git push",
+    "if git push; then echo ok; fi",
+    "{ git push; }",
+    "git --no-pager push",
+    "echo don't; git push origin x; echo 'y'",
+]
+
+
+def test_wrapped_pushes_deny_without_a_receipt():
+    b = Box()
+    repo = b.repo()  # no receipt
+    for cmd in WRAPPED_PUSHES:
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "(push)" in r.reason, (cmd, r)
+
+
+def test_wrapped_pushes_are_allowed_with_a_good_final_receipt_twin():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, **GOOD)
+    for cmd in WRAPPED_PUSHES:
+        r = b.run(cmd, repo)
+        assert r.kind == "allow", (cmd, r)
+
+
+def test_mentions_of_git_push_are_not_pushes():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, ok=True)  # fresh, not final: enough for a commit, never for a push
+    for cmd in ('echo "git push"', "echo 'git push'"):
+        expect(b.run(cmd, repo), "allow")
+    r = b.run('git commit -m "mention git push"', repo)
+    expect(r, "allow")  # a commit with a receipt; if it were read as a push it would be denied (not final)
+    # twin: a real push on the same receipt is denied
+    expect(b.run("git push", repo), "deny")
+
+
+def test_git_dash_C_other_repo_from_non_git_cwd():
+    b = Box()
+    spaced = b.repo("my proj")
+    plain = b.repo("plainrepo")
+    nogit = b.root / "nogit"
+    forms = [
+        (f'git -C "{spaced}" push', spaced),
+        (f"git -C {plain.as_posix()} push", plain),
+        (f'git -C "{plain}" push origin main', plain),
+        (f"git -C '{spaced.as_posix()}' push", spaced),
+    ]
+    for cmd, _ in forms:
+        r = b.run(cmd, nogit)
+        expect(r, "deny")  # no receipt anywhere
+        assert "(push)" in r.reason, (cmd, r)
+    b.receipt(spaced, **GOOD)
+    b.receipt(plain, **GOOD)
+    for cmd, _ in forms:
+        expect(b.run(cmd, nogit), "allow")
+
+
+def test_git_dash_C_repo_is_judged_not_the_payload_cwd():
+    b = Box()
+    good = b.repo("good")
+    bare = b.repo("bare")
+    b.receipt(good, **GOOD)
+    # payload cwd is a gated repo WITH a good receipt, -C points at a repo with none: deny
+    expect(b.run(f"git -C {bare.as_posix()} push", good), "deny")
+    expect(b.run(f'git -C "{bare}" push', good), "deny")
+    # twin: payload cwd without a receipt, -C points at the good repo: allow
+    expect(b.run(f"git -C {good.as_posix()} push", bare), "allow")
+    # twin: no -C at all, cwd = good: allow; cwd = bare: deny
+    expect(b.run("git push", good), "allow")
+    expect(b.run("git push", bare), "deny")
+
+
+def test_no_verify_and_inline_skip_approval_deny_even_with_a_good_receipt():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, **GOOD)
+    expect(b.run("git push origin main", repo), "allow")  # twin
+    for cmd in ("git push --no-verify origin main", "git push origin main --no-verify",
+                "HARNESS_SKIP_APPROVAL=1 git push origin main", "HARNESS_SKIP_APPROVAL=1 git push"):
+        r = b.run(cmd, repo)
+        expect(r, "deny")
+        assert "pm_bridge_mode_on" in r.reason, (cmd, r)
+    # pm-bridge repo with a good fresh receipt is not exempt
+    bp = Box()
+    pm = bp.repo("pm-bridge")
+    bp.receipt(pm, **GOOD)
+    expect(bp.run("git push origin main", pm), "allow")
+    expect(bp.run("git push --no-verify origin main", pm), "deny")
+    expect(bp.run("HARNESS_SKIP_APPROVAL=1 git push", pm), "deny")
+
+
+def test_final_receipt_with_wrong_verdict_or_uncorrelated_denies():
+    for kw in ({"verdict": "REVISE"}, {"correlated": False}, {"verdict": "REJECT"},
+               {"verdict": "REVISE", "correlated": True}):
+        b = Box()
+        repo = b.repo()
+        b.receipt(repo, final=True, ok=True, **kw)
+        r = b.run("git push origin main", repo)
+        expect(r, "deny")
+        assert "pm_bridge_mode_on" in r.reason, (kw, r)
+    # twins that open the push
+    for kw in ({"verdict": "APPROVE"}, {}, {"verdict": "APPROVE", "correlated": True}, {"correlated": True}):
+        b = Box()
+        repo = b.repo()
+        b.receipt(repo, final=True, ok=True, **kw)
+        expect(b.run("git push origin main", repo), "allow")
+
+
+def test_receipt_timestamp_without_time_zone_is_stale_not_a_crash():
+    b = Box()
+    repo = b.repo()
+    naive = datetime.now().isoformat()  # no tz suffix
+    assert "+" not in naive and not naive.endswith("Z")
+    b.receipt(repo, final=True, ok=True, verdict="APPROVE", timestamp=naive)
+    r = b.run("git push origin main", repo)  # Box.run asserts exit code 0: no crash
+    expect(r, "deny")
+    assert "time zone" in r.reason, r
+    # twin: the same receipt with an explicit UTC offset opens the push
+    b2 = Box()
+    repo2 = b2.repo()
+    b2.receipt(repo2, final=True, ok=True, verdict="APPROVE", timestamp=datetime.now(timezone.utc).isoformat())
+    expect(b2.run("git push origin main", repo2), "allow")
+
+
+def test_denial_and_commit_warning_name_the_remedy_tools():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, final=True, ok=False, error=OUTAGE)
+    r = b.run("git push origin main", repo)
+    expect(r, "deny")
+    assert "pm_bridge_mode_on" in r.reason and "review.js" in r.reason, r
+    b2 = Box()
+    repo2 = b2.repo()
+    b2.receipt(repo2, ok=False, error=OUTAGE)
+    r = b2.run('git commit -m "x"', repo2)
+    expect(r, "allow")
+    assert "pm_bridge_mode_on" in r.reason and "review.js" in r.reason, r
+    r = b2.run('git commit -m "x"', repo2, client="codex")
+    assert "pm_bridge_mode_on" in r.err and "review.js" in r.err, r
 
 
 def run_all(g) -> int:
