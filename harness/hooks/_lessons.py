@@ -12,7 +12,7 @@ Store folder: HARNESS_LESSONS_DIR, else _agentio.state_dir("lessons") (outside e
 
 Backups: a raw byte copy of lessons.jsonl, taken only after a write (add, add_many, restore, CLI rebuild), never on the
 search path. Folder: HARNESS_LESSONS_BACKUP; else <store>/backup whenever the store is not the default
-~/.harness-hooks/lessons (HARNESS_LESSONS_DIR or HARNESS_HOOK_STATE moved it); else D:\\Backup\\lessons
+~/.harness-hooks/lessons (HARNESS_LESSONS_DIR or HARNESS_HOOK_STATE moved it); else the HARNESS_LESSONS_OFFDRIVE setting
 (a Windows default outside git). Names `lessons-<YYYYmmdd-HHMMSS>-<counter>.jsonl` sort by time. The last 20 are kept plus the
 newest one of each day for 30 days. A backup is skipped (and logged) when the store has an unparsable line or fewer valid
 records than the newest backup.
@@ -100,8 +100,12 @@ def backup_dir() -> Path:
     if moved:
         _note_no_offdrive(sd)
         return sd / "backup"
-    if os.name == "nt":
-        return Path("D:\\Backup\\lessons")
+    # The off-drive folder of the real store is a machine setting (HARNESS_LESSONS_OFFDRIVE, normally in
+    # ~/.harness-hooks/config.json, for example D:/Backup/lessons); it is read only here, for the un-moved store, so
+    # a test or a redirected store never reaches it. Without it the copy stays next to the store, on the same drive.
+    off = os.environ.get("HARNESS_LESSONS_OFFDRIVE")
+    if off:
+        return Path(off)
     return Path.home() / ".harness-hooks" / "lessons-backup"
 
 

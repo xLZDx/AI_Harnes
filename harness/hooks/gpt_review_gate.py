@@ -166,10 +166,19 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 # under ENABLED_REPO_ROOTS.
 EXCLUDED_REPO_ROOTS = []
 
-COMMIT_RE = re.compile(r"\bgit\s+commit\b", re.IGNORECASE)
-PUSH_RE = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
-SKIP_RE = re.compile(r"--help\b|(?<!\S)-h\b|--dry-run\b", re.IGNORECASE)
-CD_RE = re.compile(r'^\s*cd\s+(?P<path>"[^"]+"|\'[^\']+\'|\S+)\s*$')
+class _AllWords:
+    """Prefilter: every word is present somewhere in the text (linear time; _commit_detect decides)."""
+    def __init__(self, *words):
+        self._res = [re.compile(w, re.IGNORECASE) for w in words]
+
+    def search(self, text):
+        return all(r.search(text) for r in self._res)
+
+
+COMMIT_RE = _AllWords(r"\bgit\b", r"\bcommit\b")  # options may sit between git and commit
+PUSH_RE = re.compile(r"\bgit\b", re.IGNORECASE)  # prefilter only; _commit_detect.is_push_command decides
+QUOTED_BLANK_RE = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", re.DOTALL)
+CD_RE = re.compile(r'^\s*(?:cd|pushd)\s+(?P<path>"[^"]+"|\'[^\']+\'|[^\s)]+)\s*\)?\s*$')
 
 # See codex_review_gate.py for the measured incident this guards against (Git-Bash
 # `/d/Repo/x` style paths silently resolving to the wrong drive-joined path on Windows).
@@ -184,10 +193,62 @@ def normalise_shell_path(path):
     return f"{m.group(1).upper()}:{rest or chr(92)}"
 
 
+def split_segments(command):
+    """Command segments split at ; & | and newline, but not inside quotes (`git -C 'my;dir' push` is one segment)
+    and with a shell comment (`# ...` at a word start) cut off. A quote that never closes keeps the rest of the
+    command in one segment."""
+    masked = list(command)
+    quote = None
+    for i, ch in enumerate(command):
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                masked[i] = "x"
+        elif ch in "\"'":
+            quote = ch
+    masked = "".join(masked)
+    out, start = [], 0
+    for m in re.finditer(r"[;&|\n]", masked):
+        out.append(command[start:m.start()])
+        start = m.end()
+    out.append(command[start:])
+    cleaned = []
+    for seg, mseg in zip(out, re.split(r"[;&|\n]", masked)):
+        cm = re.search(r"(?:^|\s)#", mseg)
+        cleaned.append(seg[:cm.start()] if cm else seg)
+    return cleaned
+
+
+def _is_skip_flag_segment(seg):
+    """True when the segment carries `--help`, `-h` or `--dry-run` as a real, standalone option: quoted text is
+    ignored (`git commit -m "fix --dry-run"`), a flag glued to other text is not a flag (`feature--help`,
+    `--push-option=--dry-run`), and the value of `-o`/`--push-option` is not a flag."""
+    toks = QUOTED_BLANK_RE.sub('""', seg).split()
+    skip_next = False
+    for tok in toks:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-o", "--push-option"):
+            skip_next = True
+            continue
+        if tok.lower().rstrip(")") in ("--help", "-h", "--dry-run"):
+            return True
+    return False
+
+
+def skip_applies(command):
+    """`--help`, `-h` and `--dry-run` skip the gate only when EVERY command segment that mentions git carries the
+    flag itself: `git push origin main; echo -h` and `git push origin main # --help` are real pushes."""
+    git_segments = [seg for seg in split_segments(command) if re.search(r"\bgit\b", seg)]
+    return bool(git_segments) and all(_is_skip_flag_segment(seg) for seg in git_segments)
+
+
 def resolve_effective_cwd(command, base_cwd):
     cwd = base_cwd
-    for part in re.split(r"&&|;", command):
-        m = CD_RE.match(part.strip())
+    for part in re.split(r"&&|\|\||;|\n", command):
+        m = CD_RE.match(part.strip().lstrip("({ "))
         if not m:
             continue
         path = normalise_shell_path(m.group("path").strip("\"'"))
@@ -261,6 +322,20 @@ def warn_allow(payload, warn_reason):
     }))
 
 
+def _tail_lines(path, count=500, max_bytes=4_000_000):
+    """The last `count` lines of a text file, reading at most `max_bytes` from its end, so a huge receipts file
+    or one giant line cannot exhaust memory or the hook's time budget. Raises OSError like open() does."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        data = f.read()
+    lines = data.decode("utf-8", errors="replace").split("\n")  # not splitlines(): JSON may hold U+2028 etc.
+    if size > max_bytes and lines:
+        lines = lines[1:]  # the first line is probably cut in the middle
+    return lines[-count:]
+
+
 def recent_receipt(repo_root):
     """Most recent fresh-enough receipt for this repo, or None. Returns the full entry (not just
     a bool) so the caller can tell an actual pass from a fail-open attempt -- see the commit-path
@@ -269,31 +344,31 @@ def recent_receipt(repo_root):
         return None
     now = datetime.now(timezone.utc)
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        lines = _tail_lines(RECEIPTS_FILE)
     except OSError:
         return None
-    for line in reversed(lines[-500:]):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        ts_raw = entry.get("timestamp")
-        cwd = entry.get("cwd")
-        if not ts_raw or not cwd:
-            continue
-        try:
+            if not isinstance(entry, dict):
+                continue
+            ts_raw = entry.get("timestamp")
+            cwd = entry.get("cwd")
+            if not ts_raw or not cwd:
+                continue
             ts = datetime.fromisoformat(ts_raw)
-        except ValueError:
-            continue
-        age_hours = (now - ts).total_seconds() / 3600.0
-        if age_hours > RECEIPT_MAX_AGE_HOURS:
-            continue
-        if is_under(cwd, repo_root):
-            return entry
+            if ts.tzinfo is None:
+                continue  # a time without a zone cannot be compared with now: not a usable receipt
+            age_hours = (now - ts).total_seconds() / 3600.0
+            if age_hours > RECEIPT_MAX_AGE_HOURS:
+                continue
+            if is_under(cwd, repo_root):
+                return entry
+        except Exception:
+            continue  # one hostile or malformed line must not hide the other receipts, nor crash the gate
     return None
 
 
@@ -301,24 +376,24 @@ def latest_receipt_for_repo(repo_root):
     if not RECEIPTS_FILE.is_file():
         return None
     try:
-        with open(RECEIPTS_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        lines = _tail_lines(RECEIPTS_FILE)
     except OSError:
         return None
-    for line in reversed(lines[-500:]):
+    for line in reversed(lines):
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
+            if not isinstance(entry, dict):
+                continue
+            cwd = entry.get("cwd")
+            if not cwd:
+                continue
+            if is_under(cwd, repo_root):
+                return entry
+        except Exception:
             continue
-        cwd = entry.get("cwd")
-        if not cwd:
-            continue
-        if is_under(cwd, repo_root):
-            return entry
-    return None
 
 
 def final_receipt_fresh(repo_root):
@@ -332,12 +407,95 @@ def final_receipt_fresh(repo_root):
         return False, "latest final receipt has no timestamp", entry
     try:
         ts = datetime.fromisoformat(ts_raw)
-    except ValueError:
+    except (ValueError, TypeError):
         return False, "latest final receipt has an unparseable timestamp", entry
+    if ts.tzinfo is None:
+        return False, "latest final receipt has a timestamp without a time zone", entry
     age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
     if age_hours > PUSH_RECEIPT_MAX_AGE_HOURS:
         return False, f"latest final receipt is {age_hours:.1f}h old (> {PUSH_RECEIPT_MAX_AGE_HOURS}h) -- treat as stale, re-run the review", entry
     return True, None, entry
+
+
+def _is_real_approve(entry):
+    """A receipt that may open a push: the review ran (ok true), the reply was matched to this request
+    (correlated true) and the verdict names APPROVE. A null verdict (no parsable verdict line) is not one."""
+    return bool(entry and entry.get("ok") is True and entry.get("correlated") is True
+                and str(entry.get("verdict") or "").strip().upper() == "APPROVE")
+
+
+def _mask_quoted(seg):
+    """The segment with the inside of every quoted string replaced by `x` (same length, quote marks kept), so
+    a search for options never matches words that sit in a commit message."""
+    out, quote = [], None
+    for ch in seg:
+        if quote:
+            if ch == quote:
+                quote = None
+                out.append(ch)
+            else:
+                out.append("x")
+        else:
+            if ch in "\"'":
+                quote = ch
+            out.append(ch)
+    return "".join(out)
+
+
+def git_dash_c_dirs(command, base_cwd):
+    """One entry per command segment that holds `push` or `commit` and names a repository folder with the GLOBAL
+    options `git -C <dir>`, `--work-tree` or `--git-dir` (before the subcommand, outside quotes: `git commit -C HEAD`
+    and a message saying `pass -C to git` name no folder), resolved against base_cwd: the folder, or "" when it does
+    not exist. Segments that name no folder add nothing."""
+    found = []
+    pre = r"\bgit(?:\.exe)?\s+(?:(?:(?!\b(?:push|commit)\b)[^\n]){0,300}?\s)?"
+    val = r"(\"[^\"]*\"|'[^']*'|\S+)"
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from _commit_detect import _strip_heredocs
+        command = _strip_heredocs(command)  # a prose heredoc (commit message fed to -F -) names no folder
+    except Exception:
+        pass
+    for seg in split_segments(command):
+        masked = _mask_quoted(seg)
+        if not re.search(r"\b(?:push|commit)\b", masked):
+            continue
+        is_git_dir = False
+        m = re.search(pre + r"-C\s+" + val, masked)
+        if not m:
+            m = re.search(pre + r"--work-tree(?:=|\s+)" + val, masked)
+        if not m:
+            m = re.search(pre + r"--git-dir(?:=|\s+)" + val, masked)
+            is_git_dir = True
+        if not m:
+            continue
+        raw = seg[m.start(1):m.end(1)].strip("\"'")
+        if not raw:
+            continue
+        path = Path(normalise_shell_path(raw))
+        if not path.is_absolute():
+            path = Path(base_cwd) / path
+        if is_git_dir and path.name.lower() == ".git":
+            path = path.parent  # --git-dir <repo>/.git: the repository is the folder that holds it
+        found.append(str(path) if path.is_dir() else "")
+    return found
+
+
+def git_dash_c_dir(command, base_cwd):
+    """The first folder of git_dash_c_dirs (a path, or "" when missing); None when no segment names one."""
+    found = git_dash_c_dirs(command, base_cwd)
+    return found[0] if found else None
+
+
+OUTAGE_STEPS = (
+    "What to do (S21): 1) call pm_bridge_health; if it says DAEMON_DOWN or the error mentions a missing "
+    "orchestrator, call pm_bridge_mode_on yourself (any session may) and run the review again once. "
+    "2) If PM Bridge still does not answer, keep the commit local, do not update the remote, "
+    "start the next task, and come back to this review as soon as pm_bridge_health reports OK. "
+    "Running review.js once even while the transport is down writes a failed receipt, and that receipt is what lets "
+    "the local commit through. 3) The remote is updated only after a review that really returned APPROVE for the "
+    "exact HEAD; the pre-push hook checks it against the real reply, and --no-verify is refused."
+)
 
 
 def main():
@@ -351,33 +509,58 @@ def main():
         allow()
 
     command = agentio.shell_command(payload)
-    if SKIP_RE.search(command):
+    if skip_applies(command):
         allow()
 
     is_push = bool(PUSH_RE.search(command))
     is_commit = bool(COMMIT_RE.search(command))
-    if is_commit:
+    if is_commit or is_push:
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            from _commit_detect import is_commit_command
-            is_commit = is_commit_command(command)  # not a commit when only mentioned in a string/heredoc
+            from _commit_detect import is_commit_command, is_push_command
+            # not a commit or a push when only mentioned in a string/heredoc (S21-T2)
+            is_commit = is_commit and is_commit_command(command)
+            is_push = is_push and is_push_command(command)
         except Exception:
-            pass
+            is_push = bool(re.search(r"\bgit\b[^\n]*\bpush\b", command, re.IGNORECASE))
     if not is_push and not is_commit:
         allow()
 
+    if is_push and re.search(r"--no-v[a-z]*\b|\bHARNESS_SKIP_APPROVAL\s*=|core\.hooksPath", command, re.IGNORECASE):
+        deny("GPT REVIEW gate (push): `--no-verify` (or an abbreviation), an inline HARNESS_SKIP_APPROVAL and core.hooksPath turn off the pre-push "
+             "approval check, so this push would update the remote without a real review. " + OUTAGE_STEPS,
+             {"command": command[:200]})
+
     raw_cwd = payload.get("cwd") or os.getcwd()
     cwd = resolve_effective_cwd(command, raw_cwd)
+    git_cs = git_dash_c_dirs(command, cwd)
+    git_c = git_cs[0] if git_cs else None
+    if (is_push or is_commit) and len(set(git_cs)) > 1:
+        deny("GPT REVIEW gate: this command commits or pushes more than one repository (`git -C` names different "
+             "folders). The gate can check only one review per command: do each repository on its own.",
+             {"command": command[:200]})
+    if git_c:
+        cwd = git_c
+    elif git_c == "" and (is_push or is_commit):
+        deny("GPT REVIEW gate (push): `git -C`/`--work-tree`/`--git-dir` names a folder that does not exist, so the "
+             "repository of this push cannot be checked. Use an existing folder.", {"command": command[:200]})
 
     try:
         toplevel = git(["rev-parse", "--show-toplevel"], cwd=cwd)
         if toplevel.returncode != 0:
             log_decision({"decision": "fail-open", "reason": "not a git repo or git error",
                           "cwd": cwd, "stderr": toplevel.stderr.strip()[:300]})
+            if is_push:
+                deny("GPT REVIEW gate (push): the repository of this push cannot be determined from the working "
+                     f"folder ({cwd}). Run it as `cd <repo> && git push` or `git -C <repo> push` so the gate can "
+                     "check that repository's review.", {"command": command[:200]})
             allow()
         repo_root = toplevel.stdout.strip()
     except Exception as e:
         log_decision({"decision": "fail-open", "reason": f"git rev-parse failed: {e}", "cwd": cwd})
+        if is_push:
+            deny(f"GPT REVIEW gate (push): git could not tell which repository this push belongs to ({e}).",
+                 {"command": command[:200]})
         allow()
 
     if not ALL_REPOS_ENABLED and not any(is_under(repo_root, root) for root in ENABLED_REPO_ROOTS):
@@ -405,15 +588,21 @@ def main():
     # it is why the receipt's CONTENT still has to be read before pushing, by a human or by the
     # session that ran it.
     if is_push and is_transport_repo(repo_root):
-        entry = latest_receipt_for_repo(repo_root)
+        try:
+            entry = latest_receipt_for_repo(repo_root)
+        except Exception as e:
+            deny(f"GPT REVIEW gate (push): the receipt file could not be read ({type(e).__name__}); "
+                 "no push without a readable receipt. " + OUTAGE_STEPS, {"repo": repo_root})
         fresh = False
         if entry and entry.get("timestamp"):
             try:
                 age_h = (datetime.now(timezone.utc)
                          - datetime.fromisoformat(entry["timestamp"])).total_seconds() / 3600.0
                 fresh = age_h <= PUSH_RECEIPT_MAX_AGE_HOURS
-            except ValueError:
+            except (ValueError, TypeError):
                 fresh = False
+        if fresh and not _is_real_approve(entry):
+            fresh = False  # S21: only a successful, correlated APPROVE receipt opens a push, also here
         if fresh:
             log_decision({"decision": "allow-push-on-receipt",
                           "reason": "pm-bridge is the review transport; it pushes on a fresh "
@@ -446,25 +635,24 @@ def main():
         try:
             passes, why, entry = final_receipt_fresh(repo_root)
         except Exception as e:
-            log_decision({"decision": "fail-open", "reason": f"receipt scan failed: {e}", "repo": repo_root})
-            allow()
+            log_decision({"decision": "deny", "reason": f"receipt scan failed: {e}", "repo": repo_root})
+            deny(f"GPT REVIEW gate (push): the receipt file could not be read ({type(e).__name__}); "
+                 "no push without a readable receipt. " + OUTAGE_STEPS, {"repo": repo_root})
 
         if passes:
             receipt_ok = entry.get("ok") if entry else None
             receipt_error = entry.get("error") if entry else None
-            if receipt_ok is False:
-                warn_reason = (
-                    f"GPT REVIEW gate (push): ALLOWING per fail-open policy, but the latest final "
-                    f"receipt for {repo_root} has ok=false (error={receipt_error!r}) -- the last GPT "
-                    f"round did NOT actually succeed; it was marked --final anyway. State this plainly "
-                    f"in the GPT-review: line of the stop-and-report -- do not report it as a clean "
-                    f"review."
-                )
-                log_decision({"decision": "allow-with-warning", "reason": warn_reason,
-                              "repo": repo_root, "command": command[:200],
-                              "receipt_ok": receipt_ok, "receipt_error": receipt_error})
-                warn_allow(payload, warn_reason)
-                sys.exit(0)
+            verdict = str(entry.get("verdict")) if entry else "None"
+            if not _is_real_approve(entry):
+                # S21-T2 (operator 2026-11-14): a failed review attempt is enough to COMMIT locally, never to
+                # update the remote. The push waits for a real review.
+                deny(
+                    f"GPT REVIEW gate (push): the latest final receipt for {repo_root} is not a successful "
+                    f"APPROVE review (ok={receipt_ok!r}, correlated={entry.get('correlated')!r}, verdict={verdict!r}, "
+                    f"error={receipt_error!r}); a push needs ok true, correlated true and an APPROVE verdict. "
+                    f"ok=false means the review did not run, so nothing here was reviewed. "
+                    + OUTAGE_STEPS,
+                    {"repo": repo_root, "command": command[:200], "receipt_error": receipt_error})
 
             log_decision({"decision": "allow", "reason": "final review.js receipt found (ok)",
                           "repo": repo_root, "command": command[:200]})
@@ -494,7 +682,7 @@ def main():
                 f"review.js receipt for {repo_root} has ok=false (error={entry.get('error')!r}) -- "
                 f"the review was attempted, not completed. State this plainly in the GPT-review: "
                 f"line of the stop-and-report -- do not report it as a clean review or as CONSENSUS "
-                f"PASS."
+                f"PASS. This commit stays LOCAL. " + OUTAGE_STEPS
             )
             log_decision({"decision": "allow-with-warning", "reason": warn_reason,
                           "repo": repo_root, "command": command[:200],

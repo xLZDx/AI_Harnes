@@ -28,6 +28,11 @@ Sprint code is committed, the test evidence is green (or `NOT_RUN` with reasons)
 - If the tools are missing, the MCP server was registered after the session started; tell the operator to restart.
 - Ask for a devil's-advocate stance: look for reasons the change is wrong; if none is real, say so plainly.
 
+## When PM Bridge does not answer
+1. `pm_bridge_health`. DAEMON_DOWN or "No compatible PM Bridge orchestrator": call `pm_bridge_mode_on` yourself (any session may) and send again once.
+2. Still no answer: the failed attempt is only a receipt that a review was tried. Commit locally, do not update the remote, start the next task, and come back to this review when `pm_bridge_health` says OK.
+3. A fail-open receipt (`ok=false`) never counts as a review and never opens a push; the authority for a push is the pre-push hook, which accepts only a ledger approval checked against a real bare APPROVE for the exact HEAD.
+
 ## Rules
 - A GPT objection is a finding to verify, not a prohibition. A verified safety or legal constraint is reported to the operator.
 - Never hand-edit the ledger approval; never claim approval without a bare APPROVE reply for the current HEAD.
