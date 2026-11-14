@@ -386,25 +386,82 @@ def _row_texts(row: dict) -> list[tuple[str, str]]:
     return out
 
 
+_RUN_LOGGED: set = set()  # keys already logged in this run (reset at the start of pending_agents_aged)
+
+
+def _log_once(key: tuple, rec: dict) -> None:
+    if key in _RUN_LOGGED:
+        return
+    _RUN_LOGGED.add(key)
+    log(rec)
+
+
+def _read_finished() -> tuple[dict[str, float], str]:
+    """(cache, status). status: ok | missing | corrupt (invalid UTF-8, unparsable JSON, too deep, wrong shape; logged once per run,
+    cache = empty) | unreadable (OS error other than a missing file, logged, cache = empty). Never raises."""
+    try:
+        for attempt in range(4):  # a read overlapping another process's os.replace can raise PermissionError on Windows
+            try:
+                text = FINISHED.read_text(encoding="utf-8")
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.05)
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            raise TypeError("finished cache is " + type(raw).__name__ + ", not an object")
+        return {str(k): float(v) for k, v in raw.items()}, "ok"
+    except FileNotFoundError:
+        return {}, "missing"
+    except OSError as exc:
+        _log_once(("unreadable",), {"event": "finished-cache", "verdict": "unreadable", "error": str(exc)[:200]})
+        return {}, "unreadable"
+    except Exception as exc:  # noqa: BLE001  UnicodeDecodeError/ValueError, RecursionError, TypeError, ...: fail closed, corrupt = empty
+        _log_once(("corrupt",), {"event": "finished-cache", "verdict": "corrupt", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
+        return {}, "corrupt"
+
+
 def _load_finished() -> dict[str, float]:
     """{id: unix time}. Any read or shape error = empty (fail-safe: the transcript replay still decides)."""
+    return _read_finished()[0]
+
+
+def _save_finished(done: dict[str, float], removed=()) -> bool:
+    """B40: merge into the file under its own lock: read the current file, union with `done` (ids in `removed`, i.e. explicitly
+    resumed agents, are dropped), keep the FINISHED_MAX newest by time, atomic write. A corrupt file is always rewritten.
+    Lock not taken in time or file unreadable = nothing written, logged, False. The file is only a cache: the replay of the
+    transcript's resume rows decides which ids are finished. A merge can re-add an id that another process still had on disk
+    and this run removed; the next replay discards it again."""
     try:
-        raw = json.loads(FINISHED.read_text(encoding="utf-8"))
-        return {str(k): float(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return {}
-
-
-def _save_finished(done: dict[str, float]) -> None:
-    """Atomic write of the newest FINISHED_MAX entries (oldest by time evicted)."""
-    keep = dict(sorted(done.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
-    _agentio.atomic_write_text(FINISHED, json.dumps(keep))
+        with _agentio.file_lock(FINISHED, wait=1.0, stale=10.0) as got:
+            if not got:
+                log({"event": "finished-cache", "verdict": "lock-timeout", "ids": len(done)})
+                return False
+            disk, status = _read_finished()
+            if status == "unreadable":
+                log({"event": "finished-cache", "verdict": "write-skipped-unreadable"})
+                return False
+            merged = dict(disk)
+            for k, v in done.items():
+                merged[k] = max(v, merged.get(k, v))
+            for k in removed:
+                merged.pop(k, None)
+            if status == "ok" and merged == disk:
+                return True  # nothing new on disk (a corrupt or missing file is still written)
+            keep = dict(sorted(merged.items(), key=lambda kv: kv[1])[-FINISHED_MAX:])
+            _agentio.atomic_write_text(FINISHED, json.dumps(keep))  # temp file + os.replace, retried on winerror 5/32
+            return True
+    except OSError as exc:
+        log({"event": "finished-cache", "verdict": "write-failed", "error": str(exc)[:200]})
+        return False
 
 
 def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
     """[(id, age in seconds)] of background agents launched in this transcript (tool result 'Async agent launched successfully' + agentId) that have no
     later <task-notification> with the same <task-id>. Transcript only; [] when unreadable or on any error."""
     try:
+        _RUN_LOGGED.clear()
         from _turn import _rows
         rows = _rows(transcript_path) if transcript_path else []
         pending: dict[str, float] = {}
@@ -437,28 +494,41 @@ def pending_agents_aged(transcript_path: str) -> list[tuple[str, int]]:
                             pass
                 if "<task-notification>" in text:
                     for block in text.split("<task-notification>")[1:]:
+                        inner = block.split("</task-notification>")[0]
                         m = NOTIF_ID_RE.search(block)
+                        if not NOTIF_HEAD_RE.search(inner):  # B41: no <summary>/<status> at all = malformed block, changes nothing, but is logged
+                            _log_once(("notif", m.group(1) if m else ""),
+                                      {"event": "task-notification", "verdict": "ignored-no-summary-or-status", "id": m.group(1) if m else ""})
+                            continue
                         if not m:
                             continue
                         aid = m.group(1)
                         # B14/B15: the interim phrase counts only inside <summary> (or <status>), never in the result text
-                        head = " ".join(x.group(1) for x in NOTIF_HEAD_RE.finditer(block.split("</task-notification>")[0]))
+                        head = " ".join(x.group(1) for x in NOTIF_HEAD_RE.finditer(inner))
                         if STILL_RUNNING_RE.search(head) and aid not in finished:
                             # an interim notice: the agent stopped a turn but its own background work still runs
                             try:
                                 pending[aid] = calendar.timegm(time.strptime(str(r.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S"))
                             except (ValueError, TypeError, OverflowError):
                                 pass
-                        elif NOTIF_HEAD_RE.search(block.split("</task-notification>")[0]):
+                        else:
                             pending.pop(aid, None)
                             finished.add(aid)  # an id that finished never counts as running again
                             finished_map.setdefault(aid, now)
-                        # else: no <summary>/<status> at all = malformed block, changes nothing
         if finished_map != finished_before:
+            removed_ids = set(finished_before) - set(finished_map)
             try:
-                _save_finished(finished_map)
-            except Exception:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
-                pass
+                removed = removed_ids  # explicit SendMessage resumes
+                saved = _save_finished(finished_map, removed) if removed else _save_finished(finished_map)
+                if not saved and removed:  # the file may still list resumed ids: this run's decision must not use them
+                    finished.difference_update(removed)
+                    for a in removed:
+                        finished_map.pop(a, None)
+                    log({"event": "finished-cache", "verdict": "resume-not-persisted", "ids": sorted(removed)[:6]})
+            except Exception as exc:  # noqa: BLE001  a failed write only loses the cache; the replay still applies
+                _log_once(("save-error",), {"event": "finished-cache", "verdict": "save-error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
+                if removed_ids:
+                    finished.difference_update(removed_ids)
         return [(a, max(0, int(now - ts))) for a, ts in pending.items() if now - ts <= PENDING_MAX_AGE and a not in finished]
     except Exception:  # noqa: BLE001  detection must never break a gate
         return []

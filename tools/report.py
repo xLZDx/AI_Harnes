@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import html
+import json
 import os
 import re
 import subprocess
@@ -406,6 +407,71 @@ def sec_active(d: dict, g: Git) -> str:
             + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div></section>")
 
 
+def running_agents(root: Path) -> list[dict] | None:
+    """Unfinished entries of agents/active.json (written by agent_visibility.py) that belong to this project. Read-only copy
+    of the small reader: same state folder rule as _agentio (HARNESS_HOOK_STATE, else the machine config, else
+    ~/.harness-hooks), never creates it. A missing file is []; any other failure returns None and sets AGENTS_ERROR."""
+    global AGENTS_ERROR
+    AGENTS_ERROR = ""
+    try:
+        state = os.environ.get("HARNESS_HOOK_STATE")
+        if not state:  # the hooks read it from the machine config (_agentio.load_machine_config), so do the same
+            cfg = Path(os.environ.get("HARNESS_HOOK_CONFIG") or Path.home() / ".harness-hooks" / "config.json")
+            try:
+                v = json.loads(cfg.read_text(encoding="utf-8-sig")).get("HARNESS_HOOK_STATE")
+                if isinstance(v, str) and v.strip() and not v.lstrip().startswith("<"):
+                    state = os.path.expandvars(os.path.expanduser(v))
+            except (OSError, ValueError, AttributeError):
+                state = None
+        base = Path(state) if state else Path.home() / ".harness-hooks"
+        try:
+            agents = json.loads((base / "agents" / "active.json").read_text(encoding="utf-8")).get("agents", [])
+        except FileNotFoundError:
+            return []
+        # entries store the MAIN checkout (agent_visibility), so a report built in a linked worktree compares with that
+        top = Path(root)
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            common = Path(r.stdout.strip())
+            top = common.parent if common.name == ".git" else common
+        key = os.path.normcase(os.path.normpath(str(top.resolve())))
+        return [e for e in agents if isinstance(e, dict) and not e.get("stop")
+                and os.path.normcase(os.path.normpath(str(e.get("project") or "-"))) == key]
+    except Exception as ex:  # noqa: BLE001
+        AGENTS_ERROR = f"{type(ex).__name__}: {ex}"
+        return None
+
+
+AGENTS_ERROR = ""
+
+
+def sec_agents(root: Path) -> str:
+    head = '<section class="panel" id="running-agents"><h2>Запущенные агенты</h2>'
+    entries = running_agents(root)
+    if entries is None:
+        return head + f'<p class="muted">состояние не прочитано: {E(AGENTS_ERROR)}</p></section>'
+    rows = []
+    now = time.time()
+    for e in entries:
+        try:  # one bad entry (a string start/activity, a missing field) is skipped, never crashes the report
+            start = float(e.get("start") or 0)
+            last = max(start, float(e.get("activity") or 0))
+            stale = now - last >= 600  # same limit as agent_visibility.UNKNOWN_AFTER_S
+            state = "статус неизвестен (нет событий 10+ минут)" if stale else ("подтверждён активным" if e.get("activity") else "старт замечен")
+            when = f"{fmt_ts(int(start))} ({fmt_dur(now - start)})" if start else NR
+            rows.append(f'<tr><td><code>{E(e.get("type", NR))}</code></td><td>{E(e.get("task", NR))}</td>'
+                        f'<td>{E(e.get("model", NR))} / {E(e.get("effort", NR))}</td><td>{E(state)}</td><td>{E(when)}</td></tr>')
+        except Exception:  # noqa: BLE001
+            continue
+    if not rows:
+        return head + '<p class="muted">Сейчас агенты этого проекта не запущены.</p></section>'
+    cols = ["Роль (тип агента)", "Задача", "Модель / усилие", "Состояние", "Старт (длительность)"]
+    return (head + '<div class="wrap"><table><thead><tr>' + "".join(f"<th>{c}</th>" for c in cols) + "</tr></thead><tbody>"
+            + "".join(rows) + '</tbody></table></div><p class="muted">Источник: agents/active.json в папке состояния хуков; '
+            'только записи без STOP, привязанные к этому проекту.</p></section>')
+
+
 def sec_stories(d: dict) -> str:
     pairs = all_tasks(d)
     present: dict[str, int] = {}
@@ -525,7 +591,7 @@ def render(d: dict, root) -> str:
     g = Git(root)
     f = gather(d, g)
     title = f'{d.get("project", NR)} — программа и все спринты'
-    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g)
+    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g) + sec_agents(root)
             + sec_stories(d) + sec_freshness(d, f, root) + sec_updates(d, g, f))
     return ("<!doctype html>\n" + MARKER + '\n<html lang="ru"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'

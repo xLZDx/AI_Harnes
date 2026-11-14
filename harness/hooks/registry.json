@@ -270,6 +270,14 @@
   },
   {
    "event": "UserPromptSubmit",
+   "script": "agents_context.py",
+   "timeout": 10,
+   "status": "running agents line",
+   "claude": "",
+   "codex": ""
+  },
+  {
+   "event": "UserPromptSubmit",
    "script": "question_policy.py",
    "timeout": 10,
    "status": "question policy report",

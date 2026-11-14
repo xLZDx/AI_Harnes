@@ -71,12 +71,13 @@ def state_of(entry: dict, now: float | None = None) -> str:
     return "ACTIVE_CONFIRMED" if entry.get("activity") else "START_OBSERVED"
 
 
-def project_root(cwd: str) -> str:
+def project_root(cwd: str, timeout=None) -> str:
     """Main checkout of the git repo at cwd (same as ledger.py main_root), '' when not a repo. ledger.py counts a test or
     review run only for the project it ran in."""
     try:
         import _agentio
-        r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd or ".")
+        r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd or ".",
+                         **({"timeout": timeout} if timeout else {}))
         if r.returncode != 0:
             return ""
         common = Path(r.stdout.strip())
@@ -90,33 +91,95 @@ def project_root(cwd: str) -> str:
 ABS_PATH_RE = re.compile(r"(?<![\w/\\:])(?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^\s\"'`<>|*?,;()\[\]]+")
 # an absolute path in double or single quotes may hold spaces; same start and exclusions as ABS_PATH_RE
 QUOTED_PATH_RE = re.compile(r"""(["'])((?:[A-Za-z]:[\\/](?![\\/])|/(?![/\\]))[^"'\r\n<>|*?]{1,260})\1""")
-BIND_DEADLINE_S = 3.0  # the whole search stays well inside the 10 s hook budget
+# B44: one git rev-parse costs about 0.5 s here, and a prompt naming 6 subdirectories of one repository took 3.1-3.6 s, so
+# 3.0 s made the hook record ''. 5.0 s + one last git call (BIND_GIT_TIMEOUT_S) + the capped project_root call in
+# announce_start (3 s) stays under the 10 s hook budget.
+BIND_DEADLINE_S = 5.0
 BIND_GIT_TIMEOUT_S = 2
+# The hook has 10 s in total, and the interpreter start is not ours. announce_start works to one deadline at t0 + 8.0 s;
+# the state lock (mutate waits up to 1 s) keeps LOCK_RESERVE_S of it, and no git call is started with less than
+# MIN_GIT_S left (fail closed instead).
+HOOK_BUDGET_S = 8.0
+LOCK_RESERVE_S = 1.2
+MIN_GIT_S = 0.2
 BIND_TEXT_MAX = 65536  # regex cost: only the first 64 KB of the task text is scanned
+BIND_SPACE_WORDS = 4  # B40: an unquoted path with spaces is rebuilt from at most this many following words
+SPACE_WORD_RE = re.compile(r" ([^\s\"'`<>|*?,;()\[\]]+)")
 
 
-def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50) -> str:
+def _extend_unquoted(raw: str, text: str, pos: int, deadline: float) -> str:
+    """B40: an unquoted absolute path stops at its first space. Extend it through the following space-separated words
+    and return the LONGEST candidate that exists (os.path.exists); the plain path when none of the extensions exists.
+    `pos` is the index in `text` where the plain match ended (no slicing); extension stops once `deadline` has passed."""
+    best, best_len, cand = raw, 0, raw
+    for _ in range(BIND_SPACE_WORDS):
+        if time.monotonic() > deadline:
+            break
+        m = SPACE_WORD_RE.match(text, pos)
+        if not m:
+            break
+        cand += " " + m.group(1)
+        pos = m.end()
+        c = cand.rstrip(".:")
+        if os.path.exists(c):
+            best, best_len = c, len(c)
+        else:
+            # a file about to be created: the extension still counts when its directory exists and is deeper than
+            # both the plain match and the best found so far (the main loop then walks up to that directory)
+            dn = os.path.dirname(c)
+            if len(dn) > max(len(raw), best_len) and os.path.isdir(dn):
+                best, best_len = c, len(dn)
+    return best
+
+
+def _under_known_root(d: Path, roots: set) -> bool:
+    """True when d lies inside one of the already found repository roots (normcase prefix with a separator) and no
+    directory between d and that root has its own .git (a nested repository or a worktree needs its own git call)."""
+    nd = os.path.normcase(str(d))
+    for root in roots:
+        nr = os.path.normcase(root)
+        if nd == nr or nd.startswith(nr.rstrip("\\/") + os.sep):
+            p = d
+            while os.path.normcase(str(p)) != nr and p != p.parent:
+                if (p / ".git").exists():
+                    return False
+                p = p.parent
+            return True
+    return False
+
+
+def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50, hook_deadline=None) -> str:
     """B26: when the session cwd is not a repository (a Codex thread in Documents\\Codex, a Claude session reset to
     D:\\Repo), take the project from the absolute paths in the agent's own task text that lie inside a git repo (a
     worktree maps to its main checkout). The run is bound only when all such paths name ONE repository; paths in two
     different repositories, a git timeout or no repository at all give '' (the ledger then refuses the run, fail
-    closed), so a run is never credited to a project it only mentioned."""
+    closed), so a run is never credited to a project it only mentioned.
+    hook_deadline (time.monotonic value, optional): the caller's whole-hook deadline; the search ends LOCK_RESERVE_S before
+    it and every git call is cut to the time left."""
     try:
         import _agentio
         deadline = time.monotonic() + BIND_DEADLINE_S
+        hard = deadline + BIND_GIT_TIMEOUT_S  # no git call may run past this moment
+        if hook_deadline is not None:
+            deadline = min(deadline, hook_deadline - LOCK_RESERVE_S)
+            hard = hook_deadline - LOCK_RESERVE_S
         text = " ".join(str(v) for v in (tool_input or {}).values() if isinstance(v, str))[:BIND_TEXT_MAX]
         tried = set()
         roots = set()
         # quoted paths first (they may hold spaces), then every unquoted hit of the FULL text as its own candidate (a
         # second path inside the same quotes must still be examined); all candidates that resolve must agree
-        found = [m.group(2).strip().rstrip(".:") for m in QUOTED_PATH_RE.finditer(text)]
-        found += [m.group(0).rstrip(".:") for m in ABS_PATH_RE.finditer(text)]
+        found = [(m.group(2).strip().rstrip(".:"), None) for m in QUOTED_PATH_RE.finditer(text)]
+        found += [(m.group(0), m.end()) for m in ABS_PATH_RE.finditer(text)]  # end index: for B40 space extension
         extra = 0
-        for i, raw in enumerate(found):
+        for i, (raw, end) in enumerate(found):
             if time.monotonic() > deadline or i >= max_matches:
                 return ""
             if raw.startswith(("\\\\", "//")) or (os.name == "nt" and raw.startswith("/")):
                 continue
+            if end is not None:  # the match limit above is checked before any extension work
+                raw = raw.rstrip(".:")
+                if text[end:end + 1] == " ":
+                    raw = _extend_unquoted(raw, text, end, deadline)
             p = Path(raw)
             while not p.exists() and p != p.parent:
                 p = p.parent
@@ -124,14 +187,20 @@ def project_from_text(tool_input: dict, max_dirs: int = 5, max_matches: int = 50
             key = str(d).lower()
             if key in tried or d == d.parent:
                 continue
+            if roots and _under_known_root(d, roots):
+                tried.add(key)  # B44: inside a repository root already found: no second git call, same root
+                continue
             if len(tried) >= max_dirs:
                 # after the cap only a new directory costs a git call; too many of them fail closed
                 extra += 1
                 if extra > max_dirs * 2:
                     return ""
             tried.add(key)
+            git_s = min(BIND_GIT_TIMEOUT_S, hard - time.monotonic())
+            if git_s < MIN_GIT_S:
+                return ""  # no time left for another git call: fail closed
             r = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(d),
-                                 timeout=BIND_GIT_TIMEOUT_S)
+                                 timeout=git_s)
             if r.returncode in (124, 127):
                 # git timed out or cannot start: stop rather than bind to a later, possibly unrelated path
                 return ""
@@ -186,11 +255,14 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         name = str(ti.get("subagent_type") or ti.get("agent_type") or "agent").strip()[:60]
         model = (model or str(ti.get("model") or "") or "policy").strip()[:40]
         effort = (effort or str(ti.get("reasoning_effort") or ti.get("effort") or "") or "policy").strip()[:20]
+        hook_deadline = time.monotonic() + HOOK_BUDGET_S
         task = task_id(str(data.get("cwd") or ""))
         session = str(data.get("session_id") or "")[:64]
         tuid = str(data.get("tool_use_id") or "")[:64]
+        root_s = min(3.0, hook_deadline - LOCK_RESERVE_S - time.monotonic())
+        project = project_root(str(data.get("cwd") or ""), timeout=root_s) if root_s >= MIN_GIT_S else ""
         entry = {"type": name, "model": model, "effort": effort, "task": task, "start": time.time(),
-                 "project": project_root(str(data.get("cwd") or "")) or project_from_text(ti),
+                 "project": project or project_from_text(ti, hook_deadline=hook_deadline),
                  "session": session, "tool_use_id": tuid, "sources": [source]}
         aid = str(agent_id or "")[:64]
         if aid:
@@ -309,6 +381,8 @@ def announce_stop(data: dict, client: str) -> None:
                 if len(pre) > 1:
                     res["ambiguous"] = len(pre)
                     res["unrecorded"] = True
+                elif len(pre) == 1:
+                    res["too_old"] = True  # B41: the only candidate is older than UNKNOWN_AFTER_S: refused, not "unobserved"
                 return False
             # no agent id in the payload: finish the unfinished entry of the same type (and session when known) only
             # when it is the only candidate; with two or more, a dead run could take this run's stop, so nothing is
@@ -335,6 +409,8 @@ def announce_stop(data: dict, client: str) -> None:
             _emit(f"[agent STOP] {name} | stop was not recorded: the state is busy", client)
         elif res["dup"]:
             _emit(f"[agent STOP] {name} | duplicate stop ignored", client)
+        elif res.get("too_old"):
+            _emit(f"[agent STOP] {name} | not paired: the only unrecorded {name} start was too old to pair", client)
         else:
             _emit(f"[agent STOP] {name} | {secs} s" + ("" if hit else " | start was not observed"), client)
         if hit:

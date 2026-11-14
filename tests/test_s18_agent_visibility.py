@@ -180,11 +180,16 @@ def _repo(name):
     return h.mk_repo(name)
 
 
-def _dirs(repo, n, prefix="d"):
+def _dirs(repo, n, prefix="d", marked=False):
+    # S19-T1: a directory under an already found repository root costs no git call, so a test that must reach the
+    # 5-directory cap needs directories that still cost one: marked=True puts an empty `.git` file in each (git answers
+    # 128 "invalid gitfile", no root is found, but _under_known_root sees a .git and asks git).
     out = []
     for i in range(n):
         d = repo / f"{prefix}{i}"
         d.mkdir(exist_ok=True)
+        if marked:
+            (d / ".git").write_text("", encoding="utf-8")
         out.append(d)
     return out
 
@@ -243,24 +248,24 @@ def test_c3_new_repository_root_after_the_cap_gives_empty():
 def test_c3_more_than_ten_new_dirs_after_the_cap_gives_empty():
     a = _repo("s18t1_c3many")
     first = _dirs(a, 5)
-    ten = _dirs(a, 10, prefix="x")
+    ten = _dirs(a, 10, prefix="x", marked=True)  # S19-T1: only a dir that costs a git call counts after the cap
     assert _norm(_bind(*first, *ten)) == _norm(a), "exactly 10 new dirs after the cap still bind"
-    eleven = _dirs(a, 11, prefix="y")
+    eleven = _dirs(a, 11, prefix="y", marked=True)
     assert _bind(*first, *eleven) == ""
 
 
 def test_c3_git_timeout_after_the_cap_gives_empty():
     a = _repo("s18t1_c3to")
-    ds = _dirs(a, 6)
+    ds = _dirs(a, 5) + _dirs(a, 1, prefix="d5x", marked=True)  # S19-T1: d5x still costs a git call under the found root
     assert _norm(_bind(*ds)) == _norm(a)  # twin: no timeout
-    with _Recorder(force={"d5": 124}):
+    with _Recorder(force={"d5x0": 124}):
         assert _bind(*ds) == ""
 
 
 def test_c3_git_cannot_start_after_the_cap_gives_empty():
     a = _repo("s18t1_c3nogit")
-    ds = _dirs(a, 6)
-    with _Recorder(force={"d5": 127}):
+    ds = _dirs(a, 5) + _dirs(a, 1, prefix="d5x", marked=True)  # S19-T1: see the timeout test
+    with _Recorder(force={"d5x0": 127}):
         assert _bind(*ds) == ""
 
 
@@ -286,7 +291,9 @@ def test_c4_single_quoted_forward_slash_path_with_spaces_binds():
 
 def test_c4_unquoted_path_with_spaces_does_not_bind_twin():
     r = _spaced_repo("s18t1_c4c")
-    assert av.project_from_text({"prompt": "please edit " + str(r) + "\\x.py now"}) == ""
+    # S19-T1 (b348825): an unquoted path to a missing file under an existing spaced directory now binds that directory's repo
+    got = av.project_from_text({"prompt": "please edit " + str(r) + "\\x.py now"})
+    assert _norm(got) == _norm(r), got
 
 
 def test_c4_quoted_unc_and_url_paths_are_never_probed():
@@ -352,7 +359,8 @@ def test_fix_quoted_path_longer_than_260_chars_is_not_a_quoted_candidate():
     short = av.project_from_text({"prompt": 'edit "' + str(r) + "\\" + "a" * 100 + '"'})
     assert _norm(short) == _norm(r), short  # twin: short quoted path with spaces binds
     long_ = av.project_from_text({"prompt": 'edit "' + str(r) + "\\" + "a" * 300 + '"'})
-    assert long_ == "", long_  # no quoted match; the unquoted scan stops at the space inside 'John Doe'
+    # S19-T1 (b348825): no quoted match, but the unquoted scan now extends through 'John Doe' to the existing directory
+    assert _norm(long_) == _norm(r), long_
 
 
 def test_fix_search_deadline_exceeded_gives_empty_fail_closed():
@@ -373,7 +381,8 @@ def test_fix_single_pre_only_entry_older_than_unknown_after_is_not_finished():
     line = _msg(_stop(st))
     a = _agents(st)
     assert not a[0].get("stop") and not a[0].get("agent_id"), a
-    assert "start was not observed" in line and "not paired" not in line, line
+    # S19-T1: the refusal now has its own line instead of "start was not observed"
+    assert "too old to pair" in line and "start was not observed" not in line, line
 
 
 def test_fix_single_pre_only_entry_just_younger_than_unknown_after_is_finished():

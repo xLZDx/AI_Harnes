@@ -176,7 +176,9 @@ def test_codex_executable_prefers_vendor_exe_next_to_npm_cmd_shim():
 
 def test_codex_executable_falls_back_to_flat_vendor_folder_and_notes_an_unmatched_machine():
     with tmpdir() as d:
-        shim, exe = _npm_layout(d, "vendor/x86_64-pc-windows-msvc/bin/codex.exe")
+        # S19-T3 (B41/B43): the vendor directory is matched by the exact target triple, so the old layout
+        # `vendor/x86_64-pc-windows-msvc` now MATCHES AMD64 and sets no note; a directory named only `x64` is the unmatched case
+        shim, exe = _npm_layout(d, "vendor/x64/bin/codex.exe")
         with mock.patch.object(ap.shutil, "which", _which({"codex": str(shim)})), mock.patch.object(ap, "os", _NtOs()), \
                 machine("AMD64"), mock.patch.object(ap, "CODEX_EXE_NOTE", None):
             got = ap._codex_executable()
@@ -276,7 +278,9 @@ def test_kill_tree_on_windows_runs_taskkill_tree_force_by_pid():
     proc, calls = FakeProc(pid=777, dies_on_taskkill=True), []
     with mock.patch.object(ap, "os", _NtOs()), mock.patch.object(ap.subprocess, "run", _taskkill_runner(proc, calls)):
         warns = ap._kill_process_tree(proc)
-    assert [c[0] for c in calls] == [["taskkill", "/T", "/F", "/PID", "777"]], calls
+    # S19-T3 (B43): the system taskkill.exe by absolute path under SystemRoot, no longer the bare word `taskkill`
+    taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")
+    assert [c[0] for c in calls] == [[taskkill, "/T", "/F", "/PID", "777"]], calls
     assert proc.killed == 0, "taskkill already ended the process: no second kill is needed"
     assert warns == [], warns
 

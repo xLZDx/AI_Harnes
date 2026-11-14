@@ -37,11 +37,14 @@ REFUSE = {
     "block-sq-key": "on:\n  'push':\n    branches: [main]\n",
     "quoted-on-key": '"on": ["push"]\n',
     "alias": "on: *x\n",
+    # criterion (df901e8): any quote character in a flow-style on: value is UNPARSABLE, even for workflow_dispatch
+    "flow-sq-dispatch": "on: ['workflow_dispatch']\n",
+    "map-dq-dispatch": 'on: {"workflow_dispatch": {}}\n',
 }
 PASS = {
     "scalar-dispatch": 'on: "workflow_dispatch"\n',
-    "flow-sq-dispatch": "on: ['workflow_dispatch']\n",
-    "map-dq-dispatch": 'on: {"workflow_dispatch": {}}\n',
+    "flow-plain-dispatch": "on: [workflow_dispatch]\n",
+    "map-plain-dispatch": "on: {workflow_dispatch: {}}\n",
     "block-sq-dispatch": "on:\n  'workflow_dispatch':\n    inputs: {}\n",
 }
 
@@ -84,14 +87,16 @@ def test_workflow_guard_triggers_unit():
         if got != {"workflow_dispatch"}:
             fails.append(f"{k}: triggers()={got}, expected {{'workflow_dispatch'}} for {t!r}")
     # the names themselves must be unquoted (not just flagged as unparsable)
-    exp = {"scalar-dq": {"push"}, "flow-dq-pair": {"push", "pull_request"}, "flow-sq": {"push"},
-           "map-dq-key": {"push"}, "block-dq-key": {"pull_request"}, "block-sq-key": {"push"}, "quoted-on-key": {"push"}}
+    exp = {"scalar-dq": {"push"}, "block-dq-key": {"pull_request"}, "block-sq-key": {"push"}}
     for k, want in exp.items():
         got = wg.triggers("name: ci\n" + REFUSE[k] + TAIL)
-        # the flow-map form also yields nested keys/values (branches, main): over-inclusive is safe, so check containment
-        ok = got >= want if k == "map-dq-key" else got == want
-        if not ok:
+        if got != want:
             fails.append(f"{k}: triggers()={got}, expected {want}")
+    # flow-style values (and a quoted on key) holding any quote are UNPARSABLE as a whole (criterion df901e8)
+    for k in ("flow-dq-pair", "flow-sq", "map-dq-key", "quoted-on-key", "flow-sq-dispatch", "map-dq-dispatch"):
+        got = wg.triggers("name: ci\n" + REFUSE[k] + TAIL)
+        if got != {wg.UNPARSABLE}:
+            fails.append(f"{k}: triggers()={got}, expected only UNPARSABLE")
     if wg.triggers("name: ci\non: *x\n" + TAIL) != {wg.UNPARSABLE}:
         fails.append("alias is not reported as UNPARSABLE")
     check(fails)

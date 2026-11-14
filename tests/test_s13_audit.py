@@ -79,7 +79,7 @@ def _codex_home(trusted=True, rules_block=True):
     home = hv2.fresh("home")
     cmd = _hook_cmd("rules_gate.py").replace("claude", "codex")
     hooks = {"PreToolUse": [{"matcher": "Bash", "hooks": [_handler(cmd)]}],
-             "SubagentStart": [{"hooks": [_handler(_hook_cmd("agent_visibility.py"))]}]}
+             "SubagentStart": [{"hooks": [_handler(_hook_cmd("agent_visibility.py").replace("claude", "codex"))]}]}
     hp = home / ".codex" / "hooks.json"
     _w(hp, json.dumps({"hooks": hooks}))
     toml = ""
@@ -140,6 +140,9 @@ def _fake_codex_hooks(cwds, home, records=None):
             for group in groups:
                 for handler in group.get("hooks", []):
                     hooks.append({"source": "user", "trustStatus": "trusted", "event": event.lower(),
+                                  "eventName": au.codex_hook_event(event), "matcher": group.get("matcher"),
+                                  "handlerType": handler.get("type", "command"),
+                                  "command": handler.get("commandWindows") or handler.get("command") or "",
                                   "statusMessage": handler.get("statusMessage", "hook"), "sourcePath": str(hp)})
     return {au.norm_path(cwd): {"cwd": str(cwd), "hooks": hooks, "warnings": [], "errors": []}
             for cwd in cwds}, None
@@ -442,7 +445,7 @@ def test_json_parses_and_matches_table_rows_and_cells():
     lines = {ln.split("|")[1].strip(): [c.strip() for c in ln.strip("|").split("|")[1:]] for ln in table.splitlines()[2:2 + len(data)]}
     for r in data:
         assert lines[r["project"]] == [r["cells"][c]["status"] for c in au.COLS], r["project"]
-    assert table.splitlines()[0].count("|") == 10 and "gates_live" in table.splitlines()[0]
+    assert table.splitlines()[0].count("|") == len(au.COLS) + 2 and "gates_live" in table.splitlines()[0]
 
 
 def test_project_limits_to_one_row_case_insensitive_and_unknown_is_rc2():

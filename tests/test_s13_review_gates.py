@@ -261,7 +261,7 @@ def test_workflow_guard_refuses_unbalanced_bracket_as_unparsable():
 def test_workflow_guard_allows_multiline_workflow_dispatch_only():
     fails = []
     for key, text in {
-        "list": "name: ci\non: [\n  workflow_dispatch\n]\n" + WF_TAIL,
+        "list-indented-close": "name: ci\non: [\n  workflow_dispatch\n  ]\n" + WF_TAIL,
         "spaced": "name: ci\non: [ workflow_dispatch ]\n" + WF_TAIL,
     }.items():
         repo, sha = guard_repo("rv-wg-ok-" + key, text)
@@ -269,6 +269,14 @@ def test_workflow_guard_allows_multiline_workflow_dispatch_only():
         if r.rc != 0:
             fails.append(f"{key}: wrongly refused rc={r.rc}: {r.all}")
     check(fails)
+
+
+def test_workflow_guard_refuses_flow_list_closed_at_column_zero():
+    # the stricter guard treats a flow list whose `]` sits at column 0 as unparsable (fail closed)
+    repo, sha = guard_repo("rv-wg-col0", "name: ci\non: [\n  workflow_dispatch\n]\n" + WF_TAIL)
+    r = run_guard(repo, sha)
+    assert r.rc == 1, r.all
+    assert "unparsable" in r.err.lower(), r.err
 
 
 def test_workflow_guard_refuses_unknown_sha_with_message():
