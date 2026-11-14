@@ -284,20 +284,75 @@ def _median_seconds(cmd, runs=5, inp=None, env=None):
     return statistics.median(times)
 
 
-def test_no_action_path_is_within_100_ms_of_a_bare_python_start_on_a_500_entry_store():
-    w = World("t4timing")
+def _imported_modules(args, payload, env):
+    """Module names a python start imports, read from `-X importtime` (stderr lines `import time: self | cumulative | name`)."""
+    r = subprocess.run([h.PY, "-s", "-X", "importtime", *args], input=payload, env=env, capture_output=True, text=True,
+                       stdin=None if payload is not None else subprocess.DEVNULL)
+    names = set()
+    for line in r.stderr.splitlines():
+        if line.startswith("import time:") and "|" in line:
+            name = line.split("|")[-1].strip()
+            if name and name != "imported package":
+                names.add(name)
+    return names, r
+
+
+def _store_500(label):
+    w = World(label)
     w.seed([(f"Distinct timing rule number {n} about {('push', 'commit', 'agent', 'test', 'install')[n % 5]} work.", "FAILURE",
              [("push", "commit", "agent", "test", "install")[n % 5]]) for n in range(500)])
+    return w
+
+
+HEAVY = {"_lessons", "_agentio", "secret_policy", "subprocess", "hashlib", "pathlib", "tempfile"}
+
+
+def test_no_action_path_imports_only_json_and_re():
+    """Deterministic form of the T4 criterion `the no-action path does no heavy work` (wall-clock timing cannot falsify the hook on
+    a loaded machine, see DECISION_LOG): beyond a bare start the hook may import only json and re and what those two pull in."""
+    w = _store_500("t4imports")
+    env = h.base_env(w.env)
+    payload = json.dumps(bash("ls -la", "imports"))
+    bare, _ = _imported_modules(["-c", "pass"], None, env)
+    # independent allowance: whatever `import json, re` itself loads (plus the hook's own __future__ and the stdin decoder)
+    allowed_run, _ = _imported_modules(["-c", "import __future__, json, re, os, sys, encodings.utf_8_sig"], None, env)
+    hook, r = _imported_modules([str(HOOK)], payload, env)
+    assert r.returncode == 0 and hook, (r.returncode, r.stderr[-400:])
+    extra = hook - bare
+    assert extra <= allowed_run, f"no-action path imported beyond json/re: {sorted(extra - allowed_run)}"
+    assert not (hook & HEAVY), f"no-action path imported heavy modules: {sorted(hook & HEAVY)}"
+    # twin: the same run with an action payload DOES import the heavy modules, so the check above can fail
+    act, r2 = _imported_modules([str(HOOK)], json.dumps(bash("git push", "imports-act")), env)
+    assert r2.returncode == 0
+    assert "_lessons" in act, "the action path did not import _lessons: the import check cannot tell the two paths apart"
+    assert "_lessons" in act - allowed_run and "_lessons" not in hook
+
+
+def test_no_action_path_timing_is_reported_not_asserted():
+    """INFO only: wall-clock numbers on a loaded machine drift by hundreds of ms, so the median paired difference is printed, never asserted."""
+    w = _store_500("t4timing")
     env = h.base_env(w.env)
     payload = json.dumps(bash("ls -la", "timing"))
     _median_seconds([h.PY, "-s", "-c", "pass"], 2, env=env)  # warm the file cache
-    base = _median_seconds([h.PY, "-s", "-c", "pass"], 5, env=env)
-    hook = _median_seconds([h.PY, "-I", "-s", str(HOOK)], 5, inp=payload, env=env)
+    # Interleaved pairs (bare, hook, bare, hook ...): machine load hits both sides of a pair alike, so the per-pair
+    # difference is stable where two separate batches of medians drift.
+    pairs = []
+    for _ in range(15):
+        t = time.perf_counter()
+        subprocess.run([h.PY, "-s", "-c", "pass"], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        bare_s = time.perf_counter() - t
+        t = time.perf_counter()
+        subprocess.run([h.PY, "-I", "-s", str(HOOK)], input=payload, env=env, capture_output=True, text=True)
+        hook_s = time.perf_counter() - t
+        pairs.append((bare_s, hook_s))
+    diffs = [hook_s - bare_s for bare_s, hook_s in pairs]
+    delta = statistics.median(diffs)
     act_payload = json.dumps(bash("git push", "timing-act"))
     act = _median_seconds([h.PY, "-I", "-s", str(HOOK)], 5, inp=act_payload, env=env)
-    print(f"INFO timing: bare python -s -c pass median={base * 1000:.0f} ms; hook no-action median={hook * 1000:.0f} ms "
-          f"(delta {1000 * (hook - base):.0f} ms, limit 100); hook action path (git push, warm index, 500 entries) median={act * 1000:.0f} ms")
-    assert hook - base <= 0.100, f"no-action path {1000 * (hook - base):.0f} ms above a bare python start (limit 100 ms)"
+    shown = ", ".join(f"({1000 * b_:.0f}/{1000 * k_:.0f}/{1000 * (k_ - b_):+.0f})" for b_, k_ in pairs)
+    print(f"INFO timing pairs (bare/hook/diff ms): {shown}")
+    print(f"INFO timing: median of 15 paired differences hook-minus-bare = {1000 * delta:.0f} ms (INFO only, not asserted); "
+          f"hook action path (git push, warm index, 500 entries) median={act * 1000:.0f} ms")
 
 
 def test_registry_lists_the_hook_for_both_clients():
