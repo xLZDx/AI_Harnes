@@ -111,6 +111,11 @@ text above differ, this section wins.
    `is_agent_spawn`), Codex matcher `Bash|apply_patch|spawn_agent`; Codex acceptance of PreToolUse additionalContext is
    verified with a real payload, else a documented fallback.
 
+Reworded rules: a stored lesson is never rewritten in place. When a log entry keeps its identity (same project, date, title,
+kind, ordinal and block ordinal) but its rule text changes, the new text becomes a new lesson and the earlier one is kept
+(one log event names both ids). The identity also holds the ordinal of the block among blocks with the same date and title.
+Only provenance (shas, idems, seen_in) is appended to a record, and only when the incoming rule has the same key.
+
 Codex note (S20-T4): the recall hook `harness/hooks/lessons_recall.py` emits PreToolUse `additionalContext` for both clients. Claude Code documents it; for Codex it is not proven by a real run (the repo only shows `codex_spawn_shim.py` forwarding it and the dual-client test allowing the field). If Codex ignores it, nothing breaks and the lessons are simply not shown there; the fallback is the CORE.md rule and `GLOBAL_LESSONS.md` / `tools/lessons.py search`.
 
 ## Tasks (replaces the plan above)

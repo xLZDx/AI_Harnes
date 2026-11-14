@@ -157,7 +157,7 @@ def _items(parsed: dict, project: str, sha: str, only_new_vs=None) -> list:
         tags = L.derive_tags(e["title"], e["rule"])
         items.append({"rule": e["rule"], "kind": e["kind"], "project": project, "date": e["date"], "tags": tags,
                       "actions": L.derive_actions(tags), "source": {"repo": project, "sha": sha}, "entry_text": e["text"],
-                      "title": e["title"], "ordinal": e["ordinal"]})
+                      "title": e["title"], "ordinal": e["ordinal"], "block": e["block"]})
     return items
 
 
