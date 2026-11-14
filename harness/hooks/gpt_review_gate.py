@@ -167,7 +167,7 @@ ALL_REPOS_ENABLED = not ENABLED_REPO_ROOTS
 EXCLUDED_REPO_ROOTS = []
 
 COMMIT_RE = re.compile(r"\bgit\s+commit\b", re.IGNORECASE)
-PUSH_RE = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
+PUSH_RE = re.compile(r"\bgit\s+(?:-[Cc]\s+\S+\s+)*push\b", re.IGNORECASE)
 SKIP_RE = re.compile(r"--help\b|(?<!\S)-h\b|--dry-run\b", re.IGNORECASE)
 CD_RE = re.compile(r'^\s*cd\s+(?P<path>"[^"]+"|\'[^\']+\'|\S+)\s*$')
 

@@ -987,7 +987,9 @@ def _is_throwaway_path(resolved: Path) -> bool:
             parts = ()
     else:
         parts = ()
-    if any(_TEMP_SENSITIVE_PART_RE.match(part) for part in parts):
+    # Folders hold the trusted state; a plain file name such as test_x_gate.py is not a trusted location.
+    folder_parts = parts if resolved.is_dir() else parts[:-1]
+    if any(_TEMP_SENSITIVE_PART_RE.match(part) for part in folder_parts):
         return False
     probe = resolved if resolved.is_dir() else resolved.parent
     return not _git_toplevel(str(_nearest_existing_dir(probe)))
@@ -1126,6 +1128,10 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd) -
     if not targets:
         return False
     for target in targets:
+        # an unexpanded variable, home marker or wildcard hides the real destination: it would be read
+        # as a folder name under cwd (found by the S21 functional test with `> $HOME/a.txt`)
+        if any(c in target for c in "*?[$%~`") or ".." in Path(target).parts:
+            return False
         raw_path = Path(target)
         if not raw_path.is_absolute():
             raw_path = Path(cwd or os.getcwd()) / raw_path
