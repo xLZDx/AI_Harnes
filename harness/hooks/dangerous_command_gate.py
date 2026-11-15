@@ -313,6 +313,27 @@ def skip_git_global_options(toks: list[str]) -> list[str]:
     return toks[:1] + toks[i:]
 
 
+# S26: branches that are never deleted (the main project branch), locally or on the remote
+PROTECTED_BRANCHES = {"main", "master"}
+HOOK_CWD: str | None = None  # the session folder, set by main(); used to find the checked-out branch
+
+
+def current_branch(toks: list[str]) -> str | None:
+    """The branch checked out where this git command runs (`git -C <dir>` honoured); None when it cannot be told."""
+    import subprocess
+    d = HOOK_CWD
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] == "-C" and i + 1 < len(toks):
+            d = toks[i + 1] if os.path.isabs(toks[i + 1]) or not d else os.path.join(d, toks[i + 1])
+        i += 2 if toks[i] in GIT_VALUE_OPTIONS else 1
+    try:
+        r = subprocess.run(["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=d or None, capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
 def has_long(seg: str, name: str) -> bool:
     return bool(name and re.search(r"(?<!\S)--" + re.escape(name) + r"(?:=\S+)?(?!\w)", seg))
 
@@ -379,6 +400,7 @@ def classify(seg: str) -> str | None:
     # Both actual git ref/branch deletions -- a local forced branch delete and a remote ref
     # delete via push -- stay blocked as before.
     if base == "git":
+        raw_toks = toks  # keeps `-C <dir>`: the checked-out branch is looked up there
         toks = skip_git_global_options(toks)
         sub = toks[1].lower() if len(toks) > 1 else ""
         if sub == "push":
@@ -388,6 +410,50 @@ def classify(seg: str) -> str | None:
             return "`git reset --hard`"
         if sub == "clean" and has_flag(seg, "f", "force"):
             return "`git clean -f`"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[dD][A-Za-z]*|--delete", x) for x in toks[2:]):
+            # S26 (operator 2026-11-15): the main project branch is never deleted, whatever the flag (-d, -D, --delete)
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if any(n.lower() in PROTECTED_BRANCHES for n in names):
+                return "deleting the main project branch (main/master) is never allowed"
+        if sub == "update-ref" and any(x in {"--stdin", "-z"} for x in toks[2:]):
+            # the changed refs come on stdin and cannot be validated here: refuse (conservative; use explicit arguments)
+            return "update-ref --stdin can change main/master unseen and is never allowed (use explicit arguments)"
+        if sub == "update-ref":
+            # S26: any write to a protected ref (a move, a zero-sha delete, -d) is refused. Only the ref being CHANGED counts: the first
+            # positional after skipping the value of -m; the new value may name main (`update-ref refs/heads/feat main` only reads it).
+            pos, skip = [], False
+            for x in toks[2:]:
+                if skip:
+                    skip = False
+                elif x == "-m":
+                    skip = True
+                elif not x.startswith("-"):
+                    pos.append(re.sub(r"^refs/heads/", "", x))
+            if pos[:1] and pos[0].lower() in PROTECTED_BRANCHES:
+                return "changing or deleting the main project branch (main/master) with update-ref is never allowed"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[mMfF][A-Za-z]*|--move|--force", x) for x in toks[2:]):
+            # renaming or force-moving main/master away is a deletion in effect: the source name is the first name
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if (len(names) >= 2 or any(re.fullmatch(r"-[A-Za-z]*[fF][A-Za-z]*|--force", x) for x in toks[2:])) and names[:1] \
+                    and names[0].lower() in PROTECTED_BRANCHES:
+                return "moving or force-resetting the main project branch (main/master) is never allowed"
+        if sub in {"checkout", "switch"} and any(re.fullmatch(r"-[A-Za-z]*[BC][A-Za-z]*|--force-create", x) for x in toks[2:]):
+            # `git checkout -B main <sha>` / `git switch -C main <sha>` re-create (reset) the branch named first
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if names[:1] and names[0].lower() in PROTECTED_BRANCHES:
+                return "force re-creating the main project branch (main/master) is never allowed"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[mM][A-Za-z]*|--move", x) for x in toks[2:]):
+            names1 = [x for x in toks[2:] if not x.startswith("-")]
+            if len(names1) == 1:
+                # `git branch -m new` renames the CURRENT branch: refuse when it is main/master, or when it cannot be told (fail closed)
+                cur = current_branch(raw_toks)
+                if cur is None or cur.lower() in PROTECTED_BRANCHES:
+                    return "renaming the checked-out branch (main/master or unknown) is never allowed"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[MC][A-Za-z]*", x) for x in toks[2:]):
+            # `git branch -M x main` / `-C x main` overwrite the destination name (the second one)
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if len(names) >= 2 and names[1].lower() in PROTECTED_BRANCHES:
+                return "overwriting the main project branch (main/master) is never allowed"
         if sub == "branch" and has_short(seg, "D"):
             return "forced branch deletion"
         if sub == "checkout" and "--" in toks[2:]:
@@ -560,6 +626,8 @@ def main() -> int:
     if not isinstance(command, str) or not command.strip():
         return 0
 
+    global HOOK_CWD
+    HOOK_CWD = data.get("cwd") if isinstance(data.get("cwd"), str) else None
     hits = find_hits(sanitize(command))
     if not hits:
         return 0
