@@ -422,6 +422,50 @@ def test_two_worktree_edits_later_one_ranks_first():
     assert got == ["sprint/b", "sprint/c", "sprint/a"], got
 
 
+def test_edit_in_b_then_git_c_read_of_a_keeps_session_on_b():
+    gate = load("session_close_gate8", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71ord4")  # payload cwd: main checkout on main
+    base = hv2.fresh("b71ord4dir")
+    wa = base / "wca"
+    wb = base / "wcb"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/a", str(wa))
+    g(repo, "worktree", "add", "-q", "-b", "sprint/b", str(wb))
+    rows = [_first_row(repo),
+            _tool_row(1, "Edit", {"file_path": str(wb / "a.txt"), "old_string": "x", "new_string": "y"}),
+            _tool_row(2, "Bash", {"command": "git -C %s log" % wa})]  # later, but only a read of A
+    tp = _write_tp(base / "t.jsonl", rows)
+    br = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert br[0] == "sprint/b", br
+    assert br == ["sprint/b", "sprint/a", "main"], br
+    proj = base / "proj"
+    (proj / ".harness").mkdir(parents=True)
+    d = {"version": 1, "project": "p", "approval": None, "events": [],
+         "sprints": [sp("A", "sprint/a", [task("A-T1", state="in_progress")]),  # unclosed and listed first
+                     sp("B", "sprint/b", [task("B-T1", state="in_progress")])]}
+    (proj / ".harness" / "ledger.json").write_text(json.dumps(d), encoding="utf-8", newline="\n")
+    assert gate.ledger_open_tasks(proj, set(), br) == [("B-T1", "in_progress")]
+
+
+def test_git_c_path_not_polluted_by_trailing_punctuation_or_quotes():
+    gate = load("session_close_gate9", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71punct")  # cwd on main; only the git -C folder can yield sprint/p
+    base = hv2.fresh("b71punctdir")
+    wt = base / "wcp"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/p", str(wt))
+    spaced = base / "wc space"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/sp", str(spaced))
+    forms = ["git -C %s;" % wt, "git -C %s&& git status" % wt, "(git -C %s)" % wt, "git -C %s; git log" % wt,
+             "git -C %s | cat" % wt, 'git -C "%s" log' % wt, "git -C '%s' log" % wt]
+    for i, cmd in enumerate(forms):
+        tp = _write_tp(base / ("p%d.jsonl" % i), [_tool_row(1, "Bash", {"command": cmd})])
+        br = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+        assert br == ["sprint/p", "main"], (cmd, br)
+    for i, cmd in enumerate(['git -C "%s" log' % spaced, "git -C '%s' status" % spaced, 'git -C "%s"; ls' % spaced]):
+        tp = _write_tp(base / ("s%d.jsonl" % i), [_tool_row(1, "Bash", {"command": cmd})])
+        br = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+        assert br == ["sprint/sp", "main"], (cmd, br)
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":
