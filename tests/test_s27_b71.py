@@ -285,9 +285,11 @@ def test_classify_branch_option_forms():
     dg = load("dangerous_command_gate2", HOOKS / "dangerous_command_gate.py")
     refuse = ["git branch -D --abbrev main", "git branch -d --column main", "git branch --del main",
               "git branch --dele main", "git branch -dr foo/bar/main", "git symbolic-ref -dq HEAD",
-              "git symbolic-ref --del HEAD", "git symbolic-ref --delete HEAD"]
+              "git symbolic-ref --del HEAD", "git symbolic-ref --delete HEAD",
+              "git branch -d --remote origin/main", "git branch -d --rem origin/main",
+              "git branch --delete --remotes origin/master"]
     allow = ["git branch --abbrev=7", "git branch -d x --contains main", "git branch -d feature/main-menu",
-             "git symbolic-ref HEAD", "git branch --contains main"]
+             "git symbolic-ref HEAD", "git branch --contains main", "git branch -d --remote origin/feature-x"]
     bad = [c for c in refuse if not dg.classify(c)]
     assert not bad, "must refuse: %s" % bad
     bad = ["%s (got %r)" % (c, dg.classify(c)) for c in allow if dg.classify(c)]
