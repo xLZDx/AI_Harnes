@@ -339,21 +339,22 @@ def test_hook_asks_project_root_with_a_3_second_git_timeout():
     assert calls == [3], calls
 
 
-def test_entries_silent_for_more_than_24_hours_are_dropped():
+def test_entries_silent_for_more_than_1_hour_are_dropped():
     st = h.fresh("s19fix_ctx_24")
-    _seed(st, [_e("dead-start", start_ago=25 * 3600, sid="me"),
-               _e("dead-activity", start_ago=30 * 3600, sid="me", activity_ago=24 * 3600 + 120),
+    _seed(st, [_e("dead-start", start_ago=61 * 60, sid="me"),
+               _e("dead-30h", start_ago=30 * 3600, sid="me"),
+               _e("dead-activity", start_ago=30 * 3600, sid="me", activity_ago=61 * 60),
                _e("revived", start_ago=30 * 3600, sid="me", activity_ago=60),
-               _e("day-minus", start_ago=23 * 3600, sid="me")])
+               _e("hour-minus", start_ago=59 * 60, sid="me")])
     line = _ctx(_hook(st, _payload(st, sid="me")))
     names = line[len(PREFIX):].split(", ")
-    assert "dead-start" not in line and "dead-activity" not in line, line
-    assert names == ["revived", "day-minus?"], line  # live first; a 23 h silent run is still listed, as unknown
+    assert "dead-start" not in line and "dead-activity" not in line and "dead-30h" not in line, line
+    assert names == ["revived", "hour-minus?"], line  # live first; a 59 min silent run is still listed, as unknown
 
 
 def test_only_dead_entries_means_empty_output():
     st = h.fresh("s19fix_ctx_24b")
-    _seed(st, [_e("dead", start_ago=25 * 3600, sid="me")])
+    _seed(st, [_e("dead", start_ago=2 * 3600, sid="me")])
     r = _hook(st, _payload(st, sid="me"))
     assert r.rc == 0 and r.out == "", r.all
 
