@@ -660,7 +660,13 @@ def _ledger_problems(cwd: str, led: Path) -> list[str]:
     elif ap != head:
         problems.append(f"the GPT-PM approval is bound to {ap[:12]}, not to the current HEAD {head[:12]} "
                         "(a new commit removes the approval; run gpt-pm-gate again)")
-    sprint = next((s for s in data.get("sprints", []) if s.get("state") != "closed"), None)
+    # S30 (operator 2026-11-16): the sprint of the pushed work is the unclosed sprint whose `branch` equals the branch
+    # checked out where the push runs (same rule as tools/ledger.py active_sprint, S27); when no sprint names that
+    # branch, or the branch cannot be told (detached HEAD), the first unclosed sprint decides as before.
+    unclosed = [s for s in data.get("sprints", []) if isinstance(s, dict) and s.get("state") != "closed"]
+    b = _agentio.run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=cwd)
+    branch = b.stdout.strip() if b.returncode == 0 else ""
+    sprint = next((s for s in unclosed if branch and s.get("branch") == branch), None) or (unclosed[0] if unclosed else None)
     if sprint:
         open_ = []
         for t in sprint.get("tasks", []):
