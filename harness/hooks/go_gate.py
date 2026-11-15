@@ -726,7 +726,7 @@ _DELETE_HEADS = {"rm", "rmdir", "rd", "del", "erase", "remove-item", "ri"}
 # and must still require GO -- this regex keeps that case, it only carves out fd-to-fd
 # duplication specifically.
 _GO_REDIRECT_RE = re.compile(
-    r"(?<![0-9<>])>{1,2}(?![>&])"  # `>` / `>>` targeting a file (not a `>&...` fd-dup form)
+    r"(?<![<>])>{1,2}(?![>&])"  # `>` / `>>` (also `2>file`, `1>>file`) targeting a file (not a `>&...` fd-dup form)
     r"|(?<!\d)>&(?!\s*[-\d])"       # `>&TARGET`, only when TARGET isn't just an fd number/close
     r"|(?<!\d)&>(?!\s*[-\d])"       # `&>TARGET`, same bash shorthand, same exception
     r"|<<"                          # heredoc
@@ -885,16 +885,20 @@ def _segment_needs_go(segment: str, cwd=None, solo: bool = False, is_ps: bool = 
 # run against `_mask_quotes(command)`, never the raw string -- see that function's docstring for
 # why a position-preserving mask, not `_quote_aware_views`' shorter stripped view, is needed here.
 _REDIRECT_TARGET_RE = re.compile(
-    r"(?:(?<![0-9<>])>{1,2}(?![>&])"   # `>` / `>>`
+    r"(?:(?<![<>])>{1,2}(?![>&])"       # `>` / `>>`, also fd-prefixed (`2>file`)
     r"|(?<!\d)>&(?!\s*[-\d])"           # `>&TARGET`
     r"|(?<!\d)&>(?!\s*[-\d])"           # `&>TARGET`
     r")\s*([^\s;&|]+)"  # the target ends at a shell separator: `> D:/tmp/x; next` names D:/tmp/x (S23)
 )
 _REDIRECT_OP_RE = re.compile(
-    r"(?<![0-9<>])>{1,2}(?![>&])"
+    r"(?<![<>])>{1,2}(?![>&])"
     r"|(?<!\d)>&(?!\s*[-\d])"
     r"|(?<!\d)&>(?!\s*[-\d])"
 )
+# the null device: `cmd > /dev/null 2>&1` in a POSIX shell; `> $null` and `> NUL` only in PowerShell (a bash variable `$null` is
+# an ordinary variable and `> nul` in Git Bash may create a file) (S24)
+_NULL_DEVICES_POSIX = {"/dev/null"}
+_NULL_DEVICES_PS = {"/dev/null", "$null", "nul", "nul:"}
 _SCRATCHPAD_SEGMENT_RE = re.compile(r"[\\/]scratchpad[\\/]", re.IGNORECASE)
 
 
@@ -1178,6 +1182,8 @@ def _redirect_targets_all_in_scratchpad(command: str, redirect_view: str, cwd, i
     if len(_REDIRECT_OP_RE.findall(masked)) != len(targets):
         return False
     for target in targets:
+        if target.lower() in (_NULL_DEVICES_PS if is_ps else _NULL_DEVICES_POSIX):
+            continue  # a write to the null device changes nothing
         # an unexpanded variable, home marker or wildcard hides the real destination: it would be read
         # as a folder name under cwd (found by the S21 functional test with `> $HOME/a.txt`)
         if not _DRIVE_ABS_RE.match(target) or any(c in target for c in _BAD_TARGET_CHARS) or ".." in Path(target).parts:
