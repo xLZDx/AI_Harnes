@@ -218,9 +218,9 @@ def test_work_branches_from_transcript_edit_path_and_git_c():
         return str(p)
 
     got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t1.jsonl", [edit])})
-    assert got == ["other-main-branch", "fix/voice"], got  # cwd first, then the Edit path's work copy
+    assert got == ["fix/voice", "other-main-branch"], got  # Edit path's work copy first, then the cwd
     got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t2.jsonl", [edit, push, read])})
-    assert got == ["other-main-branch", "fix/voice", "fix/second"], got  # git -C dir counted, Read ignored
+    assert got == ["fix/voice", "fix/second", "other-main-branch"], got  # Edit folders outrank git -C folders, cwd last, Read ignored
     got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t3.jsonl", [])})
     assert got == ["other-main-branch"], got
     got = gate.work_branches({"cwd": str(repo), "transcript_path": str(base / "missing.jsonl")})
@@ -328,7 +328,8 @@ def test_work_branches_one_git_call_per_folder():
         got = gate.work_branches({"cwd": str(cwd), "transcript_path": str(tp)})
         assert len(calls) <= 4, len(calls)
         assert set(got) == {"br-cwd", "br-f0", "br-f1", "br-f2"}, got
-        assert got[0] == "br-cwd", got
+        assert got[-1] == "br-cwd", got  # activity first, cwd after
+        assert got[0] == "br-f1", got  # most recent edit (file49) is in f1
 
         calls.clear()
         many = [base / ("m%d" % i) for i in range(40)]
@@ -338,10 +339,87 @@ def test_work_branches_one_git_call_per_folder():
         tp2 = base / "t2.jsonl"
         tp2.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
         got = gate.work_branches({"cwd": str(cwd), "transcript_path": str(tp2)})
-        assert len(calls) <= 24, len(calls)
-        assert len(got) >= 2 and got[0] == "br-cwd" and got[1] == "br-m0", got
+        assert len(calls) <= 25, len(calls)  # 24 activity folders + the always-read cwd
+        assert got[0] == "br-m39" and got[1] == "br-m38" and "br-cwd" in got and "br-m0" not in got, got
     finally:
         gate._branch_of = orig
+
+
+def _tool_row(i, name, inp):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "x%d" % i, "name": name, "input": inp}]}}
+
+
+def _write_tp(path, rows):
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _first_row(cwd):
+    return {"type": "user", "cwd": str(cwd), "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}}
+
+
+def test_session_started_in_main_checkout_works_in_worktree_picks_worktree_sprint():
+    gate = load("session_close_gate5", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71ord")
+    g(repo, "checkout", "-q", "-b", "sprint/a")  # main checkout sits on the branch of unclosed sprint A
+    base = hv2.fresh("b71orddir")
+    wt = base / "wcb"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/b", str(wt))
+    first = _first_row(repo)
+    rows = [first, _tool_row(1, "Edit", {"file_path": str(wt / "a.txt"), "old_string": "x", "new_string": "y"})]
+    tp = _write_tp(base / "t.jsonl", rows)
+    br = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert br == ["sprint/b", "sprint/a"], br
+    proj = base / "proj"
+    (proj / ".harness").mkdir(parents=True)
+    d = {"version": 1, "project": "p", "approval": None, "events": [],
+         "sprints": [sp("A", "sprint/a", [task("A-T1", state="in_progress")]),
+                     sp("B", "sprint/b", [task("B-T1", state="in_progress")])]}
+    (proj / ".harness" / "ledger.json").write_text(json.dumps(d), encoding="utf-8", newline="\n")
+    assert gate.ledger_open_tasks(proj, set(), br) == [("B-T1", "in_progress")]
+    # without worktree activity the session belongs to the main checkout's sprint A
+    tp0 = _write_tp(base / "t0.jsonl", [first])
+    br0 = gate.work_branches({"cwd": str(repo), "transcript_path": tp0})
+    assert br0 == ["sprint/a"], br0
+    assert gate.ledger_open_tasks(proj, set(), br0) == [("A-T1", "in_progress")]
+
+
+def test_payload_cwd_ranks_before_session_start_cwd():
+    gate = load("session_close_gate6", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71ord2")
+    g(repo, "checkout", "-q", "-b", "sprint/a")
+    base = hv2.fresh("b71ord2dir")
+    wt = base / "wcb"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/b", str(wt))
+    tp = _write_tp(base / "t.jsonl", [_first_row(wt)])
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert got == ["sprint/a", "sprint/b"], got
+
+
+def test_two_worktree_edits_later_one_ranks_first():
+    gate = load("session_close_gate7", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71ord3")
+    g(repo, "checkout", "-q", "-b", "sprint/a")
+    base = hv2.fresh("b71ord3dir")
+    wb = base / "wcb"
+    wc = base / "wcc"
+    g(repo, "worktree", "add", "-q", "-b", "sprint/b", str(wb))
+    g(repo, "worktree", "add", "-q", "-b", "sprint/c", str(wc))
+    first = _first_row(repo)
+
+    def ed(i, d):
+        return _tool_row(i, "Edit", {"file_path": str(d / "a.txt"), "old_string": "x", "new_string": "y"})
+
+    tp = _write_tp(base / "t1.jsonl", [first, ed(1, wb), ed(2, wc)])
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert got == ["sprint/c", "sprint/b", "sprint/a"], got
+    tp = _write_tp(base / "t2.jsonl", [first, ed(1, wc), ed(2, wb)])
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert got == ["sprint/b", "sprint/c", "sprint/a"], got
+    tp = _write_tp(base / "t3.jsonl", [first, ed(1, wb), ed(2, wc), ed(3, wb)])  # re-editing b makes it most recent again
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp})
+    assert got == ["sprint/b", "sprint/c", "sprint/a"], got
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

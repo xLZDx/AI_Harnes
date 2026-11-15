@@ -267,7 +267,7 @@ def ledger_projects(data: dict) -> tuple[dict, set]:
     return roots, mine
 
 
-GIT_C_RE = re.compile(r"\bgit(?:\.exe)?\s+-C\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))")
+GIT_C_RE = re.compile(r"\bgit(?:\.exe)?\s+-C\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;&|)]+))")
 
 
 def _branch_of(path: str) -> str | None:
@@ -291,15 +291,17 @@ def work_branches(data: dict) -> list[str]:
     (most recent first), then the cwd, then the session start folder. The ledger sits in the main checkout, whose own branch says nothing about
     which sprint this session belongs to."""
     tp = data.get("transcript_path") or ""
-    activity: list[str] = []
+    edits: list[str] = []
+    gitc: list[str] = []
     for r in (_agentio.records(tp) if tp else []):
         if r.get("kind") != "tool_use":
             continue
         inp = r.get("input") if isinstance(r.get("input"), dict) else {}
         if r.get("name") in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
-            activity += [str(inp[k]) for k in ("file_path", "notebook_path") if inp.get(k)]
+            edits += [str(inp[k]) for k in ("file_path", "notebook_path") if inp.get(k)]
         for m in GIT_C_RE.finditer(str(inp.get("command") or "")):
-            activity.append(m.group(1) or m.group(2) or m.group(3))
+            gitc.append(m.group(1) or m.group(2) or m.group(3))
+    activity = gitc + edits  # reversed below: edits (real work) outrank `git -C` folders, which may only be read
     # Precedence (S27 GPT-PM round 1): what the session actually worked in, most recent first, then the cwd, then the start
     # folder. A session that starts in the main checkout (whose branch may name another open sprint) and then works in a
     # worktree belongs to the worktree's sprint.
