@@ -189,12 +189,90 @@ def test_work_branches_uses_worktree_not_main_checkout():
     assert gate.work_branches({}) == []
 
 
+def test_work_branches_from_transcript_edit_path_and_git_c():
+    gate = load("session_close_gate3", HOOKS / "session_close_gate.py")
+    repo = mk_repo("b71tr")
+    g(repo, "checkout", "-q", "-b", "other-main-branch")
+    base = hv2.fresh("b71trdir")
+    wt = base / "wc"
+    g(repo, "worktree", "add", "-q", "-b", "fix/voice", str(wt))
+    wt2 = base / "wc2"
+    g(repo, "worktree", "add", "-q", "-b", "fix/second", str(wt2))
+    target = wt / "a.txt"
+
+    def row(typ, block):
+        return {"type": typ, "message": {"role": typ, "content": [block]}}
+
+    edit = row("assistant", {"type": "tool_use", "id": "t1", "name": "Edit",
+                             "input": {"file_path": str(target), "old_string": "x", "new_string": "y"}})
+    push = row("assistant", {"type": "tool_use", "id": "t2", "name": "Bash",
+                             "input": {"command": "git -C %s push" % wt2}})
+    # a Read of a file in a third worktree must NOT tie the session to its branch
+    wt3 = base / "wc3"
+    g(repo, "worktree", "add", "-q", "-b", "fix/third", str(wt3))
+    read = row("assistant", {"type": "tool_use", "id": "t3", "name": "Read", "input": {"file_path": str(wt3 / "a.txt")}})
+
+    def tp(name, rows):
+        p = base / name
+        p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+        return str(p)
+
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t1.jsonl", [edit])})
+    assert got == ["other-main-branch", "fix/voice"], got  # cwd first, then the Edit path's work copy
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t2.jsonl", [edit, push, read])})
+    assert got == ["other-main-branch", "fix/voice", "fix/second"], got  # git -C dir counted, Read ignored
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t3.jsonl", [])})
+    assert got == ["other-main-branch"], got
+    got = gate.work_branches({"cwd": str(repo), "transcript_path": str(base / "missing.jsonl")})
+    assert got == ["other-main-branch"], got
+    # end to end: the worktree branch picks the sprint
+    led = {"sprints": [sp("M2", "sprint/m2", [task("M2-T1", state="in_progress")]),
+                       sp("V", "fix/voice", [task("V-T1", state="in_progress")])]}
+    br = gate.work_branches({"cwd": str(repo), "transcript_path": tp("t4.jsonl", [edit, push])})
+    assert gate.pick_sprint(led, br)["id"] == "V"
+
+
+# ---------- 3b. report: sprint of the checked-out branch is the active one ----------
+def test_report_marks_branch_sprint_active():
+    sys.path.insert(0, str(TOOLS))
+    report = load("report_mod", TOOLS / "report.py")
+    repo = mk_repo("b71rep")
+    sha = g(repo, "rev-parse", "HEAD")
+    d = {"version": 1, "project": "p", "events": [], "approval": None,
+         "sprints": [sp("M2", "sprint/m2", [task("M2-T1", state="in_progress", commits=[sha])]),
+                     sp("VOICE2", "fix/voice", [task("V2-T1", state="in_progress", commits=[sha])])]}
+
+    def rows(html):
+        return {p.split('"', 1)[0]: p for p in html.split('id="sp-')[1:]}
+
+    git = report.Git(repo)
+    # on main nobody owns the branch: the first unclosed sprint is active
+    a = report.sec_active(d, git)
+    assert "Спринт M2</b>" in a and "Спринт VOICE2</b>" not in a, a[:400]
+    r = rows(report.sec_sprints(d, git))
+    assert "до сейчас" in r["M2"] and "до сейчас" not in r["VOICE2"]
+    g(repo, "checkout", "-q", "-b", "fix/voice")
+    git = report.Git(repo)
+    a = report.sec_active(d, git)
+    assert "Спринт VOICE2</b>" in a and "Спринт M2</b>" not in a and "V2-T1" in a and "M2-T1" not in a, a[:400]
+    r = rows(report.sec_sprints(d, git))
+    assert set(r) == {"M2", "VOICE2"}, list(r)
+    assert "до сейчас" in r["VOICE2"] and "до сейчас" not in r["M2"]
+    # a closed sprint on the current branch is not active
+    d["sprints"][1]["state"] = "closed"
+    a = report.sec_active(d, report.Git(repo))
+    assert "Спринт M2</b>" in a, a[:400]
+
+
 # ---------- 4. dangerous_command_gate ----------
 def test_classify_branch_and_symbolic_ref():
     dg = load("dangerous_command_gate", HOOKS / "dangerous_command_gate.py")
     refuse = ["git branch -dr origin/main", "git branch -d -r origin/master", "git symbolic-ref -d HEAD",
               "git symbolic-ref --delete refs/remotes/origin/HEAD", "git branch -D main", "git branch -d main",
               "git branch -D master", "git branch --delete main"]
+    refuse += ['git branch -d "main"', "git branch -d 'main'", "git branch -d origin/main -r",
+               "git branch -d --remotes origin/main", "git branch --delete --remotes origin/main",
+               'git branch -D "master"']
     allow = ["git branch -d x --contains main", "git branch --contains main", "git branch -d feature/main-menu",
              "git branch -dr origin/feature-x", "git symbolic-ref HEAD", "git symbolic-ref --short HEAD", "git branch -d x"]
     for c in refuse:
