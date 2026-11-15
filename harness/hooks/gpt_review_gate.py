@@ -694,19 +694,18 @@ def main():
                       "repo": repo_root, "command": command[:200]})
         allow()
 
-    reason = (
-        f"GPT REVIEW gate (commit): no review.js receipt found for {repo_root} in the last "
-        f"{RECEIPT_MAX_AGE_HOURS}h. Per ~/.claude/CLAUDE.md 'GPT Consensus Review (via PM Bridge)' "
-        f"(MANDATORY, 2026-08-21, replaces the suspended Codex gate): send this gate's diff to GPT "
-        f"before committing -- run `node {REVIEW_CLI} --cwd {repo_root} "
-        f"--uncommitted --project <name>`, then retry this commit. A fail-open error (login expired, "
-        f"ChatGPT markup changed, conversation not found) still writes a receipt and satisfies this "
-        f"gate -- only a call that was never attempted blocks it. CLAUDE_GPT_REVIEW_GATE=off is a "
-        f"session/process-level kill switch, NOT a per-command one: it must be set in the environment "
-        f"BEFORE this Claude Code session/process starts. Setting it inline in this Bash/PowerShell "
-        f"command has no effect."
+    # S25 (operator rule 2, 2026-11-12): commit as work goes; the GPT-PM review is a gate for the PUSH, not for a local commit.
+    # A commit with no recent receipt is allowed with a warning; the remote still needs a real APPROVE (pre-push hook and the
+    # push branch above).
+    warn_reason = (
+        f"GPT REVIEW gate (commit): no review.js receipt for {repo_root} in the last {RECEIPT_MAX_AGE_HOURS}h -- ALLOWING the "
+        f"local commit (the review is a gate for the push, not for a commit). This commit stays LOCAL: do not report it as "
+        f"reviewed; the push needs a real GPT-PM APPROVE for the exact HEAD."
     )
-    deny(reason, {"repo": repo_root, "command": command[:200]})
+    log_decision({"decision": "allow-with-warning", "reason": "no receipt; local commit allowed (S25)",
+                  "repo": repo_root, "command": command[:200]})
+    warn_allow(payload, warn_reason)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
