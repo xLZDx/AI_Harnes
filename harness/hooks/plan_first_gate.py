@@ -111,7 +111,8 @@ def plan_presented(turn: dict) -> tuple[bool, str]:
     if valid_steps(task_steps):
         return True, "task-create"
     # (b) the plan written as text before the first change
-    first_change = next((i for i, c in enumerate(turn["calls"]) if c["name"] not in PLAN_TOOLS and
+    # a call this gate itself denied never happened: a plan written after that deny (the deny text asks for it) still counts
+    first_change = next((i for i, c in enumerate(turn["calls"]) if c["name"] not in PLAN_TOOLS and "PLAN FIRST" not in (c["result"] or "") and
                          is_mutation({"tool_name": c["name"], "tool_input": c["input"]})), None)  # same test as the PreToolUse gate: reading is not a change
     limit = turn["calls"][first_change]["texts_before"] if first_change is not None else len(turn["assistant_texts"])
     for t in turn["assistant_texts"][:max(limit, 0)] if first_change is not None else turn["assistant_texts"]:
@@ -128,7 +129,7 @@ def deny(reason: str) -> None:
 DENY_MSG = ("PLAN FIRST (operator 2026-11-12): the operator must see the work plan before the first change. Call the plan tool "
             "(update_plan) now with at least 2 concrete steps (12+ characters each, one of them a verification step such as tests or "
             "a check), or write the numbered plan in your message, then continue. If your model has no plan tool (update_plan is not "
-            "available), the numbered list in your message is the plan and is accepted: write it before the first change, do not stop "
+            "available), the numbered list in your message is the plan and is accepted: write it now, then retry the change; do not stop "
             "and do not report a blocker. Denied %d of %d.")
 
 
@@ -217,8 +218,8 @@ def on_stop(data: dict) -> None:
     log({"event": "stop-block", "session": str(data.get("session_id"))[:8]})
     print(json.dumps({"decision": "block", "reason": "PLAN FIRST: this turn changed things but no presented plan exists. "
                       "Call update_plan with the steps you took and still plan (2+ concrete steps, one verification step) so the operator "
-                      "sees the plan, then finish. If your model has no plan tool, write the same steps as a numbered list in your message; "
-                      "a missing update_plan is never a blocker."}, ensure_ascii=False))
+                      "sees the plan, then finish. If your model has no plan tool, say so in one line and finish: this block fires once per "
+                      "turn, and a missing update_plan is never a blocker."}, ensure_ascii=False))
 
 
 def main() -> int:

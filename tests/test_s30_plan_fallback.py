@@ -29,6 +29,25 @@ def test_stop_message_names_the_text_plan_fallback():
     check("no plan tool" in reason and "never a blocker" in reason, reason)
 
 
+def test_text_plan_written_after_a_deny_counts_on_retry():
+    from test_plan_first_gate import use, result
+    edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
+    rows = [human("Fix the parser bug"), asst(use("e1", "Edit", edit)),
+            result("e1", "PLAN FIRST (operator 2026-11-12): the operator must see the work plan", True),
+            asst(text(TEXT_PLAN)), asst(use("e2", "Edit", edit))]
+    e, p = edit_denied(rows, "s30retry")
+    check(p.returncode == 0 and p.stdout.strip() == "", f"retry after a deny with a text plan was denied: {p.stdout!r}")
+
+
+def test_text_plan_written_after_a_real_change_still_does_not_count():
+    from test_plan_first_gate import use, result
+    edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
+    rows = [human("Fix the parser bug"), asst(use("e1", "Edit", edit)), result("e1", "edited", False),
+            asst(text(TEXT_PLAN)), asst(use("e2", "Edit", edit))]
+    e, p = edit_denied(rows, "s30late")
+    check(denied(p), "a plan written after a real change must not count")
+
+
 def test_text_plan_without_any_plan_tool_call_passes():
     rows = [human("Fix the parser bug"), asst(text(TEXT_PLAN))]
     e, p = edit_denied(rows, "s30text")

@@ -119,7 +119,7 @@ instruction wins; platform permission and safety controls always apply.
   trading, the operator's own password or personal secret, CAPTCHA, creating an account, unrecoverable deletion, force-push,
   production data. Never ask the operator to do something that does not exist yet and that the agent can create itself.
 - Show the work plan before the first change (`plan_first_gate`); a plan that was not presented does not count. A model without
-  a plan tool (no `update_plan`) writes the plan as a numbered list in its message before the first change; the gate accepts it.
+  a plan tool (no `update_plan`) writes the plan as a numbered list in its message before the first change (or right after a denied attempt); the gate accepts it.
   A missing plan tool is never a blocker and never a reason to end a turn or to mark a task PROHIBITED (operator 2026-11-15).
 - A turn does not end while its ledger tasks are open (`session_close_gate`); a task that cannot proceed is marked with
   `ledger.py block <ID> --class OPERATOR|EXTERNAL|PROHIBITED --cause "<verified cause>"`.
