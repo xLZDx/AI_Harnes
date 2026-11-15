@@ -397,6 +397,17 @@ def classify(seg: str) -> str | None:
             names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
             if any(n.lower() in PROTECTED_BRANCHES for n in names):
                 return "deleting the main project branch (main/master) is never allowed"
+        if sub == "update-ref" and any(re.fullmatch(r"-d|--delete", x) for x in toks[2:]):
+            # S26 review round 1: the low-level way to delete a branch ref is the same invariant as `git branch -d main`
+            refs = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if any(n.lower() in PROTECTED_BRANCHES for n in refs[:1]):
+                return "deleting the main project branch (main/master) is never allowed"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[mMfF][A-Za-z]*|--move|--force", x) for x in toks[2:]):
+            # renaming or force-moving main/master away is a deletion in effect: the source name is the first name
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if (len(names) >= 2 or any(re.fullmatch(r"-[A-Za-z]*[fF][A-Za-z]*|--force", x) for x in toks[2:])) and names[:1] \
+                    and names[0].lower() in PROTECTED_BRANCHES:
+                return "moving or force-resetting the main project branch (main/master) is never allowed"
         if sub == "branch" and has_short(seg, "D"):
             return "forced branch deletion"
         if sub == "checkout" and "--" in toks[2:]:

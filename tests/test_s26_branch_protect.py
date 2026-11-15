@@ -63,6 +63,31 @@ def test_allow_non_main():
         allow(cmd)
 
 
+MOVE_REASON = "moving or force-resetting the main project branch (main/master) is never allowed"
+
+
+def test_update_ref_delete_main_denied():
+    for cmd in ["git update-ref -d refs/heads/main", "git update-ref --delete refs/heads/master",
+                "git -C D:/x update-ref -d refs/heads/main", "git update-ref -d refs/heads/MAIN",
+                "git update-ref --delete refs/heads/MASTER"]:
+        deny_main(cmd)
+
+
+def test_rename_or_force_move_main_denied():
+    for cmd in ["git branch -m main x", "git branch -M master x", "git branch -f main abc1234",
+                "git branch --force main abc1234", "git -C D:/x branch -f MAIN abc1234"]:
+        for c in CLIENTS:
+            got, why = decide(cmd, c)
+            assert got == "deny", f"[{c}] expected deny for {cmd!r}, got {got}"
+            assert MOVE_REASON in why, f"[{c}] wrong reason for {cmd!r}: {why[:200]}"
+
+
+def test_update_ref_and_move_other_allowed():
+    for cmd in ["git update-ref -d refs/heads/s26-worktree-removal", "git update-ref refs/heads/main abc1234",
+                "git branch -f feat main", "git branch -m feat feat2", "git branch -d s26-worktree-removal"]:
+        allow(cmd)
+
+
 def test_forced_delete_of_other_branch_still_denied():
     for c in CLIENTS:
         got, why = decide("git branch -D s99", c)
