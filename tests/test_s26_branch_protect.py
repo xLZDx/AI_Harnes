@@ -43,6 +43,18 @@ def deny_main(cmd):
         assert MAIN_REASON in why, f"[{c}] wrong reason for {cmd!r}: {why[:200]}"
 
 
+def deny_with(cmd, reason):
+    for c in CLIENTS:
+        got, why = decide(cmd, c)
+        assert got == "deny", f"[{c}] expected deny for {cmd!r}, got {got}"
+        assert reason in why, f"[{c}] wrong reason for {cmd!r}: {why[:200]}"
+
+
+UPD_REASON = "changing or deleting the main project branch (main/master) with update-ref is never allowed"
+RECREATE_REASON = "force re-creating the main project branch (main/master) is never allowed"
+OVERWRITE_REASON = "overwriting the main project branch (main/master) is never allowed"
+
+
 def allow(cmd):
     for c in CLIENTS:
         got, why = decide(cmd, c)
@@ -70,18 +82,48 @@ def test_update_ref_delete_main_denied():
     for cmd in ["git update-ref -d refs/heads/main", "git update-ref --delete refs/heads/master",
                 "git -C D:/x update-ref -d refs/heads/main", "git update-ref -d refs/heads/MAIN",
                 "git update-ref --delete refs/heads/MASTER"]:
-        deny_main(cmd)
+        deny_with(cmd, UPD_REASON)
 
 
 def test_update_ref_with_message_flag_delete_main_denied():
     for cmd in ["git update-ref -m reason -d refs/heads/main", 'git update-ref -m "why" --delete refs/heads/master',
                 "git -C D:/x update-ref -m x -d refs/heads/MAIN"]:
-        deny_main(cmd)
+        deny_with(cmd, UPD_REASON)
 
 
 def test_update_ref_with_message_flag_other_allowed():
     for cmd in ["git update-ref -m reason -d refs/heads/s99-sprint",
-                "git update-ref -m reason refs/heads/main abc1234"]:
+                "git update-ref -m reason refs/heads/s99-sprint abc1234"]:
+        allow(cmd)
+
+
+def test_update_ref_set_main_with_sha_denied():
+    for cmd in ["git update-ref refs/heads/main abc1234", "git update-ref -m reason refs/heads/main abc1234",
+                "git update-ref main abc1234", "git update-ref refs/heads/MASTER abc1234",
+                "git update-ref refs/heads/main 0000000000000000000000000000000000000000",
+                "git -C D:/x update-ref -m reason refs/heads/main abc1234"]:
+        deny_with(cmd, UPD_REASON)
+
+
+def test_force_recreate_main_denied():
+    for cmd in ["git checkout -B main abc1234", "git switch -C main abc1234", "git switch --force-create main",
+                "git checkout -B master abc1234", "git switch -C MAIN abc1234"]:
+        deny_with(cmd, RECREATE_REASON)
+
+
+def test_checkout_switch_other_allowed():
+    for cmd in ["git checkout -b feat main", "git switch -c feat main", "git checkout main", "git switch main",
+                "git checkout -B feat main"]:
+        allow(cmd)
+
+
+def test_overwrite_main_as_destination_denied():
+    for cmd in ["git branch -M x main", "git branch -C x main", "git branch -M x master", "git branch -C x MAIN"]:
+        deny_with(cmd, OVERWRITE_REASON)
+
+
+def test_branch_move_copy_other_allowed():
+    for cmd in ["git branch -M feat feat2", "git branch -C feat feat2", "git branch -c main main-copy"]:
         allow(cmd)
 
 
@@ -95,7 +137,7 @@ def test_rename_or_force_move_main_denied():
 
 
 def test_update_ref_and_move_other_allowed():
-    for cmd in ["git update-ref -d refs/heads/s26-worktree-removal", "git update-ref refs/heads/main abc1234",
+    for cmd in ["git update-ref -d refs/heads/s26-worktree-removal", "git update-ref refs/heads/s99-sprint abc1234",
                 "git branch -f feat main", "git branch -m feat feat2", "git branch -d s26-worktree-removal"]:
         allow(cmd)
 
