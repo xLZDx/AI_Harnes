@@ -287,29 +287,33 @@ def _branch_of(path: str) -> str | None:
 
 
 def work_branches(data: dict) -> list[str]:
-    """B71: branches of the work copies this session works in (start cwd, cwd, folders of Edit/Write paths and of
-    `git -C <dir>` commands), in that order. The ledger sits in the main checkout, whose own branch says nothing about
+    """B71: branches of the work copies this session works in: folders of Edit/Write paths and of `git -C <dir>` commands
+    (most recent first), then the cwd, then the session start folder. The ledger sits in the main checkout, whose own branch says nothing about
     which sprint this session belongs to."""
-    paths = [_start_cwd(data.get("transcript_path") or ""), data.get("cwd") or ""]
     tp = data.get("transcript_path") or ""
+    activity: list[str] = []
     for r in (_agentio.records(tp) if tp else []):
         if r.get("kind") != "tool_use":
             continue
         inp = r.get("input") if isinstance(r.get("input"), dict) else {}
         if r.get("name") in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
-            paths += [str(inp[k]) for k in ("file_path", "notebook_path") if inp.get(k)]
+            activity += [str(inp[k]) for k in ("file_path", "notebook_path") if inp.get(k)]
         for m in GIT_C_RE.finditer(str(inp.get("command") or "")):
-            paths.append(m.group(1) or m.group(2) or m.group(3))
+            activity.append(m.group(1) or m.group(2) or m.group(3))
+    # Precedence (S27 GPT-PM round 1): what the session actually worked in, most recent first, then the cwd, then the start
+    # folder. A session that starts in the main checkout (whose branch may name another open sprint) and then works in a
+    # worktree belongs to the worktree's sprint.
+    paths = list(reversed(activity))[:60] + [data.get("cwd") or "", _start_cwd(tp)]
     out: list[str] = []
     seen: set[str] = set()
-    for p in paths:
+    for i, p in enumerate(paths):
         if not p:
             continue
         key = p if os.path.isdir(p) else os.path.dirname(p)  # one git call per folder, not per file
         if key in seen:
             continue
-        if len(seen) >= 24:  # a bounded number of git calls at Stop, however long the session was
-            break
+        if len(seen) >= 24 and i < len(paths) - 2:  # a bounded number of git calls at Stop; cwd and start folder are always read
+            continue
         seen.add(key)
         b = _branch_of(p)
         if b and b not in out:
