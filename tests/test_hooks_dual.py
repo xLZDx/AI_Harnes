@@ -465,7 +465,11 @@ def test_gpt_review_gate_commit_and_push_receipts_and_codex_warning_goes_to_stde
     sb = SB("gpt")
     r = sb.repo("g1")
     c, x = pl(sb, PRE, tool="Bash", ti=bash('git commit -m "x"'), cwd=r)
-    trio(sb, "gpt_review_gate.py", c, x, "deny")
+    # no receipt: a local commit is allowed with a warning (the legacy original still denies, so port only)
+    res0 = {"new": run_hook(sb, "new", "gpt_review_gate.py", c), "newx": run_hook(sb, "newx", "gpt_review_gate.py", x)}
+    j0 = json.loads(res0["new"].out)["hookSpecificOutput"]
+    assert j0["permissionDecision"] == "allow" and "LOCAL" in j0["permissionDecisionReason"], res0["new"].dump()
+    assert res0["newx"].kind == "allow" and res0["newx"].out.strip() == "" and "LOCAL" in res0["newx"].err, res0["newx"].dump()
     c_h, x_h = pl(sb, PRE, tool="Bash", ti=bash("git commit --dry-run"), cwd=r)
     trio(sb, "gpt_review_gate.py", c_h, x_h, "allow")
     cs, xs = pl(sb, PRE, tool="Bash", ti=bash("git status"), cwd=r)
@@ -489,12 +493,13 @@ def test_gpt_review_gate_stale_receipt_and_scope_and_kill_switch():
     old_ts = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
     write_receipt(sb, r, timestamp=old_ts, final=True)
     c, x = pl(sb, PRE, tool="Bash", ti=bash('git commit -m "x"'), cwd=r)
-    trio(sb, "gpt_review_gate.py", c, x, "deny")  # 30 h old: stale for commit (6 h)
+    res1 = run_hook(sb, "new", "gpt_review_gate.py", c)  # 30 h old: stale commit allowed with a LOCAL warning
+    assert res1.kind == "allow" and "LOCAL" in json.loads(res1.out)["hookSpecificOutput"]["permissionDecisionReason"], res1.dump()
     cp, xp = pl(sb, PRE, tool="Bash", ti=bash("git push"), cwd=r)
     trio(sb, "gpt_review_gate.py", cp, xp, "deny")  # and for push (24 h)
     trio(sb, "gpt_review_gate.py", c, x, "allow", env={"CLAUDE_GPT_REVIEW_GATE": "off"})
     outside = sb.repo("g3", parent=sb.nogit)  # not under the configured roots
-    c, x = pl(sb, PRE, tool="Bash", ti=bash('git commit -m "x"'), cwd=outside)
+    c, x = pl(sb, PRE, tool="Bash", ti=bash("git push"), cwd=outside)  # a push, as a commit is now always allowed
     trio(sb, "gpt_review_gate.py", c, x, "allow")
     res = run_hook(sb, "new", "gpt_review_gate.py", c, {"CLAUDE_GPT_REVIEW_ROOTS": None})
     assert res.kind == "deny", "no roots configured must cover every repo\n" + res.dump()

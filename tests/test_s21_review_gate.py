@@ -100,6 +100,23 @@ def expect(res: Result, kind: str):
     assert res.kind == kind, f"expected {kind}, got {res!r}"
 
 
+NO_RECEIPT_WARNING = "This commit stays LOCAL"
+
+
+def expect_local_warning(res: Result, client="claude", repo_name=None):
+    """S25: a commit without a recent receipt is ALLOWED with a warning (claude: JSON reason; codex: stderr only)."""
+    assert res.kind == "allow", f"expected allow-with-warning, got {res!r}"
+    if client == "claude":
+        assert res.out and NO_RECEIPT_WARNING in res.reason and "no review.js receipt" in res.reason, res
+        text = res.reason
+    else:
+        assert res.out == "" and NO_RECEIPT_WARNING in res.err and "no review.js receipt" in res.err, res
+        text = res.err
+    assert "(push)" not in text, res
+    if repo_name:
+        assert repo_name in text, res
+
+
 # ------------------------------------------------------------------------------------------------ 1. push, ok=false
 def test_push_with_final_receipt_ok_false_is_denied_with_next_steps():
     b = Box()
@@ -176,12 +193,40 @@ def test_words_inside_quotes_or_heredocs_do_not_trigger_the_push_gate():
     expect(b.run("git log --oneline", repo), "allow")
 
 
+def test_plain_commit_without_a_receipt_is_allowed_with_a_local_warning_both_clients():
+    b = Box()
+    repo = b.repo()  # no receipt at all
+    expect_local_warning(b.run("git commit -m x", repo), "claude", "proj")
+    expect_local_warning(b.run("git commit -m x", repo, client="codex"), "codex", "proj")
+
+
+def test_push_without_a_receipt_stays_denied_in_the_same_repo_as_an_allowed_commit():
+    b = Box()
+    repo = b.repo()  # no receipt at all
+    expect_local_warning(b.run("git commit -m x", repo))
+    for client in ("claude", "codex"):
+        r = b.run("git push", repo, client=client)
+        expect(r, "deny")
+        if client == "claude":
+            assert "(push)" in r.reason, r
+
+
+def test_commit_with_a_fresh_ok_false_receipt_still_warns_as_before_and_names_the_error():
+    b = Box()
+    repo = b.repo()
+    b.receipt(repo, ok=False, error=OUTAGE)
+    r = b.run("git commit -m x", repo)
+    expect(r, "allow")
+    assert NO_RECEIPT_WARNING in r.reason and OUTAGE in r.reason and "pm_bridge_mode_on" in r.reason, r
+    # twin: the same repo and the same receipt still deny a push
+    expect(b.run("git push", repo), "deny")
+
+
 def test_commit_message_mentioning_push_is_gated_as_a_commit_only():
     b = Box()
     repo = b.repo()  # no receipt
     r = b.run('git commit -m "fix: git push gate"', repo)
-    expect(r, "deny")
-    assert "(commit)" in r.reason and "(push)" not in r.reason, r
+    expect_local_warning(r)
     # twin: a real push without a receipt is gated as a push
     r = b.run("git push origin main", repo)
     expect(r, "deny")
@@ -504,13 +549,12 @@ def test_mentions_of_push_in_a_commit_are_commits_with_a_recent_receipt():
     expect(b.run("git push", repo), "deny")  # twin: the real push on the same receipt
 
 
-def test_mentions_of_push_in_a_commit_are_denied_as_commits_without_a_receipt():
+def test_mentions_of_push_in_a_commit_are_allowed_with_a_warning_as_commits_without_a_receipt():
     b = Box()
     repo = b.repo()  # no receipt
     for cmd in MENTIONS:
         r = b.run(cmd, repo)
-        expect(r, "deny")
-        assert "(commit)" in r.reason and "(push)" not in r.reason, (cmd, r)
+        expect_local_warning(r)
     expect(b.run('echo "git push"', repo), "allow")  # not a commit, not a push
     r = b.run("git push", repo)  # twin
     expect(r, "deny")
@@ -601,12 +645,11 @@ NOT_PUSHES = [
 
 def test_non_push_twins_never_count_as_a_push():
     b = Box()
-    repo = b.repo()  # no receipt: a commit is denied as a commit, anything else is allowed
+    repo = b.repo()  # no receipt: a commit is allowed with a local warning, anything else silently
     for cmd in NOT_PUSHES:
         r = b.run(cmd, repo)
         if cmd.startswith("git commit"):
-            expect(r, "deny")
-            assert "(commit)" in r.reason and "(push)" not in r.reason, (cmd, r)
+            expect_local_warning(r)
         else:
             assert r.kind == "allow", (cmd, r)
     # with a recent non-final receipt the commits pass, a real push on the same receipt does not
@@ -726,12 +769,9 @@ def test_unreadable_receipts_path_denies_the_push():
 def test_flag_words_inside_quotes_or_glued_to_other_text_do_not_skip_the_gate():
     b = Box()
     repo = b.repo()  # NO receipt: the gate must run
-    r = b.run('git commit -m "fix --dry-run"', repo)
-    expect(r, "deny")
-    assert "(commit)" in r.reason, r
-    r = b.run('git commit -m "fix -h"', repo)
-    expect(r, "deny")
-    assert "(commit)" in r.reason, r
+    # the gate running is visible as the local warning (a skipped gate would be silent)
+    expect_local_warning(b.run('git commit -m "fix --dry-run"', repo))
+    expect_local_warning(b.run('git commit -m "fix -h"', repo))
     for cmd in ("git push origin feature--help", "git push origin main --push-option=--dry-run",
                 "git push -o --dry-run origin main", "git push --push-option --dry-run origin main"):
         _push_denied(b.run(cmd, repo), cmd)
@@ -748,8 +788,7 @@ def test_git_dash_C_commit_is_judged_against_the_other_repository():
     other = b.repo("other")
     b.receipt(mine, ok=True)  # a receipt for the session folder only
     r = b.run(f"git -C {other.as_posix()} commit -m x", mine)
-    expect(r, "deny")
-    assert "(commit)" in r.reason and "other" in r.reason, r
+    expect_local_warning(r, "claude", "other")  # judged against the OTHER repository, which has no receipt
     # twin: a plain commit in the session folder is covered by its receipt
     expect(b.run("git commit -m x", mine), "allow")
     # twin: a receipt for the other repository opens the -C commit, also from a cwd without one
@@ -761,7 +800,8 @@ def test_git_dash_C_commit_is_judged_against_the_other_repository():
     a2 = b2.repo("a2")
     c2 = b2.repo("c2")
     b2.receipt(a2, ok=True)
-    expect(b2.run(f'git -C "{c2}" commit -m x', a2), "deny")
+    expect_local_warning(b2.run(f'git -C "{c2}" commit -m x', a2), "claude", "c2")  # a2's receipt does not cover c2
+    expect(b2.run(f'git -C "{c2}" push', a2), "deny")  # and c2 may not push
 
 
 def test_git_dash_C_commit_into_a_missing_folder_denies():
@@ -853,8 +893,9 @@ def test_push_and_commit_with_only_junk_receipts_deny_without_a_crash():
             r = b.run("git push", repo)
             assert r.kind == "deny" and "(push)" in r.reason, (name, label, r)
             if name == "proj":
+                # junk is not a receipt: the commit is allowed only as the no-receipt local warning, never silently
                 r = b.run("git commit -m x", repo)
-                assert r.kind == "deny" and "(commit)" in r.reason, (label, r)
+                assert r.kind == "allow" and NO_RECEIPT_WARNING in r.reason, (label, r)
     # twin: the same file shape holding a valid receipt opens the push
     b = Box()
     repo = b.repo()
@@ -943,13 +984,13 @@ def test_fifth_commit_options_and_mentions_of_dash_C_are_ordinary_commits_allowe
         assert "does not exist" not in r.reason, (cmd, r)
 
 
-def test_fifth_commit_options_and_mentions_of_dash_C_are_denied_as_commits_without_receipt():
+def test_fifth_commit_options_and_mentions_of_dash_C_are_allowed_with_a_warning_without_receipt():
     b = Box()
     repo = b.repo()
     for cmd in OPTION_MENTIONS:
         r = b.run(cmd, repo)
-        expect(r, "deny")
-        assert "(commit)" in r.reason and "does not exist" not in r.reason, (cmd, r)
+        expect_local_warning(r)
+        assert "does not exist" not in r.reason, (cmd, r)
 
 
 def test_fifth_real_dash_C_commit_existing_other_repo_and_missing_folder():
@@ -957,7 +998,7 @@ def test_fifth_real_dash_C_commit_existing_other_repo_and_missing_folder():
     mine = b.repo("mine")
     other = b.repo("other")
     b.receipt(mine, ok=True)
-    expect(b.run(f"git -C {other.as_posix()} commit -m x", mine), "deny")
+    expect_local_warning(b.run(f"git -C {other.as_posix()} commit -m x", mine), "claude", "other")
     b.receipt(other, ok=True)
     expect(b.run(f"git -C {other.as_posix()} commit -m x", mine), "allow")
     missing = b.root / "nogit" / "missing"
