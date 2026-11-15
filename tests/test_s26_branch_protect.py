@@ -105,6 +105,13 @@ def test_update_ref_set_main_with_sha_denied():
         deny_with(cmd, UPD_REASON)
 
 
+def test_update_ref_main_as_new_value_allowed():
+    for cmd in ["git update-ref refs/heads/feat main", "git update-ref refs/heads/feat refs/heads/main",
+                "git update-ref -m main refs/heads/feat abc1234",
+                "git -C D:/x update-ref refs/heads/s99-sprint main"]:
+        allow(cmd)
+
+
 def test_force_recreate_main_denied():
     for cmd in ["git checkout -B main abc1234", "git switch -C main abc1234", "git switch --force-create main",
                 "git checkout -B master abc1234", "git switch -C MAIN abc1234"]:
