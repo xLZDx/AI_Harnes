@@ -22,6 +22,18 @@ run_py() {
   esac
 }
 cd "$TOP" || exit 0
+# S24: keep the project ledger in step with PROJECT_PLAN.md. Only in the main checkout (a worktree may hold a thinner plan), only when a plan
+# exists and is newer than the ledger, never blocking: a failure is logged. A ledger that would shrink is refused by ledger_sync itself.
+PLAN="$TOP/PROJECT_PLAN.md"
+LEDGER="$COMMON/.harness/ledger.json"
+if [ -f "$T/ledger_sync.py" ] && [ -f "$PLAN" ] && [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] \
+   && { [ ! -f "$LEDGER" ] || [ "$PLAN" -nt "$LEDGER" ]; }; then
+  SOUT="$(run_py "$T/ledger_sync.py" --project "$TOP" 2>&1)"
+  SRC=$?
+  if [ "$SRC" -ne 0 ]; then
+    log_err "pre-commit: ledger_sync exit $SRC: $(printf '%s' "$SOUT" | grep -i 'error' | tail -n 1)"
+  fi
+fi
 OUT="$(run_py "$T/report.py" --stage 2>&1)"
 RC=$?
 if [ "$RC" -ne 0 ]; then
