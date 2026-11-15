@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 UNKNOWN_AFTER_S = 600
+STALE_AFTER_S = 24 * 3600  # S28: an unfinished entry silent for a day is a dead run; archived by the next START
 CAP = 400  # shared by every project on the machine; ledger.py looks runs up here, so keep enough history
 
 
@@ -245,6 +246,23 @@ def _emit(line: str, client: str) -> None:
 CLAIM_WINDOW_S = 120  # a SubagentStart event claims a start line the PreToolUse hook printed at most this long ago
 
 
+def _archive_stale(d: dict, now: float) -> None:
+    """S28: move unfinished entries with no event for STALE_AFTER_S out of the live list into agents/stale.jsonl (appended, never
+    deleted). Finished entries (the ledger's evidence of a run) and fresh ones stay. When the archive cannot be written nothing is
+    removed. Called under the state lock, so it never races another writer."""
+    try:
+        old = [e for e in d["agents"] if not e.get("stop")
+               and now - max(float(e.get("start") or 0), float(e.get("activity") or 0)) > STALE_AFTER_S]
+        if not old:
+            return
+        with open(_state_file().with_name("stale.jsonl"), "a", encoding="utf-8") as f:
+            for e in old:
+                f.write(json.dumps({**e, "archived": now}, ensure_ascii=False) + "\n")
+        d["agents"] = [e for e in d["agents"] if e not in old]
+    except Exception:
+        pass
+
+
 def announce_start(data: dict, client: str, model: str = "", effort: str = "", source: str = "pre",
                    agent_id: str = "") -> None:
     """Print one START line per agent. Two hooks can report the same start (PreToolUse of the Agent/Task tool and the
@@ -272,6 +290,7 @@ def announce_start(data: dict, client: str, model: str = "", effort: str = "", s
         def apply(d: dict):
             res["ran"] = True
             now = time.time()
+            _archive_stale(d, now)
             if aid and any(e.get("agent_id") == aid for e in d["agents"]):
                 res["dup"] = True  # the same agent reported twice, also after its stop: never a second entry
                 return False
