@@ -73,6 +73,18 @@ def test_update_ref_delete_main_denied():
         deny_main(cmd)
 
 
+def test_update_ref_with_message_flag_delete_main_denied():
+    for cmd in ["git update-ref -m reason -d refs/heads/main", 'git update-ref -m "why" --delete refs/heads/master',
+                "git -C D:/x update-ref -m x -d refs/heads/MAIN"]:
+        deny_main(cmd)
+
+
+def test_update_ref_with_message_flag_other_allowed():
+    for cmd in ["git update-ref -m reason -d refs/heads/s99-sprint",
+                "git update-ref -m reason refs/heads/main abc1234"]:
+        allow(cmd)
+
+
 def test_rename_or_force_move_main_denied():
     for cmd in ["git branch -m main x", "git branch -M master x", "git branch -f main abc1234",
                 "git branch --force main abc1234", "git -C D:/x branch -f MAIN abc1234"]:

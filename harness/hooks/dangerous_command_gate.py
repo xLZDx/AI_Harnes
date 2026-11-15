@@ -400,7 +400,8 @@ def classify(seg: str) -> str | None:
         if sub == "update-ref" and any(re.fullmatch(r"-d|--delete", x) for x in toks[2:]):
             # S26 review round 1: the low-level way to delete a branch ref is the same invariant as `git branch -d main`
             refs = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
-            if any(n.lower() in PROTECTED_BRANCHES for n in refs[:1]):
+            # every non-flag token, not only the first: `update-ref -m reason -d refs/heads/main` puts the message first
+            if any(n.lower() in PROTECTED_BRANCHES for n in refs):
                 return "deleting the main project branch (main/master) is never allowed"
         if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[mMfF][A-Za-z]*|--move|--force", x) for x in toks[2:]):
             # renaming or force-moving main/master away is a deletion in effect: the source name is the first name
