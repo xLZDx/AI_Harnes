@@ -21,9 +21,9 @@ MAIN_REASON = "deleting the main project branch (main/master) is never allowed"
 CLIENTS = ("claude", "codex")
 
 
-def decide(cmd, client="claude"):
+def decide(cmd, client="claude", cwd=None):
     payload = {"session_id": "s26", "hook_event_name": "PreToolUse", "tool_name": "Bash",
-               "tool_input": {"command": cmd}, "cwd": str(ROOT)}
+               "tool_input": {"command": cmd}, "cwd": str(cwd or ROOT)}
     if client == "codex":
         payload["turn_id"] = "t1"
     cp = subprocess.run([sys.executable, "-s", str(HOOK), f"--harness-client={client}"], input=json.dumps(payload),
@@ -110,6 +110,53 @@ def test_update_ref_main_as_new_value_allowed():
                 "git update-ref -m main refs/heads/feat abc1234",
                 "git -C D:/x update-ref refs/heads/s99-sprint main"]:
         allow(cmd)
+
+
+def _git(repo, *args):
+    cp = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=str(repo),
+                        capture_output=True, text=True)
+    assert cp.returncode == 0, (args, cp.stderr)
+
+
+def _repo(branch):
+    import tempfile
+    d = Path(tempfile.mkdtemp(prefix="s26r_")).resolve()
+    _git(d, "init", "-q", "-b", "main")
+    _git(d, "commit", "-q", "--allow-empty", "-m", "c")
+    if branch != "main":
+        _git(d, "checkout", "-q", "-b", branch)
+    return d
+
+
+def _case(cmd, cwd, want, reason=None):
+    for c in CLIENTS:
+        got, why = decide(cmd, c, cwd=cwd)
+        assert got == want, f"[{c}] expected {want} for {cmd!r} cwd={cwd}, got {got}: {why[:200]}"
+        if reason:
+            assert reason in why, f"[{c}] wrong reason for {cmd!r}: {why[:200]}"
+
+
+RENAME_REASON = "renaming the checked-out branch (main/master or unknown) is never allowed"
+STDIN_REASON = "update-ref --stdin can change main/master unseen and is never allowed"
+
+
+def test_update_ref_stdin_denied():
+    for cmd in ["git update-ref --stdin", "git update-ref -z --stdin", "git -C D:/x update-ref --stdin"]:
+        deny_with(cmd, STDIN_REASON)
+
+
+def test_rename_checked_out_branch():
+    import tempfile
+    mainr, featr = _repo("main"), _repo("feat")
+    nonrepo = Path(tempfile.mkdtemp(prefix="s26n_")).resolve()
+    for flag in ("-m", "-M", "--move"):
+        _case(f"git branch {flag} renamed", mainr, "deny", RENAME_REASON)
+    _case("git branch -m renamed", featr, "allow")
+    _case(f"git -C {mainr.as_posix()} branch -m renamed", featr, "deny", RENAME_REASON)
+    _case(f"git -C {featr.as_posix()} branch -m renamed", mainr, "allow")
+    _case("git branch -m renamed", nonrepo, "deny", RENAME_REASON)
+    _case("git branch -m feat feat2", featr, "allow")
+    _case("git branch -m feat feat2", mainr, "allow")
 
 
 def test_force_recreate_main_denied():
