@@ -38,7 +38,7 @@ import plan_import_ledger_md  # noqa: E402
 import report  # noqa: E402
 
 SKIP = {"virtual_marketing_company"}
-BACKUP_DIR = Path(r"D:\Backup")
+BACKUP_DIR = Path(os.environ.get("HARNESS_BACKUP_DIR") or r"D:\Backup")  # S24: machines without a D: drive set HARNESS_BACKUP_DIR; else see _backup_dir()
 COPY_MARKERS = ("canonical plan row", "reconciled from committed sprint ledger")
 
 
@@ -243,10 +243,17 @@ def counts(d: dict) -> dict:
 
 def make_backup(path: Path, project: str) -> Path:
     """Unique backup (microseconds + pid, exclusive create), checked readable and equal in size before the ledger is replaced."""
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    bdir = BACKUP_DIR
+    if os.name != "nt" and not os.environ.get("HARNESS_BACKUP_DIR"):
+        bdir = path.parent / "backup"  # the D:\ default has no meaning here
+    try:
+        bdir.mkdir(parents=True, exist_ok=True)
+    except OSError:  # no such drive: keep the backup next to the ledger instead of failing the sync
+        bdir = path.parent / "backup"
+        bdir.mkdir(parents=True, exist_ok=True)
     data = path.read_bytes()
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup = BACKUP_DIR / f"ledger-sync-{project}-{stamp}-{os.getpid()}.json"
+    backup = bdir / f"ledger-sync-{project}-{stamp}-{os.getpid()}.json"
     with open(backup, "xb") as f:  # FileExistsError (an OSError) if the name is taken: never overwrite another backup
         f.write(data)
         f.flush()

@@ -531,7 +531,8 @@ def build(python: str = "") -> int:
     return 0
 
 
-TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py", "workflow_guard.py", "lessons.py")
+TOOL_FILES = ("ledger.py", "route.py", "report.py", "worktree_gc.py", "plan_ledger.py", "workflow_guard.py", "lessons.py",
+              "ledger_sync.py", "plan_import_master_md.py", "plan_import_ledger_md.py")  # the last three: the pre-commit ledger sync (S24)
 LESSON_MODULES = ("_lessons.py", "_agentio.py", "secret_policy.py")  # harness/hooks/* -> <project>/.harness-tools/
 REPORT_ASSETS = ("report.css", "filter.js", "copy.js")  # harness/report/* -> <project>/.harness-tools/report/
 HOOKS = ("pre-commit", "post-commit", "pre-push", "post-merge")
