@@ -159,8 +159,23 @@ def find_task(data: dict, tid: str) -> tuple[dict, dict]:
     sys.exit(f"ledger: task {tid} not found")
 
 
-def active_sprint(data: dict) -> dict | None:
-    return next((s for s in data["sprints"] if s["state"] != "closed"), None)
+def current_branch(cwd=None) -> str | None:
+    """Branch checked out in cwd (the work copy the command runs in); None when detached or not a repository."""
+    try:
+        return git("symbolic-ref", "--short", "-q", "HEAD", cwd=cwd, check=False) or None
+    except GitError:
+        return None
+
+
+def active_sprint(data: dict, branch: str | None = None) -> dict | None:
+    """The unclosed sprint whose `branch` equals the given branch (B71: the sprint of the work being done), else the
+    first unclosed one. Without a branch this is the first unclosed sprint."""
+    unclosed = [s for s in data["sprints"] if s["state"] != "closed"]
+    if branch:
+        mine = next((s for s in unclosed if s.get("branch") == branch), None)
+        if mine:
+            return mine
+    return unclosed[0] if unclosed else None
 
 
 def counter(sprint: dict) -> tuple[int, int]:
@@ -276,7 +291,7 @@ def c_task_add(a, d):
         if not s:
             sys.exit(f"ledger: sprint {a.sprint} not found")
     else:
-        s = active_sprint(d)
+        s = active_sprint(d, current_branch())
     if not s:
         sys.exit("ledger: no open sprint; run sprint-add first")
     tid = a.id or f"{s['id']}-T{len(s['tasks']) + 1}"
@@ -290,7 +305,7 @@ def c_task_add(a, d):
 
 
 def c_next(a, d):
-    s = active_sprint(d)
+    s = active_sprint(d, current_branch())
     if not s:
         print("no open sprint")
         return
@@ -569,19 +584,27 @@ def c_approve(a, d):
 
 
 def c_reopen(a, d):
-    """Undo a wrong sprint close: the sprint is open again, every task's verify and review are cleared (to be recorded
-    again with real agent runs) and an approval of a commit on this sprint is dropped. History stays in the events."""
+    """Undo a wrong sprint close: the sprint is open again. By default every task's verify and review are cleared (to be
+    recorded again with real agent runs) and the GPT-PM approval is dropped; with --keep-evidence both stay as they are
+    (the approval is bound to an exact HEAD, so a new commit still needs a new review). History stays in the events."""
     s = next((s for s in d["sprints"] if s["id"] == a.id), None)
     if not s:
         sys.exit(f"ledger: sprint {a.id} not found")
     s["state"], s["closed"] = "open", None
-    for t in s["tasks"]:
-        t["verify"], t["review"] = None, None
-        recompute(t)
-    dropped = bool(d.get("approval"))
-    d["approval"] = None
-    event(d, "sprint-reopen", sprint=a.id, reason=a.reason, approval_dropped=dropped)
-    print(f"sprint {a.id} reopened; verify/review cleared for {len(s['tasks'])} task(s); approval dropped={dropped}")
+    keep = bool(getattr(a, "keep_evidence", False))
+    dropped = False
+    if not keep:
+        for t in s["tasks"]:
+            t["verify"], t["review"] = None, None
+            recompute(t)
+        dropped = bool(d.get("approval"))
+        d["approval"] = None
+    event(d, "sprint-reopen", sprint=a.id, reason=a.reason, approval_dropped=dropped, evidence_kept=keep)
+    if keep:
+        print(f"sprint {a.id} reopened; evidence kept: verify/review of {len(s['tasks'])} task(s) and the GPT-PM approval are unchanged")
+    else:
+        print(f"sprint {a.id} reopened; CLEARED verify and review of {len(s['tasks'])} task(s) (they must be recorded again) "
+              f"and the GPT-PM approval (approval dropped={dropped}); use --keep-evidence to keep them")
 
 
 def is_ancestor(a: str, b: str) -> bool:
@@ -714,6 +737,7 @@ def main(argv=None) -> int:
     sub.add_parser("check-approval")
     x = sub.add_parser("sprint-close"); x.add_argument("id"); x.add_argument("--force", action="store_true")
     x = sub.add_parser("reopen"); x.add_argument("id"); x.add_argument("--reason", required=True)
+    x.add_argument("--keep-evidence", action="store_true", help="keep every task's verify and review and the GPT-PM approval (default: clear all of them)")
     sub.add_parser("status")
     x = sub.add_parser("ack-errors"); x.add_argument("--reason", required=True, help="why the open hook errors are acknowledged")
     a = p.parse_args(argv)
