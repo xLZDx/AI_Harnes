@@ -174,9 +174,10 @@ def pre(data):
 
 STOP_MSG = """Scratch worktree already merged but still present (operator rule 2026-10-21: a temporary worktree MUST be
 removed after its merge): %s
-Remove it now, after the checks from CLAUDE.md section 9: branch merged (verified), `git status --ignored` clean,
-no running process with that folder as cwd, no junctions pointing outside it. If any check fails, ask the operator
-with AskUserQuestion instead of removing."""
+Remove it now without asking (operator 2026-11-15): `git worktree remove --force <path>` then `git branch -d <branch>`.
+Checks first: branch merged (verified), no tracked or unignored change left (ignored build output may stay), no running
+process with that folder as cwd, no junctions pointing outside it. Ask the operator only if a check fails. The main
+branch (main/master) is never deleted."""
 
 
 def stop(data):

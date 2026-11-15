@@ -313,6 +313,10 @@ def skip_git_global_options(toks: list[str]) -> list[str]:
     return toks[:1] + toks[i:]
 
 
+# S26: branches that are never deleted (the main project branch), locally or on the remote
+PROTECTED_BRANCHES = {"main", "master"}
+
+
 def has_long(seg: str, name: str) -> bool:
     return bool(name and re.search(r"(?<!\S)--" + re.escape(name) + r"(?:=\S+)?(?!\w)", seg))
 
@@ -388,6 +392,11 @@ def classify(seg: str) -> str | None:
             return "`git reset --hard`"
         if sub == "clean" and has_flag(seg, "f", "force"):
             return "`git clean -f`"
+        if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[dD][A-Za-z]*|--delete", x) for x in toks[2:]):
+            # S26 (operator 2026-11-15): the main project branch is never deleted, whatever the flag (-d, -D, --delete)
+            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            if any(n.lower() in PROTECTED_BRANCHES for n in names):
+                return "deleting the main project branch (main/master) is never allowed"
         if sub == "branch" and has_short(seg, "D"):
             return "forced branch deletion"
         if sub == "checkout" and "--" in toks[2:]:
