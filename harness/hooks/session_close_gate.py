@@ -267,11 +267,63 @@ def ledger_projects(data: dict) -> tuple[dict, set]:
     return roots, mine
 
 
-def ledger_open_tasks(root: Path, mine: set) -> list[tuple[str, str]] | None:
-    """Open tasks of the first non-closed sprint that this session should finish; None = ledger unreadable."""
+GIT_C_RE = re.compile(r"\bgit(?:\.exe)?\s+-C\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))")
+
+
+def _branch_of(path: str) -> str | None:
+    """Branch checked out in the work copy that holds path (a file or folder); None when unknown or detached."""
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            return None
+        p = p.resolve()
+        while not p.is_dir() and p.parent != p:
+            p = p.parent
+        r = _agentio.run_git(["-C", str(p), "symbolic-ref", "--short", "-q", "HEAD"], timeout=GIT_TIMEOUT)
+        out = r.stdout.strip() if r.returncode == 0 else ""
+        return out or None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def work_branches(data: dict) -> list[str]:
+    """B71: branches of the work copies this session works in (start cwd, cwd, folders of Edit/Write paths and of
+    `git -C <dir>` commands), in that order. The ledger sits in the main checkout, whose own branch says nothing about
+    which sprint this session belongs to."""
+    paths = [_start_cwd(data.get("transcript_path") or ""), data.get("cwd") or ""]
+    tp = data.get("transcript_path") or ""
+    for r in (_agentio.records(tp) if tp else []):
+        if r.get("kind") != "tool_use":
+            continue
+        inp = r.get("input") if isinstance(r.get("input"), dict) else {}
+        if r.get("name") in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+            paths += [str(inp[k]) for k in ("file_path", "notebook_path") if inp.get(k)]
+        for m in GIT_C_RE.finditer(str(inp.get("command") or "")):
+            paths.append(m.group(1) or m.group(2) or m.group(3))
+    out: list[str] = []
+    for p in paths:
+        b = _branch_of(p) if p else None
+        if b and b not in out:
+            out.append(b)
+    return out
+
+
+def pick_sprint(led: dict, branches: list[str]) -> dict | None:
+    """The unclosed sprint of the first work-copy branch that names one, else the first unclosed sprint."""
+    unclosed = [s for s in led["sprints"] if s.get("state") != "closed"]
+    for b in branches:
+        hit = next((s for s in unclosed if s.get("branch") == b), None)
+        if hit:
+            return hit
+    return unclosed[0] if unclosed else None
+
+
+def ledger_open_tasks(root: Path, mine: set, branches: list[str] | None = None) -> list[tuple[str, str]] | None:
+    """Open tasks of the sprint that this session should finish (the unclosed sprint of its work-copy branch, else the
+    first unclosed one); None = ledger unreadable."""
     try:
         led = json.loads((root / ".harness" / "ledger.json").read_text(encoding="utf-8"))
-        sprint = next((s for s in led["sprints"] if s.get("state") != "closed"), None)
+        sprint = pick_sprint(led, branches or [])
         if sprint is None:
             return []
         out = []
@@ -296,8 +348,9 @@ def ledger_stop(data: dict, msg: str, waiting: list | None = None) -> bool:
         return False
     state = load_state()
     streaks = state.setdefault("ledger", {})
+    branches = work_branches(data)
     for root in roots:
-        tasks = ledger_open_tasks(root, mine)
+        tasks = ledger_open_tasks(root, mine, branches)
         key = str(root)
         if tasks is None:
             log({"event": "stop", "verdict": "ledger-unreadable", "project": key})

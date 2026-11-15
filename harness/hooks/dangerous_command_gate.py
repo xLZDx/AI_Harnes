@@ -334,6 +334,23 @@ def current_branch(toks: list[str]) -> str | None:
     return r.stdout.strip() or None if r.returncode == 0 else None
 
 
+BRANCH_VALUE_OPTIONS = {"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--format", "--sort",
+                        "--set-upstream-to", "-u", "--column", "--abbrev"}  # S27: `git branch` options that take a value
+
+
+def branch_names(args: list[str]) -> list[str]:
+    """Positional names of a `git branch` argument list, without the values of options like `--contains main`."""
+    out, skip = [], False
+    for x in args:
+        if skip:
+            skip = False
+        elif x in BRANCH_VALUE_OPTIONS:
+            skip = True
+        elif not x.startswith("-"):
+            out.append(x)
+    return out
+
+
 def has_long(seg: str, name: str) -> bool:
     return bool(name and re.search(r"(?<!\S)--" + re.escape(name) + r"(?:=\S+)?(?!\w)", seg))
 
@@ -410,9 +427,16 @@ def classify(seg: str) -> str | None:
             return "`git reset --hard`"
         if sub == "clean" and has_flag(seg, "f", "force"):
             return "`git clean -f`"
+        if sub == "symbolic-ref" and any(x in {"-d", "--delete"} for x in toks[2:]):
+            return "`git symbolic-ref -d` can drop HEAD or a remote default pointer and is never allowed"  # S27 (B72)
         if sub == "branch" and any(re.fullmatch(r"-[A-Za-z]*[dD][A-Za-z]*|--delete", x) for x in toks[2:]):
             # S26 (operator 2026-11-15): the main project branch is never deleted, whatever the flag (-d, -D, --delete)
-            names = [re.sub(r"^refs/heads/", "", x) for x in toks[2:] if not x.startswith("-")]
+            # S27 (B72): `-dr origin/main` / `-d -r origin/main` drop the remote-tracking ref of main; values of options such as
+            # `--contains main` are not branch names
+            remote = any(re.fullmatch(r"-[A-Za-z]*r[A-Za-z]*|--remotes", x) for x in toks[2:])
+            names = [re.sub(r"^refs/(heads|remotes)/", "", x) for x in branch_names(toks[2:])]
+            if remote:
+                names = [n.split("/", 1)[-1] for n in names]
             if any(n.lower() in PROTECTED_BRANCHES for n in names):
                 return "deleting the main project branch (main/master) is never allowed"
         if sub == "update-ref" and any(x in {"--stdin", "-z"} for x in toks[2:]):

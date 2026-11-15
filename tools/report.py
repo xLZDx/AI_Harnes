@@ -343,7 +343,7 @@ def sprint_row(g: Git, s: dict, active_id: str | None) -> str:
 
 
 def sec_sprints(d: dict, g: Git) -> str:
-    act = ledger.active_sprint(d) if d.get("sprints") else None
+    act = ledger.active_sprint(d, g.out("symbolic-ref", "--short", "-q", "HEAD") or None) if d.get("sprints") else None
     legend = "".join(f'<span><i class="swatch {GROUP_CSS[k][0]}"></i> {E(lab)}</span>' for k, lab in GROUPS)
     rows = "".join(sprint_row(g, s, act["id"] if act else None) for s in d.get("sprints", [])) or '<p class="muted">Спринтов в реестре нет.</p>'
     return ('<section class="panel" id="sprint-distribution"><h2 id="sprint-charts">Распределение по спринтам</h2>'
@@ -377,7 +377,7 @@ def risk_text(t: dict) -> str:
 
 
 def sec_active(d: dict, g: Git) -> str:
-    s = ledger.active_sprint(d) if d.get("sprints") else None
+    s = ledger.active_sprint(d, g.out("symbolic-ref", "--short", "-q", "HEAD") or None) if d.get("sprints") else None
     s = s or (d["sprints"][-1] if d.get("sprints") else None)
     head = '<section class="panel" id="active-sprint"><h2>Активный спринт</h2>'
     if not s:
