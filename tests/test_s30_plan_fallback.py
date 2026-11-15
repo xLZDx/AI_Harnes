@@ -39,6 +39,16 @@ def test_text_plan_written_after_a_deny_counts_on_retry():
     check(p.returncode == 0 and p.stdout.strip() == "", f"retry after a deny with a text plan was denied: {p.stdout!r}")
 
 
+def test_allowed_change_whose_output_mentions_plan_first_is_still_a_change():
+    from test_plan_first_gate import use, result
+    edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
+    for out in ("edited; the file now says PLAN FIRST in a comment", "diff: + DENY_MSG = PLAN FIRST (operator 2026-11-12): x"):
+        rows = [human("Fix the parser bug"), asst(use("e1", "Edit", edit)), result("e1", out, False),
+                asst(text(TEXT_PLAN)), asst(use("e2", "Edit", edit))]
+        e, p = edit_denied(rows, "s30abuse")
+        check(denied(p), f"a real change whose output mentions PLAN FIRST hid itself: {out!r}")
+
+
 def test_text_plan_written_after_a_real_change_still_does_not_count():
     from test_plan_first_gate import use, result
     edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
