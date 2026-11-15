@@ -39,6 +39,28 @@ def test_text_plan_written_after_a_deny_counts_on_retry():
     check(p.returncode == 0 and p.stdout.strip() == "", f"retry after a deny with a text plan was denied: {p.stdout!r}")
 
 
+def test_real_wrapped_deny_result_is_recognised():
+    """Claude Code delivers the hook deny as 'PreToolUse:<Tool> hook error: <reason>' (real transcript shape); Codex: is_error None."""
+    from test_plan_first_gate import use, result
+    edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
+    wrapped = "PreToolUse:Edit hook error: PLAN FIRST (operator 2026-11-12): the operator must see the work plan"
+    for name, res in (("err-true", result("e1", wrapped, True)),
+                      ("list", result("e1", [{"type": "text", "text": wrapped}], True))):
+        rows = [human("Fix the parser bug"), asst(use("e1", "Edit", edit)), res, asst(text(TEXT_PLAN)), asst(use("e2", "Edit", edit))]
+        e, p = edit_denied(rows, "s30wrap" + name)
+        check(p.returncode == 0 and p.stdout.strip() == "", f"{name}: retry after a wrapped deny was denied: {p.stdout!r}")
+
+
+def test_successful_call_mentioning_the_prefix_early_is_still_a_change():
+    from test_plan_first_gate import use, result
+    edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}
+    out = "PLAN FIRST (operator 2026-11-12): printed by a command that succeeded"
+    rows = [human("Fix the parser bug"), asst(use("e1", "Edit", edit)), result("e1", out, False),
+            asst(text(TEXT_PLAN)), asst(use("e2", "Edit", edit))]
+    e, p = edit_denied(rows, "s30succ")
+    check(denied(p), "a successful change with the prefix in its output hid itself")
+
+
 def test_allowed_change_whose_output_mentions_plan_first_is_still_a_change():
     from test_plan_first_gate import use, result
     edit = {"file_path": r"D:\Repo\proj\src\app.py", "old_string": "a", "new_string": "b"}

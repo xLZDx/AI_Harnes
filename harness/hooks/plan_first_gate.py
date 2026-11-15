@@ -90,6 +90,13 @@ def is_mutation(data: dict) -> bool:
     return False
 
 
+def own_deny(c: dict) -> bool:
+    """True when this call's result is the deny this gate issued. Claude Code wraps a hook deny as
+    'PreToolUse:<Tool> hook error: <reason>' (seen in real transcripts), so the prefix is looked for in the first 120 characters,
+    and the call must be an error (is_error True, or unknown = None as in Codex); a successful call never counts."""
+    return c.get("is_error") is not False and DENY_PREFIX in (c.get("result") or "")[:120]
+
+
 def plan_presented(turn: dict) -> tuple[bool, str]:
     """(ok, how) from the current turn's transcript."""
     task_steps: list[str] = []
@@ -112,7 +119,7 @@ def plan_presented(turn: dict) -> tuple[bool, str]:
         return True, "task-create"
     # (b) the plan written as text before the first change
     # a call this gate itself denied never happened: a plan written after that deny (the deny text asks for it) still counts
-    first_change = next((i for i, c in enumerate(turn["calls"]) if c["name"] not in PLAN_TOOLS and not (c["result"] or "").lstrip().startswith(DENY_PREFIX) and
+    first_change = next((i for i, c in enumerate(turn["calls"]) if c["name"] not in PLAN_TOOLS and not own_deny(c) and
                          is_mutation({"tool_name": c["name"], "tool_input": c["input"]})), None)  # same test as the PreToolUse gate: reading is not a change
     limit = turn["calls"][first_change]["texts_before"] if first_change is not None else len(turn["assistant_texts"])
     for t in turn["assistant_texts"][:max(limit, 0)] if first_change is not None else turn["assistant_texts"]:
