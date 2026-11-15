@@ -898,7 +898,7 @@ _REDIRECT_OP_RE = re.compile(
 # the null device: `cmd > /dev/null 2>&1` in a POSIX shell; `> $null` and `> NUL` only in PowerShell (a bash variable `$null` is
 # an ordinary variable and `> nul` in Git Bash may create a file) (S24)
 _NULL_DEVICES_POSIX = {"/dev/null"}
-_NULL_DEVICES_PS = {"/dev/null", "$null", "nul", "nul:"}
+_NULL_DEVICES_PS = {"$null", "nul", "nul:"}  # not /dev/null: in Windows PowerShell it is an ordinary path (GPT-PM round 1)
 _SCRATCHPAD_SEGMENT_RE = re.compile(r"[\\/]scratchpad[\\/]", re.IGNORECASE)
 
 

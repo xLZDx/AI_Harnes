@@ -113,7 +113,9 @@ def test_powershell_mode_nul_and_null_are_free():
     assert_free("cmd > NUL", ps=True)
     assert_free("cmd > nul", ps=True)
     assert_free("cmd 2> $null", ps=True)
-    assert_free("cmd > /dev/null", ps=True)
+    # `/dev/null` is an ordinary path in Windows PowerShell, not a null device (GPT-PM round 1): it asks
+    assert_go("cmd > /dev/null", ps=True)
+    assert_go("cmd 2> /dev/null", ps=True)
 
 
 def test_null_devices_need_no_go():
