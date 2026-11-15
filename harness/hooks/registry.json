@@ -4,7 +4,7 @@
   {
    "event": "PreToolUse",
    "script": "shell_policy_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "shell policy",
    "claude": "Bash|PowerShell",
    "codex": "Bash"
@@ -12,7 +12,7 @@
   {
    "event": "PreToolUse",
    "script": "rules_gate.py",
-   "timeout": 20,
+   "timeout": 30,
    "status": "operator rules gate",
    "claude": "Bash|PowerShell",
    "codex": "Bash"
@@ -52,28 +52,28 @@
   {
    "event": "PreToolUse",
    "script": "plan_approval_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "plan approval gate",
    "claude": "ExitPlanMode"
   },
   {
    "event": "PreToolUse",
    "script": "question_policy.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "question policy",
    "claude": "AskUserQuestion"
   },
   {
    "event": "PreToolUse",
    "script": "ask_last_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "ask last gate",
    "claude": "AskUserQuestion"
   },
   {
    "event": "PreToolUse",
    "script": "secret_guard.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "secret guard",
    "claude": "Bash|PowerShell|Read|Grep",
    "codex": "Bash"
@@ -81,7 +81,7 @@
   {
    "event": "PostToolUse",
    "script": "secret_guard.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "secret scan",
    "claude": "Bash|PowerShell",
    "codex": "Bash"
@@ -89,14 +89,14 @@
   {
    "event": "PostToolUseFailure",
    "script": "secret_guard.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "secret scan (failed call)",
    "claude": "Bash|PowerShell"
   },
   {
    "event": "Stop",
    "script": "ask_last_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "ask last check",
    "claude": "",
    "codex": ""
@@ -112,7 +112,7 @@
   {
    "event": "PreToolUse",
    "script": "plan_first_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "plan first gate",
    "claude": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell",
    "codex": "Bash|apply_patch"
@@ -120,7 +120,7 @@
   {
    "event": "Stop",
    "script": "plan_first_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "plan first check",
    "claude": "",
    "codex": ""
@@ -128,7 +128,7 @@
   {
    "event": "PreToolUse",
    "script": "agent_model_gate.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "agent model policy",
    "claude": "Agent",
    "codex": "spawn_agent"
@@ -136,7 +136,7 @@
   {
    "event": "PreToolUse",
    "script": "lessons_recall.py",
-   "timeout": 5,
+   "timeout": 15,
    "status": "global lessons recall",
    "claude": "Bash|PowerShell|Agent|Task|Edit|Write|MultiEdit|mcp__pm-bridge__gpt_send.*",
    "codex": "Bash|apply_patch|spawn_agent"
@@ -144,7 +144,7 @@
   {
    "event": "PreCompact",
    "script": "decision_log_precompact.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "decision log",
    "claude": "",
    "codex": ""
@@ -152,7 +152,7 @@
   {
    "event": "Stop",
    "script": "evidence_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "citation check",
    "claude": "",
    "codex": ""
@@ -160,7 +160,7 @@
   {
    "event": "Stop",
    "script": "unverified_claim_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "unverified claim check",
    "claude": "",
    "codex": ""
@@ -176,7 +176,7 @@
   {
    "event": "Stop",
    "script": "keep_going_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "keep-going check",
    "claude": "",
    "codex": ""
@@ -192,7 +192,7 @@
   {
    "event": "Stop",
    "script": "decision_explain_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "decision refs check",
    "claude": "",
    "codex": ""
@@ -208,7 +208,7 @@
   {
    "event": "Stop",
    "script": "question_policy.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "question policy",
    "claude": "",
    "codex": ""
@@ -224,7 +224,7 @@
   {
    "event": "SubagentStop",
    "script": "evidence_gate.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "citation check",
    "claude": "",
    "codex": ""
@@ -240,7 +240,7 @@
   {
    "event": "SubagentStart",
    "script": "agent_visibility.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "agent start line",
    "claude": "",
    "codex": ""
@@ -248,14 +248,14 @@
   {
    "event": "PreToolUse",
    "script": "agent_visibility.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "agent start line (fallback)",
    "claude": "Agent|Task"
   },
   {
    "event": "SubagentStop",
    "script": "agent_visibility.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "agent stop line",
    "claude": "",
    "codex": ""
@@ -263,7 +263,7 @@
   {
    "event": "UserPromptSubmit",
    "script": "decision_log_reminder.py",
-   "timeout": 15,
+   "timeout": 30,
    "status": "decision log reminder",
    "claude": "",
    "codex": ""
@@ -279,7 +279,7 @@
   {
    "event": "UserPromptSubmit",
    "script": "agents_context.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "running agents line",
    "claude": "",
    "codex": ""
@@ -287,7 +287,7 @@
   {
    "event": "UserPromptSubmit",
    "script": "question_policy.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "question policy report",
    "claude": "",
    "codex": ""
@@ -303,7 +303,7 @@
   {
    "event": "PostToolUse",
    "script": "session_close_gate.py",
-   "timeout": 20,
+   "timeout": 30,
    "status": "PR event",
    "claude": "Bash",
    "codex": "Bash"
@@ -318,7 +318,7 @@
   {
    "event": "Notification",
    "script": "question_policy.py",
-   "timeout": 10,
+   "timeout": 30,
    "status": "notification log",
    "claude": "permission_prompt|idle_prompt"
   }
