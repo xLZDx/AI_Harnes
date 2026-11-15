@@ -301,8 +301,17 @@ def work_branches(data: dict) -> list[str]:
         for m in GIT_C_RE.finditer(str(inp.get("command") or "")):
             paths.append(m.group(1) or m.group(2) or m.group(3))
     out: list[str] = []
+    seen: set[str] = set()
     for p in paths:
-        b = _branch_of(p) if p else None
+        if not p:
+            continue
+        key = p if os.path.isdir(p) else os.path.dirname(p)  # one git call per folder, not per file
+        if key in seen:
+            continue
+        if len(seen) >= 24:  # a bounded number of git calls at Stop, however long the session was
+            break
+        seen.add(key)
+        b = _branch_of(p)
         if b and b not in out:
             out.append(b)
     return out

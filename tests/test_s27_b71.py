@@ -281,6 +281,67 @@ def test_classify_branch_and_symbolic_ref():
         assert not dg.classify(c), "must allow: %s (got %r)" % (c, dg.classify(c))
 
 
+def test_classify_branch_option_forms():
+    dg = load("dangerous_command_gate2", HOOKS / "dangerous_command_gate.py")
+    refuse = ["git branch -D --abbrev main", "git branch -d --column main", "git branch --del main",
+              "git branch --dele main", "git branch -dr foo/bar/main", "git symbolic-ref -dq HEAD",
+              "git symbolic-ref --del HEAD", "git symbolic-ref --delete HEAD"]
+    allow = ["git branch --abbrev=7", "git branch -d x --contains main", "git branch -d feature/main-menu",
+             "git symbolic-ref HEAD", "git branch --contains main"]
+    bad = [c for c in refuse if not dg.classify(c)]
+    assert not bad, "must refuse: %s" % bad
+    bad = ["%s (got %r)" % (c, dg.classify(c)) for c in allow if dg.classify(c)]
+    assert not bad, "must allow: %s" % bad
+
+
+def _edit_row(i, path):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "e%d" % i, "name": "Edit",
+         "input": {"file_path": str(path), "old_string": "x", "new_string": "y"}}]}}
+
+
+def _folder_of(p):
+    return p if os.path.isdir(p) else os.path.dirname(p)
+
+
+def test_work_branches_one_git_call_per_folder():
+    gate = load("session_close_gate4", HOOKS / "session_close_gate.py")
+    base = hv2.fresh("b71cnt")
+    cwd = base / "cwd"
+    folders = [base / ("f%d" % i) for i in range(3)]
+    for d in [cwd, *folders]:
+        d.mkdir()
+    calls = []
+
+    def fake(path):
+        calls.append(path)
+        return "br-" + os.path.basename(_folder_of(path))
+
+    orig = gate._branch_of
+    gate._branch_of = fake
+    try:
+        rows = [_edit_row(i, folders[i % 3] / ("file%d.txt" % i)) for i in range(50)]
+        tp = base / "t.jsonl"
+        tp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+        got = gate.work_branches({"cwd": str(cwd), "transcript_path": str(tp)})
+        assert len(calls) <= 4, len(calls)
+        assert set(got) == {"br-cwd", "br-f0", "br-f1", "br-f2"}, got
+        assert got[0] == "br-cwd", got
+
+        calls.clear()
+        many = [base / ("m%d" % i) for i in range(40)]
+        for d in many:
+            d.mkdir()
+        rows = [_edit_row(i, many[i] / "a.txt") for i in range(40)]
+        tp2 = base / "t2.jsonl"
+        tp2.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+        got = gate.work_branches({"cwd": str(cwd), "transcript_path": str(tp2)})
+        assert len(calls) <= 24, len(calls)
+        assert len(got) >= 2 and got[0] == "br-cwd" and got[1] == "br-m0", got
+    finally:
+        gate._branch_of = orig
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 if __name__ == "__main__":
