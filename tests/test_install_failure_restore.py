@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-TOOLS = Path(__file__).resolve().parent.parent / "tools"
+TOOLS = Path(__file__).resolve().parent.parent / "tools"  # TEMP path edit, revert on copy-back
 PS = shutil.which("powershell")
 _TMPS = []
 SKIPS = []
@@ -118,7 +118,9 @@ def t_claude_n_too_large_succeeds():
     src, home, snap = claude_env()
     rc, out = run_cli("install_claude.py", home, snap, src, "99")
     assert rc == 0, out
-    assert json.loads((home / "settings.json").read_text(encoding="utf-8"))["hooks"] == C_NEW["hooks"]
+    got = json.loads((home / "settings.json").read_text(encoding="utf-8"))["hooks"]
+    # every harness group unchanged, plus the kept foreign Stop group; nothing else
+    assert got == {**C_NEW["hooks"], "Stop": C_OLD["hooks"]["Stop"]}, got
     assert not (home / "settings.json.tmp").exists()
 
 
