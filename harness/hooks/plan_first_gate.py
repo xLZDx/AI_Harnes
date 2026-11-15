@@ -127,7 +127,9 @@ def deny(reason: str) -> None:
 
 DENY_MSG = ("PLAN FIRST (operator 2026-11-12): the operator must see the work plan before the first change. Call the plan tool "
             "(update_plan) now with at least 2 concrete steps (12+ characters each, one of them a verification step such as tests or "
-            "a check), or write the numbered plan in your message, then continue. Denied %d of %d.")
+            "a check), or write the numbered plan in your message, then continue. If your model has no plan tool (update_plan is not "
+            "available), the numbered list in your message is the plan and is accepted: write it before the first change, do not stop "
+            "and do not report a blocker. Denied %d of %d.")
 
 
 def counters(session: str, marker: str) -> tuple[Path, dict]:
@@ -215,7 +217,8 @@ def on_stop(data: dict) -> None:
     log({"event": "stop-block", "session": str(data.get("session_id"))[:8]})
     print(json.dumps({"decision": "block", "reason": "PLAN FIRST: this turn changed things but no presented plan exists. "
                       "Call update_plan with the steps you took and still plan (2+ concrete steps, one verification step) so the operator "
-                      "sees the plan, then finish."}, ensure_ascii=False))
+                      "sees the plan, then finish. If your model has no plan tool, write the same steps as a numbered list in your message; "
+                      "a missing update_plan is never a blocker."}, ensure_ascii=False))
 
 
 def main() -> int:
