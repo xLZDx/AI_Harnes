@@ -25,7 +25,17 @@ ALLOWED = [
     "git restore --staged -S docs/plan.md",
     "git restore docs",
     "git restore docs/sub/file.md",
+    "git.exe restore docs/plan.md",
+    "git restore -sRELEASE docs/plan.md",
+    "git restore -s RELEASE docs/plan.md",
+    "git restore -SW docs/plan.md",
+    "git restore -p docs/plan.md",
 ]
+
+
+def test_s_value_does_not_set_staged():
+    # `-sRELEASE` is a ref value: it must NOT make the restore look staged-only (round 2 reviewer MAJOR)
+    assert g.classify("git restore -sRELEASE .")
 BLOCKED = [
     "git restore",
     "git restore .",
@@ -47,6 +57,11 @@ BLOCKED = [
     "git restore --staged -W .", "git restore --staged --work .", "git restore --staged -W -- .",
     "git restore --pathspec-from list.txt", "git restore --pathspec-from-fi list.txt", "git restore --sou main docs/plan.md",
     "git restore --staged --worktree",
+    # round 2 reviewer bypasses
+    "git restore -sRELEASE .", "git restore -sSTAGE -- .", "git restore -sMASTER ':/'",
+    "git restore (pwd)", "git restore (gl)", "git restore (Get-Location)", "git restore @('.')", "git restore (,'.')",
+    "git.exe restore .", "git.exe restore -- .", '"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe" restore -- .',
+    "git restore -x docs/plan.md",
 ]
 
 

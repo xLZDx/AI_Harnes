@@ -379,7 +379,7 @@ def _restore_path_broad(p: str) -> bool:
     """A restore target that is not one plain relative file or directory name (S32, GPT-PM-less reviewer round 1: a deny-list of
     exact spellings was bypassed by `./*`, `..`, `docs/..`, absolute roots, globs). Allow-list: after normalisation the path is
     relative, has no `..`, is not `.`, and holds no glob, variable, home or pathspec-magic character."""
-    if not p or p.startswith(":") or re.search(r"[*?\[\]{}$`~%!]", p):
+    if not p or p.startswith(":") or re.search(r"[*?\[\]{}$`~%!()@,<>|&;'" + '"' + r"]", p):
         return True
     q = p.replace("\\", "/")
     if q.startswith("/") or re.match(r"^[A-Za-z]:", q):
@@ -410,13 +410,20 @@ def _restore_reason(toks: list) -> str:
             worktree = worktree or name == "--worktree"
             if name == "--source" and "=" not in t:
                 i += 1  # the value follows
-        elif t in {"-s"}:
-            i += 1
         elif t.startswith("-") and len(t) > 1:
-            if re.fullmatch(r"-[A-Za-z]*S[A-Za-z]*", t):
-                staged = True
-            if re.fullmatch(r"-[A-Za-z]*W[A-Za-z]*", t):
-                worktree = True
+            # short bundle, read char by char: `s` takes the REST of the token (or the next token) as its value, so an
+            # uppercase letter inside a ref name (`-sRELEASE`) is never read as a flag
+            for k, ch in enumerate(t[1:], 1):
+                if ch == "s":
+                    if k == len(t) - 1:
+                        i += 1  # the value is the next token
+                    break
+                if ch == "S":
+                    staged = True
+                elif ch == "W":
+                    worktree = True
+                elif ch not in "pq":
+                    unknown = True
         else:
             paths.append(t)
         i += 1
@@ -435,6 +442,8 @@ def classify(seg: str) -> str | None:
     if not toks:
         return None
     base = toks[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base.endswith(".exe"):  # git.exe / rm.exe must meet the same rules as git / rm (S32 reviewer round 2)
+        base = base[:-4]
 
     # Filesystem / disk destruction.
     if base in {"rm", "rmdir"}:
