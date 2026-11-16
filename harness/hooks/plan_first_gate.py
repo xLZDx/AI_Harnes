@@ -128,6 +128,28 @@ def plan_presented(turn: dict) -> tuple[bool, str]:
     return False, ""
 
 
+def why_invalid(turn: dict) -> str:
+    """Which content rule the best list written so far in this turn failed; '' when no list was written at all."""
+    best = ""
+    for t in turn.get("assistant_texts") or []:
+        steps = [m.group(1).strip() for m in LIST_RE.finditer(t)]
+        if not steps:
+            continue
+        if len(steps) < 2:
+            best = best or "your list has only 1 step; write at least 2"
+        elif len(set(x.lower() for x in steps)) != len(steps):
+            best = "your list has duplicate steps"
+        elif any(len(s) < 12 for s in steps):
+            best = "a step of your list is shorter than 12 characters"
+        elif not any(len(s.split()) >= 3 for s in steps):
+            best = "no step of your list has 3 or more words"
+        elif not any(VERIFY_RE.search(s) for s in steps):
+            best = "your list has no verification step (a step that says test, verify, check or run)"
+        else:
+            return ""
+    return best
+
+
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                              "permissionDecisionReason": reason}}, ensure_ascii=False))
@@ -138,7 +160,10 @@ DENY_MSG = (DENY_PREFIX + " the operator must see the work plan before the first
             "(update_plan) now with at least 2 concrete steps (12+ characters each, one of them a verification step such as tests or "
             "a check), or write the numbered plan in your message, then continue. If your model has no plan tool (update_plan is not "
             "available), the numbered list in your message is the plan and is accepted: write it now, then retry the change; do not stop "
-            "and do not report a blocker. Denied %d of %d.")
+            "and do not report a blocker. A written plan is not a bypass of this hook: it is the way the hook asks to comply, and after "
+            "%d denies in one turn the gate releases itself. Copyable template for your next message:\n"
+            "Plan:\n1. <the change you will make, at least 12 characters>\n2. Verify the change by running <the named check>\n"
+            "%sDenied %d of %d.")
 
 
 def counters(session: str, marker: str) -> tuple[Path, dict]:
@@ -185,7 +210,8 @@ def on_pre(data: dict) -> None:
         _release(data, "plan-first-exception", write_log=False)
         return
     log({"event": "deny", "session": str(data.get("session_id"))[:8], "n": n})
-    deny(DENY_MSG % (n, MAX_DENIES))
+    why = why_invalid(turn)
+    deny(DENY_MSG % (MAX_DENIES, ("Why your last list was rejected: %s.\n" % why) if why else "", n, MAX_DENIES))
 
 
 def _release(data: dict, reason: str, write_log: bool = True) -> None:
