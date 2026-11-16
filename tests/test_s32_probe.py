@@ -72,6 +72,8 @@ def test_assignment_values_with_spaces_quotes_and_substitutions_do_not_hide_a_co
         "env -C /tmp git reset --hard",
         "env --unset=X git reset --hard",
         "FOO=1 BAR=2 git restore .",
+        "FOO+=x git reset --hard",
+        "a[0]=1 git reset --hard",
         "FOO=$(echo a) git reset --hard",
         "FOO=\"$(echo a)\" git reset --hard",
         "FOO=\"unclosed git reset --hard",

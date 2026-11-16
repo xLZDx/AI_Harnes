@@ -255,7 +255,7 @@ def _exec_inner(seg: str) -> str | None:
 
 
 UNPARSABLE_ASSIGNMENT = "<<unparsable-assignment>>"
-_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")  # also FOO+=x and a[0]=1 (bash prefix assignments)
 
 
 def _skip_quoted(s: str, i: int) -> int | None:
