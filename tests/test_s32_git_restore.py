@@ -68,6 +68,8 @@ BLOCKED = [
     # round 3 reviewer: one unquoted backslash is eaten by shlex
     r"git restore docs\..", r"git restore src\..\.", r"git restore --source=HEAD -- docs\..", r"git restore .\*",
     r"C:\Tools\git.exe restore .", r"C:\Tools\git.exe restore docs\..",
+    # round 4 reviewer: quote splicing in the subcommand, a value named restore
+    'git re"store" docs\\..', "git 'res'tore docs\\..", r"git -C restore restore docs\..",
 ]
 
 

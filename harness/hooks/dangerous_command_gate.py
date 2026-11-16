@@ -576,8 +576,13 @@ def classify(seg: str) -> str | None:
             rtoks = toks
             if "\\" in seg:  # shlex posix mode turns `docs\\..` into `docs..`; judge the raw words, quotes stripped
                 raw = [w.strip("\"'") for w in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", seg)]
-                if "restore" in raw:
-                    rtoks = ["git", "restore"] + raw[raw.index("restore") + 1:]
+                j = 1  # skip git global options the same way skip_git_global_options does, so a value named `restore` is not the subcommand
+                while j < len(raw) and raw[j].startswith("-"):
+                    j += 2 if raw[j] in GIT_VALUE_OPTIONS else 1
+                if j < len(raw) and raw[j] == "restore":
+                    rtoks = ["git", "restore"] + raw[j + 1:]
+                else:  # quote splicing such as re"store": the raw words cannot be matched to the subcommand, so fail closed
+                    return "`git restore` with a backslash that cannot be judged (quote splicing in the command name) is blocked"
             reason = _restore_reason(rtoks)
             if reason:
                 return reason
