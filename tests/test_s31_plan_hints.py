@@ -45,6 +45,25 @@ def test_reason_for_duplicate_steps():
     check("duplicate" in r, r)
 
 
+def test_blank_bullet_does_not_count_as_a_step():
+    r = reason_of([human("Fix the parser bug"), asst(text("- Edit the parser module in src/app.py\n-     "))], "s31blank")
+    check("only 1 step" in r, r)
+
+
+def test_reason_when_no_step_has_three_words():
+    r = reason_of([human("Fix the parser bug"), asst(text("1. Implementation\n2. Verification"))], "s31words")
+    check("3 or more words" in r, r)
+
+
+def test_gate_releases_on_the_fourth_attempt_as_the_text_promises():
+    from test_plan_first_gate import Env, pre, write_transcript
+    e = Env("s31release")
+    tp = write_transcript(e.dir, [human("Fix the parser bug")])
+    outs = [e.call(pre(tp)) for _ in range(4)]
+    check(all(denied(p) for p in outs[:3]), "first three attempts must be denied")
+    check(outs[3].returncode == 0 and outs[3].stdout.strip() == "", f"4th attempt must be released: {outs[3].stdout!r}")
+
+
 def test_valid_text_plan_still_passes_and_decision_unchanged():
     rows = [human("Fix the parser bug"),
             asst(text("Plan:\n1. Edit the parser module in src/app.py\n2. Run the unit tests for the parser"))]

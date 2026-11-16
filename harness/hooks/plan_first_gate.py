@@ -129,10 +129,11 @@ def plan_presented(turn: dict) -> tuple[bool, str]:
 
 
 def why_invalid(turn: dict) -> str:
-    """Which content rule the best list written so far in this turn failed; '' when no list was written at all."""
+    """Which content rule the most recently written invalid list of this turn failed (only a hint for the deny text, never a
+    decision); '' when no list was written, or when a valid list exists."""
     best = ""
     for t in turn.get("assistant_texts") or []:
-        steps = [m.group(1).strip() for m in LIST_RE.finditer(t)]
+        steps = [s for s in (m.group(1).strip() for m in LIST_RE.finditer(t)) if s]  # blank bullets do not count, as in valid_steps
         if not steps:
             continue
         if len(steps) < 2:
