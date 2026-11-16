@@ -19,6 +19,12 @@ ALLOWED = [
     "git restore --staged docs/plan.md",
     "git restore --staged",
     "git -C D:/Repo/proj restore docs/plan.md",
+    "git -c k=v restore docs/plan.md",
+    "git restore -sHEAD docs/plan.md",
+    "git restore -W docs/plan.md",
+    "git restore --staged -S docs/plan.md",
+    "git restore docs",
+    "git restore docs/sub/file.md",
 ]
 BLOCKED = [
     "git restore",
@@ -34,6 +40,13 @@ BLOCKED = [
     "git restore --pathspec-from-file=list.txt",
     "git restore ':(glob)**/*.md'",
     "git restore docs/plan.md .",
+    # round 1 reviewer bypasses
+    "git restore ./*", "git restore ./.", "git restore .//", "git restore -- .\\\\", "git restore **", "git restore ..",
+    "git restore docs/..", "git restore ./docs/../.", "git restore D:/Repo/proj", "git restore D:/Repo/proj/.", "git restore $PWD",
+    "git restore '*.py'", "git restore 'src/*'", "git restore '**/*'", "git restore ../other.md",
+    "git restore --staged -W .", "git restore --staged --work .", "git restore --staged -W -- .",
+    "git restore --pathspec-from list.txt", "git restore --pathspec-from-fi list.txt", "git restore --sou main docs/plan.md",
+    "git restore --staged --worktree",
 ]
 
 

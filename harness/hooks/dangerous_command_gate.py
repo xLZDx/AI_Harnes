@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -369,6 +370,65 @@ def has_flag(seg: str, short: str, long_name: str) -> bool:
     return has_long(seg, long_name) or has_short(seg, short)
 
 
+_RESTORE_KNOWN_LONG = {"--source", "--staged", "--worktree", "--overlay", "--no-overlay", "--ignore-unmerged", "--ours", "--theirs",
+                       "--merge", "--conflict", "--patch", "--quiet", "--progress", "--no-progress", "--recurse-submodules",
+                       "--no-recurse-submodules", "--ignore-skip-worktree-bits"}
+
+
+def _restore_path_broad(p: str) -> bool:
+    """A restore target that is not one plain relative file or directory name (S32, GPT-PM-less reviewer round 1: a deny-list of
+    exact spellings was bypassed by `./*`, `..`, `docs/..`, absolute roots, globs). Allow-list: after normalisation the path is
+    relative, has no `..`, is not `.`, and holds no glob, variable, home or pathspec-magic character."""
+    if not p or p.startswith(":") or re.search(r"[*?\[\]{}$`~%!]", p):
+        return True
+    q = p.replace("\\", "/")
+    if q.startswith("/") or re.match(r"^[A-Za-z]:", q):
+        return True
+    n = posixpath.normpath(q)
+    return n in {".", ""} or n == ".." or n.startswith("../") or "/../" in n or n.endswith("/..")
+
+
+def _restore_reason(toks: list) -> str:
+    """S32 (operator 2026-11-16): `git restore <named file(s)>` is routine, as `git checkout -- <paths>`. Blocked: no path, any
+    broad or unreadable target, unknown or abbreviated long options (git accepts abbreviations, so they cannot be judged),
+    --pathspec-from-file. `--staged` alone (index only) stays allowed."""
+    staged = False
+    worktree = False
+    paths: list = []
+    unknown = False
+    i = 2
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            paths += toks[i + 1:]
+            break
+        if t.startswith("--"):
+            name = t.split("=", 1)[0]
+            if name not in _RESTORE_KNOWN_LONG:
+                unknown = True
+            staged = staged or name == "--staged"
+            worktree = worktree or name == "--worktree"
+            if name == "--source" and "=" not in t:
+                i += 1  # the value follows
+        elif t in {"-s"}:
+            i += 1
+        elif t.startswith("-") and len(t) > 1:
+            if re.fullmatch(r"-[A-Za-z]*S[A-Za-z]*", t):
+                staged = True
+            if re.fullmatch(r"-[A-Za-z]*W[A-Za-z]*", t):
+                worktree = True
+        else:
+            paths.append(t)
+        i += 1
+    if unknown:
+        return "`git restore` with an unknown or abbreviated option cannot be judged and is blocked"
+    if staged and not worktree:
+        return ""  # index only
+    if not paths or any(_restore_path_broad(x) for x in paths):
+        return "`git restore` with no path or a broad/absolute/glob/parent target discards worktree changes broadly"
+    return ""
+
+
 def classify(seg: str) -> str | None:
     low = seg.lower().strip()
     toks = tokens(seg)
@@ -501,42 +561,9 @@ def classify(seg: str) -> str | None:
             if co_broad:
                 return "`git checkout --` with no path or a root/home/wildcard target discards worktree changes broadly"
         if sub == "restore":
-            staged = has_long(seg, "staged")
-            worktree = has_long(seg, "worktree")
-            # `git restore path`, `--source ... path`, and `--staged --worktree` all
-            # write the worktree. Pure index restoration (`--staged`, optionally with
-            # --source) is deliberately allowed.
-            if (not staged) or worktree:
-                # S32 (operator 2026-11-16): `git restore <named file(s)>` is routine (the same "named target is fine, broad target
-                # is not" rule as `git checkout -- <paths>` above). Still blocked: no path, a root/home/wildcard/`.` target, pathspec
-                # magic (`:(...)`), `--pathspec-from-file` (the targets cannot be seen).
-                rs_paths: list[str] = []
-                rs_unknown = False
-                i = 2
-                while i < len(toks):
-                    t = toks[i]
-                    if t == "--":
-                        rs_paths += toks[i + 1:]
-                        break
-                    if t in {"-s", "--source"}:
-                        i += 2
-                        continue
-                    if t.startswith("--pathspec-from-file") or t.startswith("--pathspec-file-nul"):
-                        rs_unknown = True
-                    elif not t.startswith("-"):
-                        rs_paths.append(t)
-                    i += 1
-                rs_broad = rs_unknown or not rs_paths or any(
-                    p.startswith(":") or re.fullmatch(
-                        r"/|~|~/|\.|\./|\*|/\*|\$HOME|%USERPROFILE%|[A-Za-z]:[\\/]?|"
-                        r"/(?:etc|usr|var|bin|lib|opt|home|boot|System)/?",
-                        p,
-                        re.I,
-                    )
-                    for p in rs_paths
-                )
-                if rs_broad:
-                    return "`git restore` with no path or a root/home/wildcard/`.` target discards worktree changes broadly"
+            reason = _restore_reason(toks)
+            if reason:
+                return reason
 
     # Package removal / publication and dynamic execution.
     if base in {"pip", "pip3", "python", "python3"}:
