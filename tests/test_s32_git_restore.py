@@ -30,6 +30,9 @@ ALLOWED = [
     "git restore -s RELEASE docs/plan.md",
     "git restore -SW docs/plan.md",
     "git restore -p docs/plan.md",
+    r"git restore docs\plan.md",
+    r"git restore --source=HEAD -- docs\sub\plan.md",
+    r"C:\Tools\git.exe restore docs\plan.md",
 ]
 
 
@@ -62,6 +65,9 @@ BLOCKED = [
     "git restore (pwd)", "git restore (gl)", "git restore (Get-Location)", "git restore @('.')", "git restore (,'.')",
     "git.exe restore .", "git.exe restore -- .", '"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe" restore -- .',
     "git restore -x docs/plan.md",
+    # round 3 reviewer: one unquoted backslash is eaten by shlex
+    r"git restore docs\..", r"git restore src\..\.", r"git restore --source=HEAD -- docs\..", r"git restore .\*",
+    r"C:\Tools\git.exe restore .", r"C:\Tools\git.exe restore docs\..",
 ]
 
 

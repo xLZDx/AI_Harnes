@@ -442,6 +442,9 @@ def classify(seg: str) -> str | None:
     if not toks:
         return None
     base = toks[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    _first = re.match(r"\s*(\"[^\"]*\"|'[^']*'|\S+)", seg)
+    if _first and "\\" in _first.group(1):  # shlex eats an unquoted backslash: take the program name from the raw first word
+        base = _first.group(1).strip("\"'").lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     if base.endswith(".exe"):  # git.exe / rm.exe must meet the same rules as git / rm (S32 reviewer round 2)
         base = base[:-4]
 
@@ -570,7 +573,12 @@ def classify(seg: str) -> str | None:
             if co_broad:
                 return "`git checkout --` with no path or a root/home/wildcard target discards worktree changes broadly"
         if sub == "restore":
-            reason = _restore_reason(toks)
+            rtoks = toks
+            if "\\" in seg:  # shlex posix mode turns `docs\\..` into `docs..`; judge the raw words, quotes stripped
+                raw = [w.strip("\"'") for w in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", seg)]
+                if "restore" in raw:
+                    rtoks = ["git", "restore"] + raw[raw.index("restore") + 1:]
+            reason = _restore_reason(rtoks)
             if reason:
                 return reason
 
