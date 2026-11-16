@@ -33,6 +33,11 @@ ALLOWED = [
     r"git restore docs\plan.md",
     r"git restore --source=HEAD -- docs\sub\plan.md",
     r"C:\Tools\git.exe restore docs\plan.md",
+    # round 5: the fail-closed raw route must not block a named file behind git global options
+    r"git -C D:\Repo\proj restore docs\plan.md",
+    r"git -c core.x=y restore docs\plan.md",
+    r"git --no-pager restore docs\plan.md",
+    r'git -C "D:\My Repo" restore docs\plan.md',
 ]
 
 
