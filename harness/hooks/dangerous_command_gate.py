@@ -30,8 +30,7 @@ PREFIXES = re.compile(
     r"--(?:user|group|host|prompt|chdir|role|type|other-user|command-timeout|close-from)\s+\S+|"
     r"-\w+|--[\w-]+(?:=\S+)?|--(?=\s)))*|"
     r"doas(?:\s+(?:(?-i:-[uC])\s+\S+|-\w+|--(?=\s)))*|"
-    r"env(?:\s+(?:-\S+|[A-Za-z_][A-Za-z0-9_]*=\S+))*|"
-    r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)|"  # a bare `VAR=val` prefix (S32, GPT-PM round 1): `FOO=1 git reset --hard`
+    r"env(?:\s+-\S+)*|"
     r"nohup|time|"
     r"nice(?:\s+(?:-n\s*-?\d+|-?\d+))?|"
     r"timeout(?:\s+(?:(?-i:-[sk]|--signal|--kill-after)\s+\S+|--?\S+(?:=\S+)?))*\s+\S+|"
@@ -255,6 +254,60 @@ def _exec_inner(seg: str) -> str | None:
     return None
 
 
+UNPARSABLE_ASSIGNMENT = "<<unparsable-assignment>>"
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _read_word(s: str, i: int = 0) -> int | None:
+    """End index of the shell word that starts at s[i] (backslash escapes, '...', "...", $(...) and `...` kept inside the
+    word); None when a quote or a substitution is not closed (S32, GPT-PM round 1 + reviewer round 6)."""
+    n = len(s)
+    depth = 0
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'" and depth == 0:
+            j = s.find("'", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n and s[j] != '"':
+                j += 2 if s[j] == "\\" else 1
+            if j >= n:
+                return None
+            if "$(" in s[i:j] or "`" in s[i:j]:
+                return None  # a substitution inside quotes: not judged here
+            i = j + 1
+            continue
+        if c == "`":
+            return None
+        if c == "$" and s[i + 1:i + 2] == "(":
+            return None  # command substitution inside an assignment value: fail closed
+        if c.isspace():
+            return i
+        i += 1
+    return n
+
+
+def _strip_assignments(seg: str) -> str | None:
+    """Drop leading `NAME=value` words (a shell runs `FOO=1 git reset --hard` as git with FOO set). None = a value that cannot
+    be parsed safely: the caller blocks the whole segment."""
+    while True:
+        if not _ASSIGN.match(seg):
+            return seg
+        end = _read_word(seg)
+        if end is None:
+            return None
+        seg = seg[end:].lstrip()
+        if not seg:
+            return seg
+
+
 def segments(command: str, depth: int = 0) -> list[str]:
     """Return independently classifiable commands, unwrapping common shell wrappers."""
     out: list[str] = []
@@ -264,12 +317,20 @@ def segments(command: str, depth: int = 0) -> list[str]:
 
     for raw in SEPARATORS.split(command or ""):
         seg = raw.strip()
+        poisoned = False
         while seg:
-            stripped = PREFIXES.sub("", seg, count=1)
+            no_assign = _strip_assignments(seg)
+            if no_assign is None:
+                poisoned = True
+                break
+            stripped = PREFIXES.sub("", no_assign, count=1)
             stripped = LEADERS.sub("", stripped.strip(), count=1)
             if stripped == seg:
                 break
             seg = stripped.strip()
+        if poisoned:
+            out.append(UNPARSABLE_ASSIGNMENT + " " + seg)
+            continue
         while seg.endswith((")", "}")) and seg.count(")") + seg.count("}") > seg.count("(") + seg.count("{"):
             seg = seg[:-1].rstrip()
         if not seg:
@@ -440,6 +501,8 @@ def _restore_reason(toks: list) -> str:
 
 
 def classify(seg: str) -> str | None:
+    if seg.startswith(UNPARSABLE_ASSIGNMENT):
+        return "an assignment prefix whose value cannot be parsed safely (quote, escape or substitution) hides the real command"
     low = seg.lower().strip()
     toks = tokens(seg)
     if not toks:
