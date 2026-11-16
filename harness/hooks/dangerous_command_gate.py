@@ -507,7 +507,36 @@ def classify(seg: str) -> str | None:
             # write the worktree. Pure index restoration (`--staged`, optionally with
             # --source) is deliberately allowed.
             if (not staged) or worktree:
-                return "`git restore` writes/discards worktree changes"
+                # S32 (operator 2026-11-16): `git restore <named file(s)>` is routine (the same "named target is fine, broad target
+                # is not" rule as `git checkout -- <paths>` above). Still blocked: no path, a root/home/wildcard/`.` target, pathspec
+                # magic (`:(...)`), `--pathspec-from-file` (the targets cannot be seen).
+                rs_paths: list[str] = []
+                rs_unknown = False
+                i = 2
+                while i < len(toks):
+                    t = toks[i]
+                    if t == "--":
+                        rs_paths += toks[i + 1:]
+                        break
+                    if t in {"-s", "--source"}:
+                        i += 2
+                        continue
+                    if t.startswith("--pathspec-from-file") or t.startswith("--pathspec-file-nul"):
+                        rs_unknown = True
+                    elif not t.startswith("-"):
+                        rs_paths.append(t)
+                    i += 1
+                rs_broad = rs_unknown or not rs_paths or any(
+                    p.startswith(":") or re.fullmatch(
+                        r"/|~|~/|\.|\./|\*|/\*|\$HOME|%USERPROFILE%|[A-Za-z]:[\\/]?|"
+                        r"/(?:etc|usr|var|bin|lib|opt|home|boot|System)/?",
+                        p,
+                        re.I,
+                    )
+                    for p in rs_paths
+                )
+                if rs_broad:
+                    return "`git restore` with no path or a root/home/wildcard/`.` target discards worktree changes broadly"
 
     # Package removal / publication and dynamic execution.
     if base in {"pip", "pip3", "python", "python3"}:
