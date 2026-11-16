@@ -58,16 +58,24 @@ def test_env_prefix_named_restore_still_allowed():
 
 
 def test_assignment_values_with_spaces_quotes_and_substitutions_do_not_hide_a_command():
-    """Reviewer round 6: a regex stopped at the first space of the value; a scanner reads whole shell words, an unparsable value blocks."""
+    """Reviewer rounds 6-7: a regex stopped at the first space; the scanner reads whole shell words (escapes, quotes, $'..', ${..}, $(..))."""
     cmds = [
         "FOO=a\\ b git reset --hard",
         "FOO=a\"b c\" git reset --hard",
         "FOO=\"a b\"c git reset --hard",
         "FOO=$'a b' git reset --hard",
+        "FOO=$'a\\' b' git reset --hard",
+        "FOO=${X:-a b} git reset --hard",
         "env FOO=\"a b\" git reset --hard",
+        "env -u X git reset --hard",
+        "env -u A -u B git reset --hard",
+        "env -C /tmp git reset --hard",
+        "env --unset=X git reset --hard",
         "FOO=1 BAR=2 git restore .",
         "FOO=$(echo a) git reset --hard",
+        "FOO=\"$(echo a)\" git reset --hard",
         "FOO=\"unclosed git reset --hard",
+        "FOO=$(unclosed git reset --hard",
     ]
     for client in (None, "codex"):
         for cmd in cmds:
@@ -77,7 +85,9 @@ def test_assignment_values_with_spaces_quotes_and_substitutions_do_not_hide_a_co
 
 
 def test_assignment_prefix_on_harmless_commands_is_allowed():
-    for cmd in ('FOO="a b" git restore docs/plan.md', "FOO=a\\ b git restore docs/plan.md", "FOO=1 echo hi", "x=1"):
+    cmds = ['FOO="a b" git restore docs/plan.md', "FOO=a\\ b git restore docs/plan.md", "FOO=1 echo hi", "x=1",
+            "SHA=$(git rev-parse HEAD)", 'd="$(pwd)"', "X=$(date)", "V=${HOME:-x} echo hi", "env -u X echo hi", "FOO=$'a b' echo hi"]
+    for cmd in cmds:
         p = call(cmd)
         assert p.returncode == 0, p.stderr
         assert not is_denied(p), f"{cmd!r}: {p.stdout!r}"

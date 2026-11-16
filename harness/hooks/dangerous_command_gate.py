@@ -30,7 +30,7 @@ PREFIXES = re.compile(
     r"--(?:user|group|host|prompt|chdir|role|type|other-user|command-timeout|close-from)\s+\S+|"
     r"-\w+|--[\w-]+(?:=\S+)?|--(?=\s)))*|"
     r"doas(?:\s+(?:(?-i:-[uC])\s+\S+|-\w+|--(?=\s)))*|"
-    r"env(?:\s+-\S+)*|"
+    r"env(?:\s+(?:-[uCS]\s+\S+|--(?:unset|chdir|split-string)(?:=|\s+)\S+|-\S+))*|"
     r"nohup|time|"
     r"nice(?:\s+(?:-n\s*-?\d+|-?\d+))?|"
     r"timeout(?:\s+(?:(?-i:-[sk]|--signal|--kill-after)\s+\S+|--?\S+(?:=\S+)?))*\s+\S+|"
@@ -258,45 +258,104 @@ UNPARSABLE_ASSIGNMENT = "<<unparsable-assignment>>"
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def _read_word(s: str, i: int = 0) -> int | None:
-    """End index of the shell word that starts at s[i] (backslash escapes, '...', "...", $(...) and `...` kept inside the
-    word); None when a quote or a substitution is not closed (S32, GPT-PM round 1 + reviewer round 6)."""
+def _skip_quoted(s: str, i: int) -> int | None:
+    """s[i] is a double quote; the index after its closing quote, honouring escapes and $(...) / `...` inside; None if unclosed."""
+    n = len(s)
+    j = i + 1
+    while j < n:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+        elif ch == '"':
+            return j + 1
+        elif ch == "$" and s[j + 1:j + 2] == "(":
+            j = _skip_balanced(s, j + 1, "(", ")")
+            if j is None:
+                return None
+        elif ch == "`":
+            k = s.find("`", j + 1)
+            if k < 0:
+                return None
+            j = k + 1
+        else:
+            j += 1
+    return None
+
+
+def _skip_balanced(s: str, i: int, op: str, cl: str) -> int | None:
+    """s[i] == op; the index after the matching `cl` (quotes and escapes skipped); None when unbalanced."""
     n = len(s)
     depth = 0
+    j = i
+    while j < n:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch == "'":
+            k = s.find("'", j + 1)
+            if k < 0:
+                return None
+            j = k + 1
+            continue
+        if ch == '"':
+            j = _skip_quoted(s, j)
+            if j is None:
+                return None
+            continue
+        if ch == op:
+            depth += 1
+        elif ch == cl:
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return None
+
+
+def _read_word(s: str, i: int = 0) -> int | None:
+    """End index of the shell word that starts at s[i]: backslash escapes, '...', "...", $'...', $(...), ${...} and `...` are kept
+    inside the word. None when any of them is not closed (S32: the caller blocks the segment instead of guessing)."""
+    n = len(s)
     while i < n:
         c = s[i]
         if c == "\\":
             i += 2
-            continue
-        if c == "'" and depth == 0:
+        elif c == "'":
             j = s.find("'", i + 1)
             if j < 0:
                 return None
             i = j + 1
-            continue
-        if c == '"':
-            j = i + 1
-            while j < n and s[j] != '"':
+        elif c == '"':
+            i = _skip_quoted(s, i)
+            if i is None:
+                return None
+        elif c == "`":
+            j = s.find("`", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+        elif c == "$" and s[i + 1:i + 2] in {"(", "{"}:
+            i = _skip_balanced(s, i + 1, s[i + 1], ")" if s[i + 1] == "(" else "}")
+            if i is None:
+                return None
+        elif c == "$" and s[i + 1:i + 2] == "'":
+            j = i + 2
+            while j < n and s[j] != "'":
                 j += 2 if s[j] == "\\" else 1
             if j >= n:
                 return None
-            if "$(" in s[i:j] or "`" in s[i:j]:
-                return None  # a substitution inside quotes: not judged here
             i = j + 1
-            continue
-        if c == "`":
-            return None
-        if c == "$" and s[i + 1:i + 2] == "(":
-            return None  # command substitution inside an assignment value: fail closed
-        if c.isspace():
+        elif c.isspace():
             return i
-        i += 1
-    return n
+        else:
+            i += 1
+    return min(i, n)
 
 
 def _strip_assignments(seg: str) -> str | None:
     """Drop leading `NAME=value` words (a shell runs `FOO=1 git reset --hard` as git with FOO set). None = a value that cannot
-    be parsed safely: the caller blocks the whole segment."""
+    be read safely: the caller blocks the whole segment. A segment that is only assignments becomes ''."""
     while True:
         if not _ASSIGN.match(seg):
             return seg
