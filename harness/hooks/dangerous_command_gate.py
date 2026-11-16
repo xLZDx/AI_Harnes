@@ -31,6 +31,7 @@ PREFIXES = re.compile(
     r"-\w+|--[\w-]+(?:=\S+)?|--(?=\s)))*|"
     r"doas(?:\s+(?:(?-i:-[uC])\s+\S+|-\w+|--(?=\s)))*|"
     r"env(?:\s+(?:-\S+|[A-Za-z_][A-Za-z0-9_]*=\S+))*|"
+    r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)|"  # a bare `VAR=val` prefix (S32, GPT-PM round 1): `FOO=1 git reset --hard`
     r"nohup|time|"
     r"nice(?:\s+(?:-n\s*-?\d+|-?\d+))?|"
     r"timeout(?:\s+(?:(?-i:-[sk]|--signal|--kill-after)\s+\S+|--?\S+(?:=\S+)?))*\s+\S+|"
@@ -383,6 +384,8 @@ def _restore_path_broad(p: str) -> bool:
         return True
     q = p.replace("\\", "/")
     if q.startswith("/") or re.match(r"^[A-Za-z]:", q):
+        return True
+    if ".." in q.split("/"):  # a parent component is refused before normalising (`docs/../README.md` too: one rule, no exceptions)
         return True
     n = posixpath.normpath(q)
     return n in {".", ""} or n == ".." or n.startswith("../") or "/../" in n or n.endswith("/..")

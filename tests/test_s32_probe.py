@@ -12,14 +12,14 @@ import hv2  # noqa: E402
 HOOK = HERE.parent / "harness" / "hooks" / "shell_policy_gate.py"
 
 
-def call(command):
+def call(command, client=None):
     d = hv2.fresh("s32_probe")
     env = {k: v for k, v in os.environ.items() if not k.startswith("HARNESS_")}
     env["HARNESS_HOOK_STATE"] = str(d / "state")
     env["HARNESS_METRICS_DIR"] = str(hv2.SINK / "metrics")
     env["PYTHONIOENCODING"] = "utf-8"
     payload = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
-    return subprocess.run([sys.executable, "-I", str(HOOK)], input=json.dumps(payload), capture_output=True,
+    return subprocess.run([sys.executable, "-I", str(HOOK)] + (["--harness-client=" + client] if client else []), input=json.dumps(payload), capture_output=True,
                           text=True, encoding="utf-8", env=env, timeout=60)
 
 
@@ -40,6 +40,21 @@ def test_dot_restore_denied():
     p = call("git restore .")
     assert p.returncode == 0, p.stderr
     assert is_denied(p), f"expected deny, got stdout={p.stdout!r}"
+
+
+def test_env_prefix_does_not_hide_a_broad_restore_or_reset():
+    for client in (None, "codex"):
+        for cmd in ("FOO=1 git restore .", "FOO=1 git reset --hard", 'A=1 B="x y" git restore .', "FOO= git restore ."):
+            p = call(cmd, client)
+            assert p.returncode == 0, p.stderr
+            assert is_denied(p), f"{client}: expected deny for {cmd!r}, got stdout={p.stdout!r}"
+
+
+def test_env_prefix_named_restore_still_allowed():
+    for client in (None, "codex"):
+        p = call("FOO=1 git restore docs/plan.md", client)
+        assert p.returncode == 0, p.stderr
+        assert not is_denied(p), f"{client}: {p.stdout!r}"
 
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ BLOCKED = [
     "git restore --staged -W .", "git restore --staged --work .", "git restore --staged -W -- .",
     "git restore --pathspec-from list.txt", "git restore --pathspec-from-fi list.txt", "git restore --sou main docs/plan.md",
     "git restore --staged --worktree",
+    "git restore docs/../README.md",  # GPT-PM round 1 MINOR: one rule, no `..` at all
     # round 2 reviewer bypasses
     "git restore -sRELEASE .", "git restore -sSTAGE -- .", "git restore -sMASTER ':/'",
     "git restore (pwd)", "git restore (gl)", "git restore (Get-Location)", "git restore @('.')", "git restore (,'.')",
