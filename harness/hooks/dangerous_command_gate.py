@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -29,7 +30,7 @@ PREFIXES = re.compile(
     r"--(?:user|group|host|prompt|chdir|role|type|other-user|command-timeout|close-from)\s+\S+|"
     r"-\w+|--[\w-]+(?:=\S+)?|--(?=\s)))*|"
     r"doas(?:\s+(?:(?-i:-[uC])\s+\S+|-\w+|--(?=\s)))*|"
-    r"env(?:\s+(?:-\S+|[A-Za-z_][A-Za-z0-9_]*=\S+))*|"
+    r"env(?:\s+(?:-[uCS]\s+\S+|--(?:unset|chdir|split-string)(?:=|\s+)\S+|-\S+))*|"
     r"nohup|time|"
     r"nice(?:\s+(?:-n\s*-?\d+|-?\d+))?|"
     r"timeout(?:\s+(?:(?-i:-[sk]|--signal|--kill-after)\s+\S+|--?\S+(?:=\S+)?))*\s+\S+|"
@@ -253,6 +254,158 @@ def _exec_inner(seg: str) -> str | None:
     return None
 
 
+UNPARSABLE_ASSIGNMENT = "<<unparsable-assignment>>"
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")  # also FOO+=x and a[0]=1 (bash prefix assignments)
+
+
+def _skip_quoted(s: str, i: int) -> int | None:
+    """s[i] is a double quote; the index after its closing quote, honouring escapes and $(...) / `...` inside; None if unclosed."""
+    n = len(s)
+    j = i + 1
+    while j < n:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+        elif ch == '"':
+            return j + 1
+        elif ch == "$" and s[j + 1:j + 2] == "(":
+            j = _skip_balanced(s, j + 1, "(", ")")
+            if j is None:
+                return None
+        elif ch == "`":
+            k = s.find("`", j + 1)
+            if k < 0:
+                return None
+            j = k + 1
+        else:
+            j += 1
+    return None
+
+
+def _skip_balanced(s: str, i: int, op: str, cl: str) -> int | None:
+    """s[i] == op; the index after the matching `cl` (quotes and escapes skipped); None when unbalanced."""
+    n = len(s)
+    depth = 0
+    j = i
+    while j < n:
+        ch = s[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch == "'":
+            k = s.find("'", j + 1)
+            if k < 0:
+                return None
+            j = k + 1
+            continue
+        if ch == '"':
+            j = _skip_quoted(s, j)
+            if j is None:
+                return None
+            continue
+        if ch == op:
+            depth += 1
+        elif ch == cl:
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return None
+
+
+def _read_word(s: str, i: int = 0) -> int | None:
+    """End index of the shell word that starts at s[i]: backslash escapes, '...', "...", $'...', $(...), ${...} and `...` are kept
+    inside the word. None when any of them is not closed (S32: the caller blocks the segment instead of guessing)."""
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            i += 2
+        elif c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+        elif c == '"':
+            i = _skip_quoted(s, i)
+            if i is None:
+                return None
+        elif c == "`":
+            j = s.find("`", i + 1)
+            if j < 0:
+                return None
+            i = j + 1
+        elif c == "$" and s[i + 1:i + 2] in {"(", "{"}:
+            i = _skip_balanced(s, i + 1, s[i + 1], ")" if s[i + 1] == "(" else "}")
+            if i is None:
+                return None
+        elif c == "$" and s[i + 1:i + 2] == "'":
+            j = i + 2
+            while j < n and s[j] != "'":
+                j += 2 if s[j] == "\\" else 1
+            if j >= n:
+                return None
+            i = j + 1
+        elif c.isspace():
+            return i
+        else:
+            i += 1
+    return min(i, n)
+
+
+def _strip_assignments(seg: str) -> str | None:
+    """Drop leading `NAME=value` words (a shell runs `FOO=1 git reset --hard` as git with FOO set). None = a value that cannot
+    be read safely: the caller blocks the whole segment. A segment that is only assignments becomes ''."""
+    while True:
+        if not _ASSIGN.match(seg):
+            return seg
+        end = _read_word(seg)
+        if end is None:
+            return None
+        seg = seg[end:].lstrip()
+        if not seg:
+            return seg
+
+
+def _balanced(s: str) -> bool:
+    """True when every shell word of s closes its quotes and substitutions."""
+    i, n = 0, len(s)
+    while i < n:
+        if s[i].isspace():
+            i += 1
+            continue
+        e = _read_word(s, i)
+        if e is None:
+            return False
+        i = e if e > i else i + 1
+    return True
+
+
+def _env_split_string(seg: str) -> bool:
+    """`env -S "git restore ."` (also `--split-string`, `-iS`, `-S git`) runs a command written inside an option value: not judged."""
+    words = seg.split()
+    if not words or words[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1] not in {"env", "env.exe"}:
+        return False
+    i = 1
+    while i < len(words):
+        w = words[i]
+        if w == "--":
+            return False
+        if w.startswith("--"):
+            if w.split("=", 1)[0] == "--split-string":
+                return True
+            i += 2 if w in {"--unset", "--chdir"} else 1
+        elif w.startswith("-") and len(w) > 1:
+            if "S" in w[1:].split("=")[0] and not w.startswith("-u") and not w.startswith("-C"):
+                return True
+            i += 2 if w in {"-u", "-C"} else 1
+        elif _ASSIGN.match(w):
+            i += 1
+        else:
+            return False
+    return False
+
+
 def segments(command: str, depth: int = 0) -> list[str]:
     """Return independently classifiable commands, unwrapping common shell wrappers."""
     out: list[str] = []
@@ -262,12 +415,23 @@ def segments(command: str, depth: int = 0) -> list[str]:
 
     for raw in SEPARATORS.split(command or ""):
         seg = raw.strip()
+        poisoned = False
+        prefixed = False
         while seg:
-            stripped = PREFIXES.sub("", seg, count=1)
+            no_assign = _strip_assignments(seg)
+            if no_assign is None or _env_split_string(no_assign):
+                poisoned = True
+                break
+            stripped = PREFIXES.sub("", no_assign, count=1)
+            if stripped != no_assign:
+                prefixed = True
             stripped = LEADERS.sub("", stripped.strip(), count=1)
             if stripped == seg:
                 break
             seg = stripped.strip()
+        if poisoned:
+            out.append(UNPARSABLE_ASSIGNMENT + " " + seg)
+            continue
         while seg.endswith((")", "}")) and seg.count(")") + seg.count("}") > seg.count("(") + seg.count("{"):
             seg = seg[:-1].rstrip()
         if not seg:
@@ -292,6 +456,15 @@ def segments(command: str, depth: int = 0) -> list[str]:
                 out.extend(inner)
                 continue
         out.append(seg)
+        if prefixed:
+            # S32 (GPT-PM round 2, reviewer round 10): a wrapper's option values differ per wrapper (`-iu A`, `-a foo`, `-n +5`, `$(id -un)`,
+            # `a\ b`), so the prefix regex can leave a value in front of the real command. Judge every suffix that starts at a later word too:
+            # `sudo -nu root git reset --hard` also yields `git reset --hard`. A harmless `sudo echo git reset --hard` is over-blocked (rare).
+            for m in list(re.finditer(r"\S+", seg))[1:8]:
+                if depth < 3:  # the suffix may itself start with another wrapper or `bash -c '...'`: unwrap it like any segment
+                    out.extend(segments(seg[m.start():], depth + 1))
+                else:
+                    out.append(seg[m.start():])
     return out
 
 
@@ -369,12 +542,87 @@ def has_flag(seg: str, short: str, long_name: str) -> bool:
     return has_long(seg, long_name) or has_short(seg, short)
 
 
+_RESTORE_KNOWN_LONG = {"--source", "--staged", "--worktree", "--overlay", "--no-overlay", "--ignore-unmerged", "--ours", "--theirs",
+                       "--merge", "--conflict", "--patch", "--quiet", "--progress", "--no-progress", "--recurse-submodules",
+                       "--no-recurse-submodules", "--ignore-skip-worktree-bits"}
+
+
+def _restore_path_broad(p: str) -> bool:
+    """A restore target that is not one plain relative file or directory name (S32, GPT-PM-less reviewer round 1: a deny-list of
+    exact spellings was bypassed by `./*`, `..`, `docs/..`, absolute roots, globs). Allow-list: after normalisation the path is
+    relative, has no `..`, is not `.`, and holds no glob, variable, home or pathspec-magic character."""
+    if not p or p.startswith(":") or re.search(r"[*?\[\]{}$`~%!()@,<>|&;'" + '"' + r"]", p):
+        return True
+    q = p.replace("\\", "/")
+    if q.startswith("/") or re.match(r"^[A-Za-z]:", q):
+        return True
+    if ".." in q.split("/"):  # a parent component is refused before normalising (`docs/../README.md` too: one rule, no exceptions)
+        return True
+    n = posixpath.normpath(q)
+    return n in {".", ""} or n == ".." or n.startswith("../") or "/../" in n or n.endswith("/..")
+
+
+def _restore_reason(toks: list) -> str:
+    """S32 (operator 2026-11-16): `git restore <named file(s)>` is routine, as `git checkout -- <paths>`. Blocked: no path, any
+    broad or unreadable target, unknown or abbreviated long options (git accepts abbreviations, so they cannot be judged),
+    --pathspec-from-file. `--staged` alone (index only) stays allowed."""
+    staged = False
+    worktree = False
+    paths: list = []
+    unknown = False
+    i = 2
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            paths += toks[i + 1:]
+            break
+        if t.startswith("--"):
+            name = t.split("=", 1)[0]
+            if name not in _RESTORE_KNOWN_LONG:
+                unknown = True
+            staged = staged or name == "--staged"
+            worktree = worktree or name == "--worktree"
+            if name == "--source" and "=" not in t:
+                i += 1  # the value follows
+        elif t.startswith("-") and len(t) > 1:
+            # short bundle, read char by char: `s` takes the REST of the token (or the next token) as its value, so an
+            # uppercase letter inside a ref name (`-sRELEASE`) is never read as a flag
+            for k, ch in enumerate(t[1:], 1):
+                if ch == "s":
+                    if k == len(t) - 1:
+                        i += 1  # the value is the next token
+                    break
+                if ch == "S":
+                    staged = True
+                elif ch == "W":
+                    worktree = True
+                elif ch not in "pq":
+                    unknown = True
+        else:
+            paths.append(t)
+        i += 1
+    if unknown:
+        return "`git restore` with an unknown or abbreviated option cannot be judged and is blocked"
+    if staged and not worktree:
+        return ""  # index only
+    if not paths or any(_restore_path_broad(x) for x in paths):
+        return "`git restore` with no path or a broad/absolute/glob/parent target discards worktree changes broadly"
+    return ""
+
+
 def classify(seg: str) -> str | None:
+    if seg.startswith(UNPARSABLE_ASSIGNMENT):
+        return "an assignment prefix whose value cannot be parsed safely (quote, escape or substitution) hides the real command"
     low = seg.lower().strip()
     toks = tokens(seg)
     if not toks:
         return None
     base = toks[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    _first = re.match(r"\s*(\"[^\"]*\"|'[^']*'|\S+)", seg)
+    if _first and "\\" in _first.group(1):  # shlex eats an unquoted backslash: take the program name from the raw first word
+        base = _first.group(1).strip("\"'").lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if base.endswith(".exe"):  # git.exe / rm.exe must meet the same rules as git / rm (S32 reviewer round 2)
+        base = base[:-4]
 
     # Filesystem / disk destruction.
     if base in {"rm", "rmdir"}:
@@ -501,13 +749,19 @@ def classify(seg: str) -> str | None:
             if co_broad:
                 return "`git checkout --` with no path or a root/home/wildcard target discards worktree changes broadly"
         if sub == "restore":
-            staged = has_long(seg, "staged")
-            worktree = has_long(seg, "worktree")
-            # `git restore path`, `--source ... path`, and `--staged --worktree` all
-            # write the worktree. Pure index restoration (`--staged`, optionally with
-            # --source) is deliberately allowed.
-            if (not staged) or worktree:
-                return "`git restore` writes/discards worktree changes"
+            rtoks = toks
+            if "\\" in seg:  # shlex posix mode turns `docs\\..` into `docs..`; judge the raw words, quotes stripped
+                raw = [w.strip("\"'") for w in re.findall(r"\"[^\"]*\"|'[^']*'|\S+", seg)]
+                j = 1  # skip git global options the same way skip_git_global_options does, so a value named `restore` is not the subcommand
+                while j < len(raw) and raw[j].startswith("-"):
+                    j += 2 if raw[j] in GIT_VALUE_OPTIONS else 1
+                if j < len(raw) and raw[j] == "restore":
+                    rtoks = ["git", "restore"] + raw[j + 1:]
+                else:  # quote splicing such as re"store": the raw words cannot be matched to the subcommand, so fail closed
+                    return "`git restore` with a backslash that cannot be judged (quote splicing in the command name) is blocked"
+            reason = _restore_reason(rtoks)
+            if reason:
+                return reason
 
     # Package removal / publication and dynamic execution.
     if base in {"pip", "pip3", "python", "python3"}:
