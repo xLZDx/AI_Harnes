@@ -10,8 +10,8 @@ R1, operator rule 4 (tests only at sprint end, by test agents; no lint, typechec
          `gh pr checks`.
   A test command that names explicit test files is allowed only for a test agent (functional-test-reviewer,
   tdd-guide, e2e-runner) or, in the main session, as a plain `python <test script>` run by path.
-R2: `git push` and `gh pr create` are allowed only when the ledger approval is bound to the current HEAD and every task
-  of the active sprint is verified or done (or explicitly blocked). A repo without a harness ledger is allowed (logged).
+R2: `git push` and `gh pr create` are allowed only when the ledger approval covers the actual outgoing source and every
+  task of its active sprint is verified or done (or explicitly blocked). A repo without a harness ledger is allowed (logged).
 
 Fails open on any hook error (logged to <state>/rules_gate/gate.log); never prints the command text into the log.
 """
@@ -80,6 +80,14 @@ HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-?)\s*(?:\"([^\"]+)\"|'([^']+)'|\\?([A-Z
 class Cwd(str):
     """A working directory; `.given` is True when it came from a cd / git -C target in the command (not the session cwd)."""
     given = False
+
+
+class PushDetail(str):
+    """Backward-compatible finding detail that retains the original git push arguments."""
+    def __new__(cls, value: str, args: list[str]):
+        obj = super().__new__(cls, value)
+        obj.args = tuple(args)
+        return obj
 
 
 def mk_cwd(path: str, given: bool) -> Cwd:
@@ -372,14 +380,30 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
         return []
 
     if b == "git":
-        sub, i, gcwd = "", 0, cwd
+        sub, i, gcwd, config_override = "", 0, cwd, False
         while i < len(rest):
             a = rest[i]
             if a == "-C" and i + 1 < len(rest):
                 gcwd = resolve_dir(rest[i + 1], gcwd)
                 i += 2
-            elif a in ("-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(rest):
+            elif a.startswith("-C") and len(a) > 2:
+                gcwd = resolve_dir(a[2:], gcwd)
+                i += 1
+            elif a in ("-c", "--config-env") and i + 1 < len(rest):
+                config_override = True
                 i += 2
+            elif a.startswith("-c") and a != "-c":
+                config_override = True
+                i += 1
+            elif a in ("--git-dir", "--work-tree", "--namespace") and i + 1 < len(rest):
+                config_override = True
+                i += 2
+            elif a in ("-C", "-c", "--config-env", "--git-dir", "--work-tree", "--namespace"):
+                config_override = True
+                i += 1
+            elif a.startswith(("--config-env=", "--git-dir=", "--work-tree=", "--namespace=")):
+                config_override = True
+                i += 1
             elif is_flag(a):
                 i += 1
             else:
@@ -388,9 +412,12 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 break
         if sub == "push":
             args = rest[i:]
-            if any(a in ("--dry-run", "-n") for a in args):
+            value_options = {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+            if not any(a in value_options for a in args) and any(a in ("--dry-run", "-n") for a in args):
                 return []
-            return [("push", "git push", gcwd)]
+            if config_override:
+                args = ["--global-config-override", *args]
+            return [("push", PushDetail("git push", args), gcwd)]
         return []
 
     if b in PKG:
@@ -610,12 +637,92 @@ def _safe_find_ledger(cwd: str):
         return None, "not a git repository"
 
 
-def push_problems(cwd: str, fallback: str = "") -> list[str] | None:
+def _resolve_outgoing_push(cwd: str, args: tuple[str, ...]):
+    """Resolve only a plain configured-remote push with one explicit source:destination refspec."""
+    import _agentio
+    bad = "push destination/refspec is ambiguous; use `git push <remote> <branch>:refs/heads/<branch>`"
+    remote, specs, i = None, [], 0
+    valued = {"--repo", "--receive-pack", "--exec", "--push-option", "-o"}
+    while i < len(args):
+        a = args[i]
+        if a in ("-u", "--set-upstream", "--porcelain", "--progress", "--quiet", "-q", "--verbose", "-v"):
+            i += 1; continue
+        if a in ("--force", "-f", "--force-with-lease", "--force-if-includes", "--mirror", "--all", "--tags",
+                 "--follow-tags", "--delete", "-d", "--atomic", "--prune", "--no-verify", "--receive-pack") or a.startswith("+"):
+            return None, bad + " (force, mirror, deletion, or special push option denied)"
+        if a.startswith("--"):
+            if a not in valued or i + 1 >= len(args) or a != "--repo":
+                return None, bad
+            if remote is not None:
+                return None, bad
+            remote = args[i + 1]; i += 2; continue
+        if a.startswith("-"):
+            return None, bad
+        if remote is None:
+            remote = a
+        else:
+            specs.append(a)
+        i += 1
+    if not remote or len(specs) != 1:
+        return None, bad
+    if re.search(r"[$`%*?\[\]]", remote + specs[0]):
+        return None, bad
+    configured = _agentio.run_git(["remote", "get-url", "--push", "--all", remote], cwd=cwd)
+    fetched = _agentio.run_git(["remote", "get-url", "--all", remote], cwd=cwd)
+    push_urls = configured.stdout.splitlines()
+    fetch_urls = fetched.stdout.splitlines()
+    if (configured.returncode or fetched.returncode or len(push_urls) != 1 or len(fetch_urls) != 1
+            or not push_urls[0].strip() or push_urls[0].strip() != fetch_urls[0].strip()):
+        return None, "push remote is not a configured remote with a resolvable push URL"
+    for key, allowed in (("push.followTags", {"false"}), ("push.recurseSubmodules", {"false", "no", "off", "0"}),
+                         (f"remote.{remote}.mirror", {"false"})):
+        cfg_args = ["config", "--get-all", key]
+        if key != "push.recurseSubmodules":
+            cfg_args.insert(1, "--type=bool")
+        cfg = _agentio.run_git(cfg_args, cwd=cwd)
+        if cfg.returncode == 1 and not cfg.stdout.strip():
+            continue
+        values = [v.strip().lower() for v in cfg.stdout.splitlines()]
+        if cfg.returncode != 0 or len(values) != 1 or values[0] not in allowed:
+            return None, f"configured {key} may add writes beyond the explicit branch refspec, or cannot be read safely"
+    spec = specs[0]
+    if ":" in spec:
+        src, dst = spec.split(":", 1)
+    elif re.fullmatch(r"[A-Za-z0-9._/-]+", spec) and not spec.startswith("-"):
+        # Git's explicit `git push origin branch` maps the branch to the same remote branch.
+        src = spec
+        dst = spec if spec.startswith("refs/heads/") else "refs/heads/" + spec
+    else:
+        return None, bad + " (implicit destination is not accepted)"
+    if not src or not dst or dst.startswith("+") or not dst.startswith("refs/heads/") or not re.fullmatch(r"refs/heads/[A-Za-z0-9._/-]+", dst):
+        return None, bad + " (deletions and non-branch destinations are denied)"
+    if src == "HEAD":
+        branch = _agentio.run_git(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=cwd)
+        src_branch = branch.stdout.strip() if branch.returncode == 0 else ""
+        rev = "HEAD"
+    else:
+        if src.startswith("refs/heads/"):
+            src_branch = src[len("refs/heads/"):]
+            rev = src
+        elif re.fullmatch(r"[A-Za-z0-9._/-]+", src):
+            src_branch = src
+            rev = "refs/heads/" + src
+        else:
+            return None, bad + " (source must be a branch name or HEAD)"
+    resolved = _agentio.run_git(["rev-parse", "--verify", rev + "^{commit}"], cwd=cwd)
+    if resolved.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", resolved.stdout.strip()):
+        return None, "outgoing source branch cannot be resolved to a commit"
+    return (remote, src_branch, resolved.stdout.strip(), dst[len("refs/heads/"):]), None
+
+
+def push_problems(cwd: str, fallback: str = "", args: tuple[str, ...] | None = None) -> list[str] | None:
     """What is missing for a push or PR; [] = allowed; None = no harness ledger (allowed, logged).
     A target given in the command (cd / git -C) that is not a git repository falls back to the session cwd; if that is no
     harness repo either, the push is denied (an unresolved target is never "no harness")."""
     led, why = _safe_find_ledger(cwd)
     if led is None and why == "not a git repository" and getattr(cwd, "given", False):
+        if args is not None:
+            return [f"the explicit push target `{str(cwd)[:120]}` cannot be resolved to a git repository; session-repository fallback is denied"]
         led, why2 = _safe_find_ledger(fallback) if fallback else (None, "")
         if led is None:
             return [f"the push target `{str(cwd)[:120]}` cannot be resolved to a git repository (use a plain absolute path "
@@ -627,9 +734,79 @@ def push_problems(cwd: str, fallback: str = "") -> list[str] | None:
     if led is None:
         return None
     try:
-        return _ledger_problems(str(cwd), led)
+        if args is None:
+            return _ledger_problems(str(cwd), led)
+        return _outgoing_ledger_problems(str(cwd), led, args)
     except Exception:  # noqa: BLE001 - a broken ledger fails closed
         return ["ledger unreadable or malformed"]
+
+
+def _outgoing_ledger_problems(cwd: str, led: Path, args: tuple[str, ...]) -> list[str]:
+    import _agentio
+    resolved, error = _resolve_outgoing_push(cwd, args)
+    if error:
+        return [error]
+    remote, branch, sha, destination = resolved
+    try:
+        data = json.loads(led.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return ["ledger unreadable or malformed"]
+    if not isinstance(data, dict) or not isinstance(data.get("sprints", []), list):
+        return ["ledger unreadable or malformed"]
+    approval = data.get("approval")
+    request_id = approval.get("request_id") if isinstance(approval, dict) else None
+    if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", request_id):
+        return ["no correlated GPT-PM approval is recorded for the outgoing commit"]
+    if approval.get("head") != sha:
+        return ["recorded GPT-PM approval head does not equal the outgoing source commit"]
+    # Reuse the project's own PM Bridge verifier, which validates request, project, latest correlated reply,
+    # bare APPROVE verdict and exact SHA in the reply. Its location follows the installed ledger.
+    common = _agentio.run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=cwd)
+    top = _agentio.run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
+    if common.returncode or top.returncode:
+        return ["repository root cannot be resolved for PM approval verification"]
+    common_path = Path(common.stdout.strip())
+    repo_root = Path(top.stdout.strip())
+    common_root = common_path.parent if common_path.name == ".git" else common_path
+    ledger_script = next((p for p in (common_root / ".harness-tools" / "ledger.py", repo_root / "tools" / "ledger.py") if p.is_file()), None)
+    if ledger_script is None:
+        return ["project ledger PM approval verifier is unavailable"]
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rules_gate_project_ledger", ledger_script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        reply, why = module.find_pm_approve(request_id, sha, data.get("project") or repo_root.name)
+    except Exception:
+        return ["project ledger PM approval verifier failed"]
+    if not reply or approval.get("reply_id") != reply:
+        return [why or "outgoing SHA has no matching recorded GPT-PM reply id"]
+    if any(not isinstance(s, dict) for s in data["sprints"]):
+        return ["ledger unreadable or malformed"]
+    active = next((s for s in data["sprints"] if s.get("state") != "closed" and s.get("branch") == branch), None)
+    if active is None:
+        # A published primary tip may synchronize a main/master target once all rules are satisfied.
+        if destination not in ("main", "master"):
+            return [f"outgoing source branch {branch or '(detached HEAD)'} does not match an active sprint branch"]
+        primary = _agentio.run_git(["ls-remote", remote, "refs/heads/main", "refs/heads/master"], cwd=cwd)
+        target = _agentio.run_git(["ls-remote", remote, "refs/heads/" + destination], cwd=cwd)
+        if primary.returncode or target.returncode or not any(line.split() and line.split()[0] == sha for line in primary.stdout.splitlines()):
+            return ["unknown sprint branch is not an exact published main/master tip"]
+        dest_sha = next((line.split()[0] for line in target.stdout.splitlines() if line.split() and line.split()[1] == "refs/heads/" + destination), None)
+        if dest_sha:
+            ancestor = _agentio.run_git(["merge-base", "--is-ancestor", dest_sha, sha], cwd=cwd)
+            if ancestor.returncode:
+                return ["remote destination is not a resolvable ancestor of the published main/master tip"]
+        return []
+    if destination in ("main", "master") and branch not in ("main", "master"):
+        return ["an active sprint branch cannot target protected main/master"]
+    tasks = active.get("tasks", [])
+    if not isinstance(tasks, list) or any(not isinstance(t, dict) for t in tasks):
+        return ["ledger unreadable or malformed"]
+    open_ = [f"{t.get('id')} ({t.get('state')})" for t in tasks if isinstance(t, dict) and t.get("state") not in ("verified", "done") and not t.get("blocked")]
+    if open_:
+        return [f"sprint {active.get('id')} has tasks that are neither verified/done nor explicitly blocked: " + ", ".join(open_[:12])]
+    return []
 
 
 def _ledger_problems(cwd: str, led: Path) -> list[str]:
@@ -718,13 +895,14 @@ def decide(data: dict) -> str | None:
                     f"subagent `{agent}`. " + ALTERNATIVE)
     for kind, detail, fcwd in findings:
         if kind in ("push", "pr-create"):
-            probs = push_problems(fcwd, cwd)
+            probs = push_problems(fcwd, cwd, getattr(detail, "args", None) if kind == "push" else None)
             if probs is None:
                 log({"verdict": "allow-no-ledger", "kind": kind, "cwd": fcwd})
                 continue
             if probs:
-                return (f"Operator rule (one PR per sprint, push and PR only after GPT-PM approval of this HEAD and every "
-                        f"sprint task verified): `{detail}` is denied. Missing: " + "; ".join(probs) + ".")
+                gate = ("actual outgoing commit" if kind == "push" else "current HEAD")
+                return (f"Operator rule (one PR per sprint, push and PR only after GPT-PM approval of the {gate} and every "
+                        f"matching sprint task verified): `{detail}` is denied. Missing: " + "; ".join(probs) + ".")
     return None
 
 

@@ -1,5 +1,13 @@
 # Lessons log
 
+## 2026-11-17 — S33 authorize the actual write set (SHORTCOMING)
+
+- Kind: SHORTCOMING
+- Facts: a push of an explicitly approved published commit was refused because the shell guard checked another branch's checkout and first unclosed sprint. The initial repair draft also required an already-updated destination and read just one configured push URL; direct source inspection identified both before testing.
+- Root cause: the guard discarded push arguments and substituted ambient state; the draft treated a no-op as synchronization and a fetch endpoint as the entire write destination.
+- Caught by: the operator's concrete master synchronization and parent source inspection.
+- Rule: preserve the actual source/destination through parsing, resolve every write-affecting option/configuration, bind authorization to that exact commit and repository, and test an old destination with a newer published source while an unrelated checkout remains unfinished.
+
 ## 2026-11-10 Harness v2 core
 - Kind: SUCCESS. Facts: reviewer quality was measured before choosing (194 agent runs, bench/); general-purpose cost 3-3.6x more without better results; domain agents matched code-reviewer on domain bugs at the same cost.
 - Why it worked: decisions came from seeded and real defects, not from agent descriptions.

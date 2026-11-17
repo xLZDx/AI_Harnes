@@ -1,5 +1,11 @@
 # Decision log
 
+## 2026-11-17 — S33 outgoing-ref approval scope
+
+The operator explicitly authorized correcting the push guard and completing PDCC published-main to master synchronization, without closing unfinished tasks. The observed refusal compared approval for outgoing master75f3ac04 with unrelated checkout33e00266 and selected its open sprint. S33-T1 changes only rules_gate.py's push authorization path: retain one explicit source/destination, resolve the outgoing commit, revalidate the real PM reply and select the source branch's sprint. A primary-branch synchronization without a matching sprint requires the same exact approved SHA already published on the same remote plus a normal fast-forward target. Ordinary unknown/unapproved pushes remain denied. Native pre-push hooks and branch protection stay active.
+
+The Harness_v2 primary checkout has unrelated dirty source/test deletion; it is preserved. Implementation uses a temporary worktree from published ba07e55. Main-session inspection found two concrete omissions in the first draft (requiring the old destination already equal the new tip, and reading only the first push URL); both were returned to the implementer before functional execution. Source review also required rejecting attached configuration overrides and implicit tag/submodule/mirror pushes. Functional tests are owned by the actual functional-test-reviewer; no CI or prohibited runner is authorized. The implementer reported one earlier git diff --check before final coding; it is not functional evidence and was not repeated as a gate. Current verification and final review remain pending until their real results are recorded.
+
 ## 2026-11-10 Harness v2 core
 - Built from measurements in D:\Backup\claude-harness-2026-11-10-copy (series 1-7): 45 -> 21 global agents, 48 -> 24 skills.
 - Operator decisions: keep and improve the operator's own agents; launch agents per task, not all at once; security-reviewer only locally or on request; all agents Sonnet medium; GPT-PM once per sprint until APPROVE; 0-4 reviewers with consensus.
