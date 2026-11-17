@@ -1,5 +1,36 @@
 # Lessons log
 
+## 2026-11-17 — Integrate the approved branch without repeating completed work (SUCCESS)
+
+- Kind: SUCCESS
+- Facts: the unchanged reviewed S33 branch was published normally after a real publication-scope approval. Main advanced independently, and the actual merge conflict was confined to generated HTML; both code histories and logs were preserved, and the canonical renderer resolves the report rather than selecting one side's stale output.
+- Why it worked: separated existing-code acceptance, explicit delivery scope, new integration revision and formal role-registration limitation. The operator's prohibition on extra checks is recorded as NOT_RUN, not disguised as a pass.
+- Rule: reuse genuine unchanged-code evidence; resolve only the actual integration conflict, obtain exact-head delta approval, and never replace an evidence-registration error with invented verification or ownership blockers.
+
+## 2026-11-17 — Bound the maintenance repair before iterating (SHORTCOMING)
+
+The last wrapper regression required one further fixture-only correction (TemporaryDirectory versus Path), not another hook change. Three current-source methods passed and the corrected environment method passed in its focused run. Retain the failed invocation and distinguish aggregate scenario evidence from a single green full-file result. Parent responsibility: inspect newly added fixture types before delegating execution, rather than spending another cycle discovering an authoring error.
+
+- Kind: SHORTCOMING
+- Facts: the parent let a narrow outgoing-ref repair grow through repeated wrapper cases and test-fixture corrections until the operator explicitly limited the pass to the last correction. A malformed quoted search also caused a misleading GO refusal during delegation.
+- Root cause: started with per-wrapper exceptions instead of stating a conservative supported-command boundary, and did not catch simple fixture invocation errors before execution.
+- Rule: define the supported command shapes first, reject ambiguous contexts, inspect each new fixture call against its helper signature, and stop implementation at the operator's scope limit. Record unrelated weaknesses as backlog items instead of opening another hook-repair round.
+
+## 2026-11-17 — S33 complete effective-context validation (FAILURE)
+
+- Kind: FAILURE
+- Facts: the first tested repair still discarded command-scoped environment changes, allowing Git to see a different push URL from the validator; it also permitted creating a missing destination in an existing-ref synchronization exception. Local tests passed but did not cover these inputs. Independent silent-failure/Python review caught the defects.
+- Root cause: the parent reviewed explicit Git flags/configuration but omitted environment as an input channel and treated absent destination as a harmless extension of fast-forward scope.
+- Rule: bind the effective execution context, including environment, before authorizing a write; an existing-ref exception must prove existence as well as ancestry. Keep passing tests distinct from complete coverage and fix accepted findings before installation.
+
+## 2026-11-17 — S33 authorize the actual write set (SHORTCOMING)
+
+- Kind: SHORTCOMING
+- Facts: a push of an explicitly approved published commit was refused because the shell guard checked another branch's checkout and first unclosed sprint. The initial repair draft also required an already-updated destination and read just one configured push URL; direct source inspection identified both before testing.
+- Root cause: the guard discarded push arguments and substituted ambient state; the draft treated a no-op as synchronization and a fetch endpoint as the entire write destination.
+- Caught by: the operator's concrete master synchronization and parent source inspection.
+- Rule: preserve the actual source/destination through parsing, resolve every write-affecting option/configuration, bind authorization to that exact commit and repository, and test an old destination with a newer published source while an unrelated checkout remains unfinished.
+
 ## 2026-11-10 Harness v2 core
 - Kind: SUCCESS. Facts: reviewer quality was measured before choosing (194 agent runs, bench/); general-purpose cost 3-3.6x more without better results; domain agents matched code-reviewer on domain bugs at the same cost.
 - Why it worked: decisions came from seeded and real defects, not from agent descriptions.
