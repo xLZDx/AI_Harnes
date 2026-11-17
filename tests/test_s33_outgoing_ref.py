@@ -216,12 +216,19 @@ class OutgoingReferenceTests(unittest.TestCase):
                      f"GIT_CONFIG_VALUE_0={value} {plain}")
         wrapped = (f"env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl "
                    f"GIT_CONFIG_VALUE_0={value} {plain}")
+        dotenv_file = self.temp / "harmless.env"
+        dotenv_file.write_text("EXAMPLE=1\n", encoding="utf-8")
         for command in (injection, wrapped, f"env -u GIT_CONFIG_COUNT {plain}",
                         f"HOME={self.temp.name} {plain}", f"PATH={self.temp.name} {plain}",
                         f"env -u HOME {plain}", f"env -u PATH {plain}",
                         "$env:GIT_CONFIG_COUNT=1; git push origin main:refs/heads/main",
                         "set GIT_CONFIG_COUNT=1 && git push origin main:refs/heads/main",
-                        "env GIT_CONFIG_COUNT=1 bash -c '$(git push origin main:refs/heads/main)'"):
+                        "env GIT_CONFIG_COUNT=1 bash -c '$(git push origin main:refs/heads/main)'",
+                        f"cross-env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0={value} {plain}",
+                        f"dotenv -e {dotenv_file} {plain}",
+                        f"dotenvx run -f {dotenv_file} -- {plain}",
+                        f"sudo -H {plain}", "bash -c 'git push origin main:refs/heads/main'",
+                        "npx git push origin main:refs/heads/main"):
             with self.subTest(command=command):
                 f.expect(command, False)
 
@@ -232,7 +239,7 @@ class OutgoingReferenceTests(unittest.TestCase):
                             "tasks": [{"id": "T02", "state": "todo"}]}])
         before = json.loads(f.ledger_path.read_text(encoding="utf-8"))
         # Removing a ref is confined to this temporary bare fixture; the hook itself is read-only.
-        git("--git-dir", f.remote, "update-ref", "-d", "refs/heads/master")
+        git("--git-dir", f.remote, "update-ref", "-d", "refs/heads/master", cwd=f.repo)
         self.assertEqual(git("ls-remote", "origin", "refs/heads/master", cwd=f.repo).returncode, 0)
         self.assertEqual(git("ls-remote", "origin", "refs/heads/master", cwd=f.repo).stdout, "")
         f.expect("git push origin main:refs/heads/master", False)

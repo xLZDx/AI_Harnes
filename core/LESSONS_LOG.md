@@ -1,5 +1,12 @@
 # Lessons log
 
+## 2026-11-17 — Bound the maintenance repair before iterating (SHORTCOMING)
+
+- Kind: SHORTCOMING
+- Facts: the parent let a narrow outgoing-ref repair grow through repeated wrapper cases and test-fixture corrections until the operator explicitly limited the pass to the last correction. A malformed quoted search also caused a misleading GO refusal during delegation.
+- Root cause: started with per-wrapper exceptions instead of stating a conservative supported-command boundary, and did not catch simple fixture invocation errors before execution.
+- Rule: define the supported command shapes first, reject ambiguous contexts, inspect each new fixture call against its helper signature, and stop implementation at the operator's scope limit. Record unrelated weaknesses as backlog items instead of opening another hook-repair round.
+
 ## 2026-11-17 — S33 complete effective-context validation (FAILURE)
 
 - Kind: FAILURE

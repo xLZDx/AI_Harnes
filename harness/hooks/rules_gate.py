@@ -356,12 +356,20 @@ def classify(tokens: list[str], cwd: str, depth: int = 0, command_env: bool = Fa
     if b in SHELLS:  # bash -c "npm test", powershell -Command "..."
         for i, a in enumerate(rest):
             if a.lower() in ("-c", "-lc", "-command", "-c", "/c", "/k", "-cmd") and i + 1 < len(rest):
-                return analyze(" ".join(rest[i + 1:]), cwd, depth + 1, command_env)
+                return analyze(" ".join(rest[i + 1:]), cwd, depth + 1, True)
         return []
     if b in WRAPPERS and b not in ("npx", "pnpx", "bunx"):
-        return classify(strip_wrapper(b, rest), cwd, depth + 1, command_env or b == "env")
+        findings = classify(strip_wrapper(b, rest), cwd, depth + 1, True)
+        # Unsupported wrapper grammars (for example dotenvx run) must not hide a
+        # literal Git push. Discover it only to deny it, never to authorize it.
+        if not any(kind == "push" for kind, _, _ in findings):
+            for offset, token in enumerate(rest):
+                if base(token) == "git":
+                    findings.extend(item for item in classify(rest[offset:], cwd, depth + 1, True)
+                                    if item[0] == "push")
+        return findings
     if b in ("npx", "pnpx", "bunx"):
-        return classify(skip_flags(rest, {"-p", "--package", "-c", "--call"}), cwd, depth + 1, command_env)
+        return classify(skip_flags(rest, {"-p", "--package", "-c", "--call"}), cwd, depth + 1, True)
 
     if b == "gh":
         subs, skip = [], False
@@ -443,20 +451,20 @@ def classify(tokens: list[str], cwd: str, depth: int = 0, command_env: bool = Fa
                 return [(k, f"{b} run {script}", cwd)]
             return []
         if sub in ("exec", "dlx", "x"):
-            return classify(skip_flags(after, PKG_VFLAGS), cwd, depth + 1, command_env)
+            return classify(skip_flags(after, PKG_VFLAGS), cwd, depth + 1, True)
         if sub == "workspace" and after:  # yarn workspace <name> <command...>
-            return classify([b, *after[1:]], cwd, depth + 1, command_env)
+            return classify([b, *after[1:]], cwd, depth + 1, True)
         if sub == "workspaces":  # yarn workspaces foreach [flags] run test
             a2 = skip_flags(after, PKG_VFLAGS)
             if a2 and a2[0].lower() == "foreach":
                 a2 = skip_flags(a2[1:], PKG_VFLAGS)
-            return classify([b, *a2], cwd, depth + 1, command_env) if a2 else []
+            return classify([b, *a2], cwd, depth + 1, True) if a2 else []
         k = script_kind(sub)
         if k == "test":
             return [("named-test" if has_file(after) else "full-test", f"{b} {sub}", cwd)]
         if k:
             return [(k, f"{b} {sub}", cwd)]
-        return classify(args, cwd, depth + 1, command_env) if b in ("pnpm", "yarn", "bun") else []
+        return classify(args, cwd, depth + 1, True) if b in ("pnpm", "yarn", "bun") else []
 
     # python family: python -m mod ..., python script.py
     if b in PY_BASES:
@@ -467,7 +475,7 @@ def classify(tokens: list[str], cwd: str, depth: int = 0, command_env: bool = Fa
                 mod, margs = args[j + 1], args[j + 2:]
                 break
         if mod:
-            return classify([mod, *margs], cwd, depth + 1, command_env) if base(mod) in {
+            return classify([mod, *margs], cwd, depth + 1, True) if base(mod) in {
                 "pytest", "unittest", "ruff", "flake8", "pylint", "mypy", "pyright", "black", "tsc"} else []
         script = next((a for a in args if not is_flag(a)), "")
         if script:
@@ -584,7 +592,7 @@ def analyze(command: str, cwd: str, depth: int = 0, command_env: bool = False) -
     segments = split_segments(outer)
     scoped_env = command_env or len(segments) > 1
     for inner in inners:
-        found.extend(analyze(inner, cwd, depth + 1, scoped_env))
+        found.extend(analyze(inner, cwd, depth + 1, True))
     for seg in segments:
         toks = clean_tokens(tokenize(seg))
         toks = clean_tokens(strip_case(toks)) if toks else toks
@@ -647,6 +655,8 @@ def _resolve_outgoing_push(cwd: str, args: tuple[str, ...]):
     """Resolve only a plain configured-remote push with one explicit source:destination refspec."""
     import _agentio
     bad = "push destination/refspec is ambiguous; use `git push <remote> <branch>:refs/heads/<branch>`"
+    if "--command-scoped-env" in args:
+        return None, "wrapped, environment-modified or compound push is unsupported; use a standalone git push or git -C push"
     remote, specs, i = None, [], 0
     valued = {"--repo", "--receive-pack", "--exec", "--push-option", "-o"}
     while i < len(args):

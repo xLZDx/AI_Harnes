@@ -50,3 +50,13 @@ Source commit: `5193381e41b63a398a05507ad4d71e6c3dc3fcb8`. Before the run, `harn
 Exact command: `python tests/test_s33_outgoing_ref.py` (stdout and stderr redirected to `D:/tmp/hv2-s33-postcommit-functional.log`). The command completed with exit code 0. Output: `Ran 8 tests in 278.242s` and `OK`. Log SHA256: `872F7E1780350490BFFFD74150569F5F838DB462D9F85E55869E9E8F425F7E3C`.
 
 This execution covers the eight methods reported by `unittest`, including the true dry-run flag distinction. It exercises local temporary Git repositories/remotes and synthetic PM approval records; it does not prove installed-hook behavior, real network/remote behavior, staging or production behavior. CI, broader suites, lint, typecheck, build, and production checks were not run.
+
+## Review-fix regression evidence (2026-11-17)
+
+Source commit: `f23de0c32b6377df9519c3b8707d24e23c710cfe`. At execution start, `harness/hooks/rules_gate.py` SHA256 was `5BEF0A3D038FBBB82F5A88A6277872531F28A0D31A2E812043BCC4176A27CBDE`; the committed `tests/test_s33_outgoing_ref.py` SHA256 was `7B89359755AB8BD15682DD112A3A608E69289EEDF16622AF80DE8AEE1F8C17A4`.
+
+Exact full-file command: `python tests/test_s33_outgoing_ref.py` (stdout/stderr redirected to `D:/tmp/hv2-s33-reviewfix-functional.log`). It exited 1 after running 10 tests: nine passed and `test_missing_master_destination_denies_without_changing_ledger` errored before exercising its assertions. The fixture called its `git()` helper without required keyword-only `cwd`; this is a test-fixture error (`TypeError`), not a product assertion failure. Full-run log SHA256: `298DE78FF9EA853FA2C39FAE893017F9359500A65010F0CF43D7BA2628BDDA79`.
+
+The fixture call was corrected to pass `cwd=f.repo`, without changing its expected behavior or product source. Exact focused command: `python tests/test_s33_outgoing_ref.py OutgoingReferenceTests.test_missing_master_destination_denies_without_changing_ledger` (stdout/stderr redirected to `D:/tmp/hv2-s33-missing-target-focused.log`). It exited 0: one test ran in 18.811s and reported `OK`. Focused log SHA256: `8911387CF4691EA65A574D05719720BF368FF3853AABCF6D932EDEA57AF053A7`. The corrected test file SHA256 is `FF514416C121259BB2424B0EEDDC605A04E66B2AD563CB924E3FF22B79B6218E`.
+
+Thus nine methods passed in the full run and the sole fixture-blocked method passed in its focused rerun; the complete ten-method file was not rerun after the fixture correction. This is local Git fixture evidence only, not installed-hook, live remote, staging, production or CI evidence. No broader suites, lint, typecheck, build or verification scripts were run.
