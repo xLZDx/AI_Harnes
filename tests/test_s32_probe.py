@@ -129,6 +129,9 @@ def test_wrapper_option_values_never_hide_the_command_word():
         "env -iu A git reset --hard", "env -iC /x git restore .", "env -a foo git reset --hard", "sudo -nu root git reset --hard",
         "sudo -u#1000 git reset --hard", "time -p git reset --hard", "exec -a n git reset --hard", "command -p git reset --hard",
         "xargs -n 1 git reset --hard", "nice -n +5 git reset --hard", "stdbuf -o L git reset --hard", "sudo -u $(id -un) git reset --hard",
+        # reviewer round 11: a leftover option value followed by a second wrapper or a shell -c
+        "sudo -nu root bash -c 'git reset --hard'", 'sudo -u "a b" bash -c "git reset --hard"', "sudo -nu root nohup git reset --hard",
+        "env -iu A bash -c 'git restore .'", "sudo -nu root env -u X git reset --hard",
     ]
     for client in (None, "codex"):
         for cmd in cmds:

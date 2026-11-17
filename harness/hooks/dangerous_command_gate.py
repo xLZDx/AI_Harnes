@@ -461,7 +461,10 @@ def segments(command: str, depth: int = 0) -> list[str]:
             # `a\ b`), so the prefix regex can leave a value in front of the real command. Judge every suffix that starts at a later word too:
             # `sudo -nu root git reset --hard` also yields `git reset --hard`. A harmless `sudo echo git reset --hard` is over-blocked (rare).
             for m in list(re.finditer(r"\S+", seg))[1:8]:
-                out.append(seg[m.start():])
+                if depth < 3:  # the suffix may itself start with another wrapper or `bash -c '...'`: unwrap it like any segment
+                    out.extend(segments(seg[m.start():], depth + 1))
+                else:
+                    out.append(seg[m.start():])
     return out
 
 
