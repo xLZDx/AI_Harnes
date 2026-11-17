@@ -425,15 +425,10 @@ def segments(command: str, depth: int = 0) -> list[str]:
             stripped = PREFIXES.sub("", no_assign, count=1)
             if stripped != no_assign:
                 prefixed = True
-                if "\\" in no_assign[:len(no_assign) - len(stripped)]:  # `sudo -u a\ b git ...`: an escaped space was cut by the prefix regex
-                    poisoned = True
-                    break
             stripped = LEADERS.sub("", stripped.strip(), count=1)
             if stripped == seg:
                 break
             seg = stripped.strip()
-        if prefixed and not poisoned and not _balanced(seg):
-            poisoned = True  # an option value with a quoted space was cut by the prefix regex (`env -u "A B" git ...`): fail closed
         if poisoned:
             out.append(UNPARSABLE_ASSIGNMENT + " " + seg)
             continue
@@ -461,6 +456,12 @@ def segments(command: str, depth: int = 0) -> list[str]:
                 out.extend(inner)
                 continue
         out.append(seg)
+        if prefixed:
+            # S32 (GPT-PM round 2, reviewer round 10): a wrapper's option values differ per wrapper (`-iu A`, `-a foo`, `-n +5`, `$(id -un)`,
+            # `a\ b`), so the prefix regex can leave a value in front of the real command. Judge every suffix that starts at a later word too:
+            # `sudo -nu root git reset --hard` also yields `git reset --hard`. A harmless `sudo echo git reset --hard` is over-blocked (rare).
+            for m in list(re.finditer(r"\S+", seg))[1:8]:
+                out.append(seg[m.start():])
     return out
 
 

@@ -123,5 +123,27 @@ def test_normal_wrapper_invocations_stay_allowed():
         assert not is_denied(p), f"{cmd!r}: {p.stdout!r}"
 
 
+def test_wrapper_option_values_never_hide_the_command_word():
+    """Reviewer round 10: the prefix regex cannot know every wrapper option; the gate also judges every later-word suffix."""
+    cmds = [
+        "env -iu A git reset --hard", "env -iC /x git restore .", "env -a foo git reset --hard", "sudo -nu root git reset --hard",
+        "sudo -u#1000 git reset --hard", "time -p git reset --hard", "exec -a n git reset --hard", "command -p git reset --hard",
+        "xargs -n 1 git reset --hard", "nice -n +5 git reset --hard", "stdbuf -o L git reset --hard", "sudo -u $(id -un) git reset --hard",
+    ]
+    for client in (None, "codex"):
+        for cmd in cmds:
+            p = call(cmd, client)
+            assert p.returncode == 0, p.stderr
+            assert is_denied(p), f"{client}: expected deny for {cmd!r}, got stdout={p.stdout!r}"
+
+
+def test_harmless_wrapped_commands_with_quotes_stay_allowed():
+    for cmd in ('sudo bash -c "cd /x; ls"', 'sudo echo "a b"', 'timeout 5 sh -c "a && b"', 'nohup sh -c "make; make test" &',
+                "nice -n 10 make", "xargs -n1 echo", "command -v git", "timeout 5 sleep 1"):
+        p = call(cmd)
+        assert p.returncode == 0, p.stderr
+        assert not is_denied(p), f"{cmd!r}: {p.stdout!r}"
+
+
 if __name__ == "__main__":
     sys.exit(hv2.run_all(globals()))
