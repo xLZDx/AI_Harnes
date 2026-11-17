@@ -95,5 +95,33 @@ def test_assignment_prefix_on_harmless_commands_is_allowed():
         assert not is_denied(p), f"{cmd!r}: {p.stdout!r}"
 
 
+def test_env_split_string_and_quoted_wrapper_options_do_not_hide_a_command():
+    """GPT-PM round 2 (both MAJOR): `env -S "git restore ."` and `env -u "A B" git restore .` / `sudo -u "a b" ...`."""
+    cmds = [
+        'env -S "git restore ."',
+        "env -S 'git reset --hard'",
+        "env -S git restore .",
+        'env -iS "git restore ."',
+        'env --split-string="git restore ."',
+        'env -u "A B" git restore .',
+        'env -C "/my dir" git reset --hard',
+        'sudo -u "a b" git reset --hard',
+        "sudo -u a\\ b git restore .",
+    ]
+    for client in (None, "codex"):
+        for cmd in cmds:
+            p = call(cmd, client)
+            assert p.returncode == 0, p.stderr
+            assert is_denied(p), f"{client}: expected deny for {cmd!r}, got stdout={p.stdout!r}"
+
+
+def test_normal_wrapper_invocations_stay_allowed():
+    for cmd in ("env FOO=1 git restore docs/plan.md", "env -u X echo hi", "sudo -u root git restore docs/plan.md", "env FOO=1 make",
+                "sudo ls", 'echo "a; b"', "time git status", "env make -S"):
+        p = call(cmd)
+        assert p.returncode == 0, p.stderr
+        assert not is_denied(p), f"{cmd!r}: {p.stdout!r}"
+
+
 if __name__ == "__main__":
     sys.exit(hv2.run_all(globals()))

@@ -367,6 +367,45 @@ def _strip_assignments(seg: str) -> str | None:
             return seg
 
 
+def _balanced(s: str) -> bool:
+    """True when every shell word of s closes its quotes and substitutions."""
+    i, n = 0, len(s)
+    while i < n:
+        if s[i].isspace():
+            i += 1
+            continue
+        e = _read_word(s, i)
+        if e is None:
+            return False
+        i = e if e > i else i + 1
+    return True
+
+
+def _env_split_string(seg: str) -> bool:
+    """`env -S "git restore ."` (also `--split-string`, `-iS`, `-S git`) runs a command written inside an option value: not judged."""
+    words = seg.split()
+    if not words or words[0].lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1] not in {"env", "env.exe"}:
+        return False
+    i = 1
+    while i < len(words):
+        w = words[i]
+        if w == "--":
+            return False
+        if w.startswith("--"):
+            if w.split("=", 1)[0] == "--split-string":
+                return True
+            i += 2 if w in {"--unset", "--chdir"} else 1
+        elif w.startswith("-") and len(w) > 1:
+            if "S" in w[1:].split("=")[0] and not w.startswith("-u") and not w.startswith("-C"):
+                return True
+            i += 2 if w in {"-u", "-C"} else 1
+        elif _ASSIGN.match(w):
+            i += 1
+        else:
+            return False
+    return False
+
+
 def segments(command: str, depth: int = 0) -> list[str]:
     """Return independently classifiable commands, unwrapping common shell wrappers."""
     out: list[str] = []
@@ -377,16 +416,24 @@ def segments(command: str, depth: int = 0) -> list[str]:
     for raw in SEPARATORS.split(command or ""):
         seg = raw.strip()
         poisoned = False
+        prefixed = False
         while seg:
             no_assign = _strip_assignments(seg)
-            if no_assign is None:
+            if no_assign is None or _env_split_string(no_assign):
                 poisoned = True
                 break
             stripped = PREFIXES.sub("", no_assign, count=1)
+            if stripped != no_assign:
+                prefixed = True
+                if "\\" in no_assign[:len(no_assign) - len(stripped)]:  # `sudo -u a\ b git ...`: an escaped space was cut by the prefix regex
+                    poisoned = True
+                    break
             stripped = LEADERS.sub("", stripped.strip(), count=1)
             if stripped == seg:
                 break
             seg = stripped.strip()
+        if prefixed and not poisoned and not _balanced(seg):
+            poisoned = True  # an option value with a quoted space was cut by the prefix regex (`env -u "A B" git ...`): fail closed
         if poisoned:
             out.append(UNPARSABLE_ASSIGNMENT + " " + seg)
             continue
