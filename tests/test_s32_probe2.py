@@ -40,3 +40,7 @@ def test_plain_named_restore_allowed():
     p = call("git restore docs/plan.md")
     assert p.returncode == 0, p.stderr
     assert not is_denied(p), p.stdout
+
+
+if __name__ == "__main__":
+    sys.exit(hv2.run_all(globals()))
