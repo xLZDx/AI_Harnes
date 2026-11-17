@@ -16,7 +16,7 @@ Pre-install review only. This skill never grants authority to install a package,
 6. **Integration proposal:** Identify exact new files and manifest entry, collisions, possible changes to routing, and a rollback. Do not touch `CORE.md`, hooks, model pins or approval gates as an incidental dependency.
 
 ## Required output
-`source + pinned revision | license | unique function | duplicate function | security findings | external data/paid calls | token evidence | verdict KEEP/OPTIONAL/REJECT | reversible integration path`.
+`source + pinned revision | license | unique function | duplicate function | security findings | static scan: RAN clean / RAN findings / NOT_RUN (reason) | external data/paid calls | token evidence | verdict KEEP/OPTIONAL/REJECT | reversible integration path`. A missing scanner, a wrapper error or an empty report is `NOT_RUN`, never "clean".
 
 ## Stop conditions
 - Unclear license or provenance.

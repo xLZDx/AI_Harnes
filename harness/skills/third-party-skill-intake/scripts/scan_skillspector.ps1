@@ -9,9 +9,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$scanner = Get-Command 'skillspector' -ErrorAction SilentlyContinue
+$scanner = Get-Command 'skillspector' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $scanner) {
-    throw 'SkillSpector is not installed. Review optional/skillspector/README.md and use its opt-in installer if approved.'
+    throw 'SkillSpector is not installed, so nothing was scanned (record the scan as NOT_RUN). Install it only after the operator approves.'
 }
 
 $resolved = Resolve-Path -LiteralPath $Target -ErrorAction Stop
@@ -25,10 +25,16 @@ if ($OutputPath) {
     if (-not $parent -or -not (Test-Path -LiteralPath $parent -PathType Container)) {
         throw 'Output directory must already exist; no directories are created by this scanner wrapper.'
     }
+    if (Test-Path -LiteralPath $OutputPath) {
+        throw 'OutputPath already exists; remove it first so a stale report cannot pass as a new scan.'
+    }
     $arguments += @('--output', $OutputPath)
 }
 
 & $scanner.Source @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "SkillSpector reported failure (exit $LASTEXITCODE). Do not treat the target as scanned."
+}
+if ($OutputPath -and (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf) -or (Get-Item -LiteralPath $OutputPath).Length -eq 0)) {
+    throw 'SkillSpector exited 0 but wrote no report. Record the scan as NOT_RUN.'
 }
