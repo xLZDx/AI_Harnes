@@ -216,7 +216,7 @@ class OutgoingReferenceTests(unittest.TestCase):
                      f"GIT_CONFIG_VALUE_0={value} {plain}")
         wrapped = (f"env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl "
                    f"GIT_CONFIG_VALUE_0={value} {plain}")
-        dotenv_file = self.temp / "harmless.env"
+        dotenv_file = f.tmp / "harmless.env"
         dotenv_file.write_text("EXAMPLE=1\n", encoding="utf-8")
         for command in (injection, wrapped, f"env -u GIT_CONFIG_COUNT {plain}",
                         f"HOME={self.temp.name} {plain}", f"PATH={self.temp.name} {plain}",

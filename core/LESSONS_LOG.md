@@ -2,6 +2,8 @@
 
 ## 2026-11-17 — Bound the maintenance repair before iterating (SHORTCOMING)
 
+The last wrapper regression required one further fixture-only correction (TemporaryDirectory versus Path), not another hook change. Three current-source methods passed and the corrected environment method passed in its focused run. Retain the failed invocation and distinguish aggregate scenario evidence from a single green full-file result. Parent responsibility: inspect newly added fixture types before delegating execution, rather than spending another cycle discovering an authoring error.
+
 - Kind: SHORTCOMING
 - Facts: the parent let a narrow outgoing-ref repair grow through repeated wrapper cases and test-fixture corrections until the operator explicitly limited the pass to the last correction. A malformed quoted search also caused a misleading GO refusal during delegation.
 - Root cause: started with per-wrapper exceptions instead of stating a conservative supported-command boundary, and did not catch simple fixture invocation errors before execution.
