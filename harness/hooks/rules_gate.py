@@ -84,9 +84,10 @@ class Cwd(str):
 
 class PushDetail(str):
     """Backward-compatible finding detail that retains the original git push arguments."""
-    def __new__(cls, value: str, args: list[str]):
+    def __new__(cls, value: str, args: list[str], env_modified: bool = False):
         obj = super().__new__(cls, value)
         obj.args = tuple(args)
+        obj.env_modified = env_modified
         return obj
 
 
@@ -336,13 +337,14 @@ def script_kind(name: str) -> str:
 
 # ---- classification: each finding is (kind, detail, cwd) ----------------------------------------------------------
 
-def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
+def classify(tokens: list[str], cwd: str, depth: int = 0, command_env: bool = False) -> list[tuple]:
     """Findings for one command (already split). kinds: full-test, named-test, py-script-test, lint, typecheck, verify,
     ci, push, pr-create."""
     if depth > 3:
         return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]  # fail closed: too deep to read is not allowed
     toks = list(tokens)
     while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", toks[0]):
+        command_env = True
         toks.pop(0)  # leading VAR=value
     while toks and toks[0] in ("&", "&&", "call", "."):
         toks.pop(0)
@@ -354,12 +356,12 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
     if b in SHELLS:  # bash -c "npm test", powershell -Command "..."
         for i, a in enumerate(rest):
             if a.lower() in ("-c", "-lc", "-command", "-c", "/c", "/k", "-cmd") and i + 1 < len(rest):
-                return analyze(" ".join(rest[i + 1:]), cwd, depth + 1)
+                return analyze(" ".join(rest[i + 1:]), cwd, depth + 1, command_env)
         return []
     if b in WRAPPERS and b not in ("npx", "pnpx", "bunx"):
-        return classify(strip_wrapper(b, rest), cwd, depth + 1)
+        return classify(strip_wrapper(b, rest), cwd, depth + 1, command_env or b == "env")
     if b in ("npx", "pnpx", "bunx"):
-        return classify(skip_flags(rest, {"-p", "--package", "-c", "--call"}), cwd, depth + 1)
+        return classify(skip_flags(rest, {"-p", "--package", "-c", "--call"}), cwd, depth + 1, command_env)
 
     if b == "gh":
         subs, skip = [], False
@@ -417,7 +419,9 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 return []
             if config_override:
                 args = ["--global-config-override", *args]
-            return [("push", PushDetail("git push", args), gcwd)]
+            if command_env:
+                args = ["--command-scoped-env", *args]
+            return [("push", PushDetail("git push", args, command_env), gcwd)]
         return []
 
     if b in PKG:
@@ -439,20 +443,20 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 return [(k, f"{b} run {script}", cwd)]
             return []
         if sub in ("exec", "dlx", "x"):
-            return classify(skip_flags(after, PKG_VFLAGS), cwd, depth + 1)
+            return classify(skip_flags(after, PKG_VFLAGS), cwd, depth + 1, command_env)
         if sub == "workspace" and after:  # yarn workspace <name> <command...>
-            return classify([b, *after[1:]], cwd, depth + 1)
+            return classify([b, *after[1:]], cwd, depth + 1, command_env)
         if sub == "workspaces":  # yarn workspaces foreach [flags] run test
             a2 = skip_flags(after, PKG_VFLAGS)
             if a2 and a2[0].lower() == "foreach":
                 a2 = skip_flags(a2[1:], PKG_VFLAGS)
-            return classify([b, *a2], cwd, depth + 1) if a2 else []
+            return classify([b, *a2], cwd, depth + 1, command_env) if a2 else []
         k = script_kind(sub)
         if k == "test":
             return [("named-test" if has_file(after) else "full-test", f"{b} {sub}", cwd)]
         if k:
             return [(k, f"{b} {sub}", cwd)]
-        return classify(args, cwd, depth + 1) if b in ("pnpm", "yarn", "bun") else []
+        return classify(args, cwd, depth + 1, command_env) if b in ("pnpm", "yarn", "bun") else []
 
     # python family: python -m mod ..., python script.py
     if b in PY_BASES:
@@ -463,7 +467,7 @@ def classify(tokens: list[str], cwd: str, depth: int = 0) -> list[tuple]:
                 mod, margs = args[j + 1], args[j + 2:]
                 break
         if mod:
-            return classify([mod, *margs], cwd, depth + 1) if base(mod) in {
+            return classify([mod, *margs], cwd, depth + 1, command_env) if base(mod) in {
                 "pytest", "unittest", "ruff", "flake8", "pylint", "mypy", "pyright", "black", "tsc"} else []
         script = next((a for a in args if not is_flag(a)), "")
         if script:
@@ -571,15 +575,17 @@ def strip_case(toks: list[str]) -> list[str]:
     return toks
 
 
-def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
+def analyze(command: str, cwd: str, depth: int = 0, command_env: bool = False) -> list[tuple]:
     if depth > 3:
         return [("full-test", "command nested deeper than 3 levels (substitution or shell -c) cannot be analysed; split it into plain commands", cwd)]
     found: list[tuple] = []
     cur = cwd
     outer, inners = extract_subst(strip_heredocs(command))
+    segments = split_segments(outer)
+    scoped_env = command_env or len(segments) > 1
     for inner in inners:
-        found.extend(analyze(inner, cwd, depth + 1))
-    for seg in split_segments(outer):
+        found.extend(analyze(inner, cwd, depth + 1, scoped_env))
+    for seg in segments:
         toks = clean_tokens(tokenize(seg))
         toks = clean_tokens(strip_case(toks)) if toks else toks
         if not toks:
@@ -592,7 +598,7 @@ def analyze(command: str, cwd: str, depth: int = 0) -> list[tuple]:
             if vals:
                 cur = resolve_dir(vals[0], cur)
             continue
-        found.extend(classify(toks, cur, depth))
+        found.extend(classify(toks, cur, depth, scoped_env))
     return found
 
 
@@ -790,13 +796,20 @@ def _outgoing_ledger_problems(cwd: str, led: Path, args: tuple[str, ...]) -> lis
             return [f"outgoing source branch {branch or '(detached HEAD)'} does not match an active sprint branch"]
         primary = _agentio.run_git(["ls-remote", remote, "refs/heads/main", "refs/heads/master"], cwd=cwd)
         target = _agentio.run_git(["ls-remote", remote, "refs/heads/" + destination], cwd=cwd)
-        if primary.returncode or target.returncode or not any(line.split() and line.split()[0] == sha for line in primary.stdout.splitlines()):
+        primary_rows = [line.split() for line in primary.stdout.splitlines()]
+        target_rows = [line.split() for line in target.stdout.splitlines()]
+        if (primary.returncode or target.returncode
+                or any(len(row) != 2 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", row[0])
+                       or row[1] not in ("refs/heads/main", "refs/heads/master") for row in primary_rows)
+                or not any(row[0].lower() == sha.lower() for row in primary_rows)):
             return ["unknown sprint branch is not an exact published main/master tip"]
-        dest_sha = next((line.split()[0] for line in target.stdout.splitlines() if line.split() and line.split()[1] == "refs/heads/" + destination), None)
-        if dest_sha:
-            ancestor = _agentio.run_git(["merge-base", "--is-ancestor", dest_sha, sha], cwd=cwd)
-            if ancestor.returncode:
-                return ["remote destination is not a resolvable ancestor of the published main/master tip"]
+        if (len(target_rows) != 1 or len(target_rows[0]) != 2
+                or target_rows[0][1] != "refs/heads/" + destination
+                or not re.fullmatch(r"[0-9a-fA-F]{40,64}", target_rows[0][0])):
+            return ["published-primary sync requires exactly one existing, well-formed main/master destination ref"]
+        ancestor = _agentio.run_git(["merge-base", "--is-ancestor", target_rows[0][0], sha], cwd=cwd)
+        if ancestor.returncode:
+            return ["remote destination is not a resolvable ancestor of the published main/master tip"]
         return []
     if destination in ("main", "master") and branch not in ("main", "master"):
         return ["an active sprint branch cannot target protected main/master"]

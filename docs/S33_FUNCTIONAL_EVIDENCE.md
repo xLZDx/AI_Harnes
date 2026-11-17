@@ -14,6 +14,8 @@ Coverage intent:
 - Implicit refs, multiple refs, wildcard, deletion, force, mirror, follow-tags, no-verify, unknown options and dynamic `git -C $OTHER` fail closed.
 - Configured follow-tags and distinct push URL denied; explicit real `git -C` repository path exercised.
 - Approved source advance after approval denied.
+- Direct and `env`-wrapped `GIT_CONFIG_*` overrides plus `HOME`, `PATH`, and `env -u` mutations are expected to deny while a plain approved push remains allowed.
+- An approved, published main tip targeting a missing master ref is expected to deny without changing ledger task state.
 
 ## Execution evidence
 
@@ -31,11 +33,20 @@ Exact command, invocation 3: `python tests/test_s33_outgoing_ref.py` (stdout/std
 
 Exact command, focused invocation 4: `python tests/test_s33_outgoing_ref.py OutgoingReferenceTests.test_approval_and_durable_latest_reply_must_match_exact_outgoing_sha` (stdout/stderr captured at `D:/tmp/hv2-s33-functional-focused.log`). It completed with exit code 0: one test ran in 62.874 seconds and reported `OK`.
 
-After those runs, two additional push-option regressions and a true dry-run case were added on the implementer's request, and the implementation was reported as receiving a further narrow source fix. Those latest edits have **NOT_RUN** evidence. Runtime/staging evidence is **NOT_RUN**; tests use only local temporary Git data and do not establish installed-hook, real remote or production behavior. Do not treat earlier complete-file success as validation of these latest edits.
+After those runs, push-option regressions, a true dry-run case, command-scoped environment override cases, and missing-destination behavior were added as follow-up review coverage. The latest source fixes for configuration overrides and absent destinations have not yet been committed, and those tests have **NOT_RUN** evidence. Per parent instruction, do not execute until a new source commit is confirmed. Runtime/staging evidence is **NOT_RUN**; tests use only local temporary Git data and do not establish installed-hook, real remote or production behavior. Do not treat earlier complete-file success as validation of these latest edits.
 
 ## Remaining test gaps
 
 - Non-fast-forward with a truly divergent destination, absent destination, and retry/idempotency outcomes are not independently exercised by this test file.
 - Missing or malformed ledger cases and missing PM journal are not covered here.
 - `HEAD` source mapping and unsupported submodule config variants are not separately exercised.
+- Latest environment-override and absent-destination cases are authored but remain unexecuted pending the new source commit.
 - No installed Claude/Codex hook, real network, staging or production execution is tested.
+
+## Post-commit execution evidence (2026-11-17)
+
+Source commit: `5193381e41b63a398a05507ad4d71e6c3dc3fcb8`. Before the run, `harness/hooks/rules_gate.py` SHA256 was `13ED23A92CB37E2CD473F9FA567279733723FB7046B2B09A3733A0F56C668CB7`; `tests/test_s33_outgoing_ref.py` SHA256 was `7A73ECF97E63AD9AACD9F7D640F5DDCF63FB7C89CB7D1CD10646234B51DF225A`.
+
+Exact command: `python tests/test_s33_outgoing_ref.py` (stdout and stderr redirected to `D:/tmp/hv2-s33-postcommit-functional.log`). The command completed with exit code 0. Output: `Ran 8 tests in 278.242s` and `OK`. Log SHA256: `872F7E1780350490BFFFD74150569F5F838DB462D9F85E55869E9E8F425F7E3C`.
+
+This execution covers the eight methods reported by `unittest`, including the true dry-run flag distinction. It exercises local temporary Git repositories/remotes and synthetic PM approval records; it does not prove installed-hook behavior, real network/remote behavior, staging or production behavior. CI, broader suites, lint, typecheck, build, and production checks were not run.

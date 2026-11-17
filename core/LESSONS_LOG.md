@@ -1,5 +1,12 @@
 # Lessons log
 
+## 2026-11-17 — S33 complete effective-context validation (FAILURE)
+
+- Kind: FAILURE
+- Facts: the first tested repair still discarded command-scoped environment changes, allowing Git to see a different push URL from the validator; it also permitted creating a missing destination in an existing-ref synchronization exception. Local tests passed but did not cover these inputs. Independent silent-failure/Python review caught the defects.
+- Root cause: the parent reviewed explicit Git flags/configuration but omitted environment as an input channel and treated absent destination as a harmless extension of fast-forward scope.
+- Rule: bind the effective execution context, including environment, before authorizing a write; an existing-ref exception must prove existence as well as ancestry. Keep passing tests distinct from complete coverage and fix accepted findings before installation.
+
 ## 2026-11-17 — S33 authorize the actual write set (SHORTCOMING)
 
 - Kind: SHORTCOMING

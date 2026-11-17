@@ -8,6 +8,8 @@ The R2 shell guard must retain and resolve the source/destination in the actual 
 
 Revalidate approval against the durable PM reply using the existing verifier; mutable ledger fields alone are insufficient. Keep installed native pre-push checks and branch protection. Deny unresolved refs, multi-ref pushes with any unapproved source, force/deletion/wildcard/tag mappings and unsupported options with a clear reason. Current PR creation and test-command safeguards remain in force.
 
+Review refinements: the published-primary exception requires exactly one existing destination ref, not initial branch creation. Command-scoped environment changes and compound shell expressions containing a push are unsupported and denied; issue a standalone push, using `git -C` for repository selection when needed. Environment context is retained through supported wrappers, shells and substitution recursion rather than silently discarded. This conservative boundary avoids guessing whether a preceding environment setter changes Git's effective routing.
+
 ## Verification and delivery
 
 Implementation is confined to the push authorization path. After coding, functional-test-reviewer authors and executes a named plain-Python behavioral file using isolated temporary Git repositories and synthetic correlated PM journals. Cover checked-out A/pushing B, exact approved published main-to-master, unfinished matching versus unrelated sprint, bad/missing/revised approval, multiple refs, unknown options and repeat/crash/race-sensitive refusal. No real ref mutations in tests. Prohibited runners and CI remain prohibited.

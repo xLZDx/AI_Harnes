@@ -205,6 +205,40 @@ class OutgoingReferenceTests(unittest.TestCase):
         # A genuine dry-run is not a ref write and needs no publication approval.
         self.fx.expect("git push --dry-run origin main:refs/heads/main", True)
 
+    def test_command_environment_config_overrides_and_environment_mutators_deny(self):
+        f = self.fx
+        sha = git("rev-parse", "main", cwd=f.repo).stdout.strip()
+        self.approve(sha)
+        plain = "git push origin main:refs/heads/main"
+        f.expect(plain, True)
+        value = str(self.temp.name).replace("\\", "/") + "/redirect.git"
+        injection = (f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl "
+                     f"GIT_CONFIG_VALUE_0={value} {plain}")
+        wrapped = (f"env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl "
+                   f"GIT_CONFIG_VALUE_0={value} {plain}")
+        for command in (injection, wrapped, f"env -u GIT_CONFIG_COUNT {plain}",
+                        f"HOME={self.temp.name} {plain}", f"PATH={self.temp.name} {plain}",
+                        f"env -u HOME {plain}", f"env -u PATH {plain}",
+                        "$env:GIT_CONFIG_COUNT=1; git push origin main:refs/heads/main",
+                        "set GIT_CONFIG_COUNT=1 && git push origin main:refs/heads/main",
+                        "env GIT_CONFIG_COUNT=1 bash -c '$(git push origin main:refs/heads/main)'"):
+            with self.subTest(command=command):
+                f.expect(command, False)
+
+    def test_missing_master_destination_denies_without_changing_ledger(self):
+        f = self.fx
+        sha = git("rev-parse", "main", cwd=f.repo).stdout.strip()
+        self.approve(sha, [{"id": "OTHER", "branch": "feature/other", "state": "active",
+                            "tasks": [{"id": "T02", "state": "todo"}]}])
+        before = json.loads(f.ledger_path.read_text(encoding="utf-8"))
+        # Removing a ref is confined to this temporary bare fixture; the hook itself is read-only.
+        git("--git-dir", f.remote, "update-ref", "-d", "refs/heads/master")
+        self.assertEqual(git("ls-remote", "origin", "refs/heads/master", cwd=f.repo).returncode, 0)
+        self.assertEqual(git("ls-remote", "origin", "refs/heads/master", cwd=f.repo).stdout, "")
+        f.expect("git push origin main:refs/heads/master", False)
+        after = json.loads(f.ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(before["sprints"], after["sprints"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
