@@ -66,7 +66,9 @@
     {"name": "update-config", "from": ["update-config"]},
     {"name": "export-session", "from": ["export-session"]},
     {"name": "skill-creator", "from": ["skill-creator"]},
-    {"name": "workspace-docgen", "from": ["workspace-docgen"]}
+    {"name": "workspace-docgen", "from": ["workspace-docgen"]},
+    {"name": "symbol-targeted-retrieval", "from": ["internal original for Harness v2"], "changes": ["symbol-level context retrieval, optional Serena"]},
+    {"name": "third-party-skill-intake", "from": ["internal original for Harness v2"], "changes": ["deduplicated security review before skill/MCP import"]}
   ],
   "dropped_skills": ["ci-release-contract", "polyglot-developer-assistant", "software-architect", "implementation-planner", "backend-engineer", "frontend-engineer", "aeve-router", "financial-ml-contract", "ml-engineer"]
 }
