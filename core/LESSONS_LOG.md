@@ -1,5 +1,12 @@
 # Lessons log
 
+## 2026-11-17 — Integrate the approved branch without repeating completed work (SUCCESS)
+
+- Kind: SUCCESS
+- Facts: the unchanged reviewed S33 branch was published normally after a real publication-scope approval. Main advanced independently, and the actual merge conflict was confined to generated HTML; both code histories and logs were preserved, and the canonical renderer resolves the report rather than selecting one side's stale output.
+- Why it worked: separated existing-code acceptance, explicit delivery scope, new integration revision and formal role-registration limitation. The operator's prohibition on extra checks is recorded as NOT_RUN, not disguised as a pass.
+- Rule: reuse genuine unchanged-code evidence; resolve only the actual integration conflict, obtain exact-head delta approval, and never replace an evidence-registration error with invented verification or ownership blockers.
+
 ## 2026-11-17 — Bound the maintenance repair before iterating (SHORTCOMING)
 
 The last wrapper regression required one further fixture-only correction (TemporaryDirectory versus Path), not another hook change. Three current-source methods passed and the corrected environment method passed in its focused run. Retain the failed invocation and distinguish aggregate scenario evidence from a single green full-file result. Parent responsibility: inspect newly added fixture types before delegating execution, rather than spending another cycle discovering an authoring error.
@@ -584,3 +591,5 @@ Rule: risky concurrency/crash tasks (CLAUDE.md) must test two concurrent, retry,
 - SHORTCOMING 2026-11-17 S32: I listed a bypass of the new rule as an 'accepted residual' in the packet; the reviewer correctly refused it because it defeats the rule under review. Rule: a residual that lets the rule under review be bypassed is a fix, not a residual; only holes in neighbouring rules go to the backlog.
 - FAILURE 2026-11-17 S32: three rounds tried to describe each wrapper's option grammar in a regex, and each fix opened another form; the design was wrong, not the regex. Rule: when a gate must find a command behind a variable prefix, search every suffix for the command instead of predicting the prefix; model the grammar only if the search is not enough.
 - SUCCESS 2026-11-17 S32: the suffix-search design held against twelve reviewer variants; the one hole left was that a found suffix was not unwrapped again. Rule: a search that finds the command word must feed the finding back through the same unwrap steps as the original segment.
+- SUCCESS 2026-11-17 S34: the package installer refused the dirty main checkout and worked unchanged in a clean worktree of origin/main; A/B numbers were taken from the agent transcripts (input, output, cache read, cache create), not from the summary line. Rule: measure token claims from the transcripts and say which cache terms are included.
+- SHORTCOMING 2026-11-17 S34: the package wrapper trusted exit code 0 as proof that a report existed and referred to a README that the repository does not contain; two reviewers found it. Layer that missed it: the package author. Rule: a wrapper that writes a report must check the report exists and is non-empty, and every file a message points to must exist in the repository.
