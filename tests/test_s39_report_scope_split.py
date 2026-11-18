@@ -128,5 +128,30 @@ def test_invalid_json_config_or_classification_hides_section_exit_zero():
     assert 'id="scope-split"' not in _html(r)
 
 
+def test_bom_lowercase_class_and_bad_entry_do_not_hide_the_section():
+    r = _repo("s39_tolerant", n=3)
+    _config(r, tasks=[{"id": "S1-T1", "cls": " personal "}, {"cls": "FOUNDATION"}, "junk", {"id": "S1-T2", "cls": "FOUNDATION"}])
+    f = r / "docs" / "classes.json"
+    f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())  # BOM as written by Windows PowerShell 5.1
+    c = r / ".harness" / "scope-split.json"
+    c.write_bytes(b"\xef\xbb\xbf" + c.read_bytes())
+    res = h.tool(r, "report.py")
+    assert res.rc == 0, res.all
+    html = _html(r)
+    rows = _rows(html)
+    assert rows["Личный объём"] == (0, 1) and rows["Общая основа"] == (0, 1) and rows["Не размечено"] == (0, 1), rows
+    assert "1 задача)" in html and "2 задачи)" not in html, "plural form of one task"
+
+
+def test_unreadable_config_reports_on_stderr_and_renders_without_section():
+    r = _repo("s39_stderr", n=2)
+    _config(r)
+    (r / "docs" / "classes.json").write_text("{not json", encoding="utf-8")
+    res = h.tool(r, "report.py")
+    assert res.rc == 0, res.all
+    assert "scope-split section skipped" in res.all, res.all
+    assert 'id="scope-split"' not in _html(r)
+
+
 if __name__ == "__main__":
     sys.exit(h.run_all(globals()))

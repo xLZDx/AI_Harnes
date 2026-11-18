@@ -339,16 +339,28 @@ def sec_scope_split(d: dict, root: Path) -> str:
     section is not rendered. Counts use the stored ledger states, not the display groups, so the rows mean the same
     in every project.
     """
+    cfg_path = root / ".harness" / "scope-split.json"
+    if not cfg_path.is_file():
+        return ""
+
+    def skip(reason: str) -> str:
+        # The project opted in, so a failure is reported on stderr; the report itself still renders without the section.
+        print(f"report: scope-split section skipped: {reason}", file=sys.stderr)
+        return ""
+
     try:
-        cfg = json.loads((root / ".harness" / "scope-split.json").read_text(encoding="utf-8"))
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
         rel = str(cfg["classification"])
         src = (root / rel).resolve()
         if root.resolve() not in src.parents:
-            return ""
-        data = json.loads(src.read_text(encoding="utf-8"))
-        cls_of = {str(t["id"]): str(t.get("cls", "UNCLEAR")) for t in data.get("tasks", [])}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return ""
+            return skip("classification path leaves the repository")
+        if not src.is_file() or src.stat().st_size > 5_000_000:
+            return skip("classification is not a regular file of at most 5 MB")
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
+        cls_of = {str(t["id"]): str(t.get("cls", "UNCLEAR")).strip().upper()
+                  for t in data.get("tasks", []) if isinstance(t, dict) and "id" in t}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
+        return skip("config or classification cannot be read")
     known = {k for k, _, _ in SCOPE_CLASSES}
     buckets: dict[str, list[dict]] = {k: [] for k, _, _ in SCOPE_CLASSES}
     for _, t in all_tasks(d):
