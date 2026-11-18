@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- harness-report document v1 -->
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:1rem/1.55 system-ui;margin:2rem auto;padding:0 1rem;max-width:76rem}pre{overflow:auto}table{display:block;overflow:auto;border-collapse:collapse}td,th{border:1px solid;padding:.35rem}img{max-width:100%}</style><title>README</title></head><body><nav aria-label="Документация проекта"><section class="panel" id="project-documents" aria-labelledby="project-documents-title"><h2 id="project-documents-title">Документация проекта</h2><p><a href="../Harness_v2_PROGRAM_STATUS_LIVE.ru.html">Программный отчёт</a></p><div><strong>Мастер-план</strong><p>Источник не указан.</p></div><div><strong>Технический дизайн (TDD)</strong><p>Источник не указан.</p></div><div><strong>Архитектура</strong><p>Источник не указан.</p></div><div><strong>Журнал решений</strong><ul><li><a href="core/DECISION_LOG.md.html">DECISION_LOG.md</a> · <a href="../../core/DECISION_LOG.md">исходник</a></li></ul></div><div><strong>Ретроспективы</strong><p>Источник не указан.</p></div><div><strong>Сопроводительные документы</strong><ul><li><a href="README.md.html">README.md</a> · <a href="../../README.md">исходник</a></li><li><a href="core/LESSONS_LOG.md.html">LESSONS_LOG.md</a> · <a href="../../core/LESSONS_LOG.md">исходник</a></li></ul></div></section></nav><main><p><a href="../../README.md">Открыть исходник</a></p><pre># Harness v2
+
+One source for the Claude Code and Codex harness used across the operator&#x27;s projects.
+Nothing here is installed automatically: `tools/build.py` writes `out/claude` and `out/codex`,
+and installing them into `~/.claude` / `~/.codex` is a separate operator decision.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `harness/rules/CORE.md` | The only global rules file (becomes `CLAUDE.md` and `AGENTS.md`) |
+| `harness/manifest.json` | Every agent and skill, where it came from, what changed, what was dropped |
+| `harness/agents/` | 21 agents, all Sonnet, effort medium |
+| `harness/skills/` | 24 skills, loaded by agents through `skills:` only |
+| `harness/commands/` | `/plan`, `/next`, `/verify`, `/ship`, `/close` |
+| `harness/routing.json` | Rules for choosing 0-4 reviewers per task |
+| `tools/ledger.py` | Sprint and task ledger (`.harness/ledger.json` in each project) |
+| `tools/route.py` | Deterministic reviewer router; `--history N` dry-runs it over past commits |
+| `tools/report.py` | HTML report from the ledger and git; only changed sections are replaced |
+| `tools/build.py` | Validates the source and builds `out/claude` and `out/codex`; `--install-project` wires a project |
+| `tools/githooks/` | post-commit (ledger + report), pre-push (GPT-PM approval), post-merge (worktree cleanup) |
+| `tools/worktree_gc.py` | Removes merged, clean scratch worktrees |
+| `bench/` | Agent quality benchmarks: seeded defects, real pre-fix bugs, tester mutants, domain cases |
+
+## Use in a project
+
+```
+python tools/build.py --install-project D:\Repo\&lt;project&gt;
+python .harness-tools/ledger.py sprint-add --id S1 --title &quot;...&quot;
+```
+
+Project-specific reviewers and triggers go into `&lt;project&gt;/.harness/profile.json`
+(same keys as `harness/routing.json`, plus `domain_specialists`).
+
+## Kill switches
+
+`HARNESS_SKIP_APPROVAL=1` (pre-push check), `HARNESS_WORKTREE_GC=off` (post-merge cleanup).
+</pre></main></body></html>

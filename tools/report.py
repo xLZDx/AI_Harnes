@@ -167,6 +167,15 @@ def fmt_pct(v: float) -> str:
     return f"{v:.1f}".replace(".", ",") + "%"
 
 
+def ru_task_word(n: int) -> str:
+    n100, n10 = n % 100, n % 10
+    if n100 not in range(11, 15) and n10 == 1:
+        return "задача"
+    if n100 not in range(11, 15) and n10 in (2, 3, 4):
+        return "задачи"
+    return "задач"
+
+
 def fmt_ts(ts: int | None) -> str:
     return dt.datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M") if ts else NR
 
@@ -311,6 +320,69 @@ def sec_program(f: dict) -> str:
             + f'<p class="progress-caption"><code>{n} ÷ {m} × 100 = {fmt_pct(p)}</code> · знаменатель {m} — все места задач в плане '
             + f'({E(f.get("source") or ".harness/ledger.json")}, все спринты; из них {sup} заменено планом: они входят в знаменатель и показаны отдельно).</p><h3 id="gate-charts">Задачи по состояниям</h3>'
             '<p class="gate-chart-note">Один цвет означает одно состояние во всех графиках страницы.</p>'
+            '<div class="gate-chart-list">' + "".join(rows) + "</div></section>")
+
+
+SCOPE_CLASSES = [("PERSONAL", "Личный объём", "нужно одному человеку: свои подключения, решения, поиск, уведомления, права на свои данные"),
+                 ("FOUNDATION", "Общая основа", "нужно обоим объёмам: изоляция данных, выпуск, безопасность, тесты, управление"),
+                 ("ORGANIZATION", "Организационный объём", "имеет смысл только при нескольких участниках; заморожен решением оператора"),
+                 ("UNCLEAR", "Не размечено", "правило разметки не сработало или задачи нет в файле разметки")]
+
+
+def sec_scope_split(d: dict, root: Path) -> str:
+    """Optional section: program progress split by product scope.
+
+    A project opts in with `.harness/scope-split.json`: {"classification": "<repo-relative JSON>", "basis": "<text>"}.
+    The classification file lists {"id": <task id>, "cls": PERSONAL|ORGANIZATION|FOUNDATION|UNCLEAR}. Task states are
+    always read from the ledger at render time, so the bars follow every commit; the file only assigns classes.
+    Without the config file, when it cannot be read, or when the classification path leaves the repository, the
+    section is not rendered. Counts use the stored ledger states, not the display groups, so the rows mean the same
+    in every project.
+    """
+    try:
+        cfg = json.loads((root / ".harness" / "scope-split.json").read_text(encoding="utf-8"))
+        rel = str(cfg["classification"])
+        src = (root / rel).resolve()
+        if root.resolve() not in src.parents:
+            return ""
+        data = json.loads(src.read_text(encoding="utf-8"))
+        cls_of = {str(t["id"]): str(t.get("cls", "UNCLEAR")) for t in data.get("tasks", [])}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+    known = {k for k, _, _ in SCOPE_CLASSES}
+    buckets: dict[str, list[dict]] = {k: [] for k, _, _ in SCOPE_CLASSES}
+    for _, t in all_tasks(d):
+        c = cls_of.get(str(t.get("id")), "UNCLEAR")
+        buckets[c if c in known else "UNCLEAR"].append(t)
+    total = sum(len(v) for v in buckets.values())
+    if not total:
+        return ""
+    rows = []
+    for key, label, hint in SCOPE_CLASSES:
+        tasks = buckets[key]
+        m = len(tasks)
+        st = {k: sum(1 for t in tasks if t.get("state", "todo") == k)
+              for k in ("done", "verified", "in_progress", "implemented", "not_run", "failed", "superseded")}
+        done = st["done"]
+        rest = m - sum(st.values())
+        bar = seg_bar([("accepted", done, f"принято по ledger: {done}"),
+                       ("registry-review", st["verified"], f"на ревью: {st['verified']}"),
+                       ("registry-progress", st["in_progress"], f"в работе: {st['in_progress']}"),
+                       (view("implemented")[0], st["implemented"], f"{view('implemented')[2]}: {st['implemented']}"),
+                       (view("not_run")[0], st["not_run"], f"{view('not_run')[2]}: {st['not_run']}"),
+                       ("registry-blocked", st["failed"], f"заблокировано: {st['failed']}"),
+                       ("registry-superseded", st["superseded"], f"заменено планом: {st['superseded']}"),
+                       ("remaining", rest, f"не начато: {rest}")], m or 1)
+        rows.append(f'<div class="gate-chart-row"><span class="gate-chart-name" title="{E(hint)}">{E(label)}</span>'
+                    f'<strong>{done} из {m}</strong>{bar}<span class="pill state-accepted">{fmt_pct(pct(done, m))}</span></div>'
+                    f'<p class="muted">{E(hint)}. Доля программы: {fmt_pct(pct(m, total))} ({m} {ru_task_word(m)}); '
+                    f'написано, но не принято: {st["implemented"] + st["verified"] + st["not_run"]}; не начато: {rest}.</p>')
+    basis = str(cfg.get("basis") or "")
+    return ('<section class="panel program-visual" id="scope-split"><h2>Прогресс по объёму продукта: личный и организационный</h2>'
+            f'<p class="chart-note">{E(basis)} Классы задач берутся из файла разметки <code>{E(rel)}</code> '
+            f'({E(str(data.get("generated_at") or NR))}); состояния задач — из ledger на момент сборки отчёта. '
+            'Разметка сделана по правилам над кодом блока и текстом задачи и не является продуктовым решением по каждой задаче. '
+            'Процент — доля задач класса в состоянии «принято по ledger».</p>'
             '<div class="gate-chart-list">' + "".join(rows) + "</div></section>")
 
 
@@ -591,7 +663,7 @@ def render(d: dict, root) -> str:
     g = Git(root)
     f = gather(d, g)
     title = f'{d.get("project", NR)} — программа и все спринты'
-    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_sprints(d, g) + sec_active(d, g) + sec_agents(root)
+    body = (sec_hero(d, f, root) + sec_provenance(d, f, root) + sec_program(f) + sec_scope_split(d, root) + sec_sprints(d, g) + sec_active(d, g) + sec_agents(root)
             + sec_stories(d) + sec_freshness(d, f, root) + sec_updates(d, g, f))
     return ("<!doctype html>\n" + MARKER + '\n<html lang="ru"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'

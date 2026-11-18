@@ -12,6 +12,19 @@ description: Use when the operator says "дай репорт"/"give me a report"
 - The pre-commit git hook regenerates this file and stages it into every commit (no check, no review, it never blocks a commit). On request run `python .harness-tools/report.py` the same way. The older golden pair and the English-file instructions below are superseded by this rule.
 - Hooks, `report_conform.py` and `project_plan.py` from the old setup are not part of this harness; use only `.harness-tools/report.py`.
 
+## Optional project configuration: progress by product scope
+
+A project may add `.harness/scope-split.json` to get one more section after the program bar ("Прогресс по объёму продукта"). It is opt-in: a project without the file gets the report exactly as before.
+
+```json
+{"classification": "docs/review/SCOPE_SPLIT.json", "basis": "One sentence saying who decided the split and when."}
+```
+
+- `classification` is a path relative to the repository root to a JSON file `{"generated_at": "<date>", "tasks": [{"id": "<task id>", "cls": "PERSONAL"}]}`; `cls` is one of `PERSONAL`, `ORGANIZATION`, `FOUNDATION`, `UNCLEAR`.
+- `basis` is shown as the first sentence of the section note.
+- The file only assigns a class to a task id. Task states are always read from the ledger when the report is built. A ledger task that is absent from the file, or has an unknown class, is counted in the "Не размечено" row, so the four rows always sum to the ledger's task count.
+- Nothing is rendered when the config is missing or unreadable, when the classification file is missing or unreadable, or when its path points outside the repository.
+
 Invoke whenever the operator asks "дай репорт", "покажи отчёт", "give me a report", or equivalent. Treat that wording as an explicit request for the current project’s Russian and English HTML report; infer the active project and sprint from current in-scope state instead of asking which report. A routine status question that does not ask for a report may be answered in chat unless an accepted project requirement requires an artifact.
 
 Required output:
